@@ -1,0 +1,4 @@
+run_name,method,dataset,top1_accuracy,top5_accuracy,params_M,train_time_hours
+run_0_baseline,ResNet-50,CIFAR-100,78.3,94.1,25.6,5.2
+run_1_ours,ResNet-50+Spec,CIFAR-100,81.7,95.4,26.1,5.8
+run_2_ablation_no_spec,ResNet-50+partial,CIFAR-100,79.9,94.8,25.9,5.5

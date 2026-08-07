@@ -1,0 +1,22 @@
+{
+  "_comment": "One entry per experiment run. The framework reads means as the citable numbers; nothing outside this file may be stated as a result. Copy to a real name like run_0_baseline/final_info.json.",
+  "run_name": "run_0_baseline",
+  "description": "Baseline: ResNet-50 on CIFAR-100, 200 epochs, no augmentation changes.",
+  "dataset": "CIFAR-100",
+  "hardware": "1x NVIDIA A100 80GB",
+  "hyperparameters": {
+    "lr": 0.1,
+    "batch_size": 128,
+    "epochs": 200,
+    "optimizer": "SGD"
+  },
+  "means": {
+    "top1_accuracy": 78.3,
+    "top5_accuracy": 94.1,
+    "train_time_hours": 5.2
+  },
+  "stderrs": {
+    "top1_accuracy": 0.21,
+    "top5_accuracy": 0.09
+  }
+}

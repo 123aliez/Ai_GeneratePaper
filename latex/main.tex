@@ -1,0 +1,44 @@
+% Experiment-paper LaTeX template.
+% Fill in \input sections or paste final.md-derived content, then build with:
+%     python latex/build.py            (gate + compile)
+%     python latex/build.py --check-only   (citation gate only, no compile)
+%
+% The citation gate reads \cite{...} keys and checks them against
+% references/references.bib. Keep every cited key defined there.
+\documentclass[11pt]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{amsmath}
+\usepackage{hyperref}
+\usepackage{natbib}
+
+\title{PLACEHOLDER TITLE}
+\author{PLACEHOLDER AUTHORS}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+PLACEHOLDER ABSTRACT. Replace with the finalized abstract from
+workspace/<paper>/final.md.
+\end{abstract}
+
+% ── Paste or \input the finalized sections here ──────────────────────────
+% \input{sections/01-introduction.tex}
+% \input{sections/02-related-work.tex}
+% \input{sections/03-method.tex}
+% \input{sections/04-experiments.tex}
+% \input{sections/05-results.tex}
+% \input{sections/06-discussion.tex}
+% \input{sections/07-conclusion.tex}
+
+\section{Introduction}
+PLACEHOLDER. Example citation: \citep{PLACEHOLDER_KEY}.
+
+\bibliographystyle{plainnat}
+\bibliography{../references/references}
+
+\end{document}

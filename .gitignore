@@ -1,0 +1,33 @@
+# Secrets
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# LaTeX build artifacts
+*.aux
+*.bbl
+*.blg
+*.log
+*.out
+*.toc
+*.lof
+*.lot
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+main.pdf
+workspace/**/latex/main.pdf
+
+# User experiment data is local and often large — keep the contract, not the payload.
+# Comment the next lines out if you want results committed.
+data/**
+!data/README.md
+!data/*.example.*
+
+# The idea document is the author's unpublished contribution — keep the template,
+# not the content. Comment this out if the repo is private and you want it tracked.
+idea.md
