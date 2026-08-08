@@ -33,28 +33,28 @@
 ## 章节内容边界
 | 章节 | type | 只写什么 |
 |---|---|---|
-| Abstract | `abstract` | 问题+方法+最强量化结果(数字必须在结果表里) |
-| Introduction | `intro` | 动机+贡献清单(**照 Core idea 的清单,不加不减**),每个贡献要有后续支撑 |
-| Related Work | `related` | 用你的 bibliography + Core idea 的 delta 表;不凭记忆说别人数字 |
+| Abstract | `abstract` | 问题+方法+最强量化结果(数字必须在 data-index.md 里) |
+| Introduction | `intro` | 动机+贡献清单(**照 idea.md 的清单,不加不减**),每个贡献要有后续支撑 |
+| Related Work | `related` | 用你的 bibliography + idea.md 的 delta 表;不凭记忆说别人数字 |
 | Background | `background` | 预备知识和记号;不掺入本文贡献 |
-| Method | `method` | **从 Core idea 展开机制与设计选择**;只写真正实现的;遵守 Notation Table |
-| Theory | `theory` | 从 Core idea 的公式出发;假设要写全 |
-| Experimental Setup | `experiments` | 只写结果库/hardware 里有的;没有标 [UNKNOWN] |
-| Results | `results` | 只写结果库里的;表格用 3+ 对比;禁幻觉;不重述方法 |
+| Method | `method` | **从 idea.md 展开机制与设计选择**;只写真正实现的;遵守 Notation Table |
+| Theory | `theory` | 从 idea.md 的公式出发;假设要写全 |
+| Experimental Setup | `experiments` | 只写 data/ / hardware 里有的;没有标 [UNKNOWN] |
+| Results | `results` | 只写 data/ 里的;表格用 3+ 对比;禁幻觉;不重述方法 |
 | Ablation | `ablation` | 逐个组件对照;缺的消融标 gap 不编 |
 | Discussion | `discussion` | 只解释已报告的结果;同一组数;区分 supported vs suggests |
-| Limitations | `limitations` | 以 Core idea 的「已知局限」为底,加数据暴露的短板 |
-| Conclusion | `conclusion` | 只总结已demonstrated的;无新数字 |
+| Limitations | `limitations` | 以 idea.md 的「已知局限」为底,加数据暴露的短板 |
+| Conclusion | `conclusion` | 只总结已 demonstrated 的;无新数字 |
 
 ## 与占位符/公式结合
 - 结果里的图表:按 `figure-table-placeholder.md` 写占位符 + 说明,不生成图
 - 公式:按 `math-formula.md` 用 LaTeX 语法,符号遵守 Notation Table
 - 方法章节的符号必须和 Notation Table 一致,不重定义
-- Core idea 里作者已定义的符号**直接沿用**,不另起一套记号
+- idea.md 里作者已定义的符号**直接沿用**,不另起一套记号
 
 ## 防幻觉铁律
-- 不臆想**创新点或机制**(Core idea 里没有的 → `[DESIGN DETAIL NEEDED]`)
-- 不臆想硬件/超参/数据集大小(结果库里没有的 → `[UNKNOWN]`)
+- 不臆想**创新点或机制**(idea.md 里没有的 → `[DESIGN DETAIL NEEDED]`)
+- 不臆想硬件/超参/数据集大小(data/ 里没有的 → `[UNKNOWN]`)
 - 不臆想未跑的实验/消融(缺失 baseline → 标 gap,不编)
 - 不臆想显著性(没有检验/区间数据 → 只描述趋势,不 assert significance)
 - 答不出就说 "I cannot answer from the provided evidence",不留空档硬编
@@ -62,8 +62,8 @@
 ## 写完后自检
 1. 这段的 `CHAPTER TYPE` 是什么?主源用对了吗?
 2. idea 类:机制是**解释**了还是只**断言**了?设计选择给理由了吗?
-3. idea 类:声称的贡献都在 Core idea 的贡献清单里吗?
-4. data 类:每个数字都能对回 data/ 结果库?
+3. idea 类:声称的贡献都在 idea.md 的贡献清单里吗?
+4. data 类:每个数字都能对回 data/ 结果库(data-index.md 里有)?
 5. Results 和 Discussion 引同一组数?
 6. 每张图占位符都有数据来源 + 支撑论断?
-7. 每个符号首次使用都定义了,且与 Core idea 一致?
+7. 每个符号首次使用都定义了,且与 idea.md 一致?
