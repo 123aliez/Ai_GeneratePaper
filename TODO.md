@@ -1,6 +1,6 @@
-# TODO — paper_agent 待处理清单
+# TODO — 待处理清单
 
-> 状态截至 2026-08-07。框架代码已建成并离线验证(80 项路由测试 + 6 模块自测全过),
+> 状态截至 2026-08-07。框架代码已建成并离线验证(四套测试共 352 项检查全过),
 > 但**从未用真 API + 真数据跑过一整篇**。下面按"卡住流程 / 没验证 / 代码缺口"三类排。
 
 ---
@@ -9,11 +9,12 @@
 
 | # | 事项 | 位置 | 缺了会怎样 |
 |---|---|---|---|
-| 1 | **填 `idea.md`** | 根目录(已建骨架) | idea 类章节(Abstract/Intro/Related/Method)pre-flight 直接拒绝。当前是未填模板,实质内容 0 词 |
-| 2 | **放实验结果** | `data/results/<run>/final_info.json` | data 类章节(Results/Experiments/Ablation)pre-flight 直接拒绝 |
-| 3 | **填参考文献** | `references/bibliography.md` | 目前只有 1 行示例。引用补全无 key 可匹配,全部标 `needs_human` |
-| 4 | **写论文 brief** | `workspace/<论文名>/brief.md` | 没有就没有工作区。必须在顶部声明 `type:` |
-| 5 | **填 API key** | `.env`(已存在但值为空) | 无法调模型。三组 Agent 各自独立配 |
+| 1 | **填 `idea.md`** | 根目录(已建骨架) | idea 类章节(Abstract/Intro/Related/Method)pre-flight 直接拒绝。当前是未填模板,实质内容 0 词——**未填的模板同样会被拦**,不会拿模板里的提问当论文的主张 |
+| 2 | **写 `outline.md`** | 根目录(`cp outline.example.md outline.md`) | 没有它只能用逐章模式(自己建文件夹 + 手写 brief),整篇模式跑不了 |
+| 3 | **放实验结果** | `data/results/<run>/final_info.json` | data 类章节(Results/Experiments/Ablation)pre-flight 直接拒绝 |
+| 4 | **填参考文献** | `references/bibliography.md` | 目前只有 1 行示例。引用补全无 key 可匹配,全部标 `needs_human` |
+| 5 | **填各章 `input.md`** | `workspace/<章>/input.md`(`--init` 生成骨架) | 素材为空,起草只能靠 `idea.md`。它**永不被覆盖**,`--force` 也不动 |
+| 6 | **填 API key** | `.env`(已存在但值为空) | 无法调模型。三组 Agent 各自独立配 |
 
 第 1 项最关键:`idea.md` 的第 3 节(核心洞察)和第 4 节(方法设计)是框架**唯一不能替你补**的部分。
 
@@ -23,11 +24,13 @@
 
 | # | 未知项 | 为什么现在答不了 |
 |---|---|---|
-| 6 | 真 LLM 能否稳定吐合法 JSON | `review-v1.json` 的 schema 约束只在离线用假 Agent 测过。真模型在新增的类型判据子句下会不会破坏 JSON 格式,未知 |
-| 7 | VERIFY 判定准不准 | 收敛循环靠 Review 判断 MUST FIX 是否已解决。判松了会假通过,判严了会跑满 4 轮 |
-| 8 | 证据挖掘质量 | idea 类视角(机制/新颖性)是今天新加的,真模型答出来的东西有多少可用,未知 |
-| 9 | 骨架检测阈值 40 词是否合适 | 当前"剥掉提问块后不足 40 词判为未填写"是拍的数。你填完 `idea.md` 如果被误判,调 `content_source.py::idea_is_skeleton` |
-| 10 | 审稿规范与提示词是否冲突 | `skills/review-rubric.md` 要求查数据-结论 mismatch,但提示词的类型判据告诉 Review "方法章不要索要统计显著性"。理论上提示词优先(它在任务里),**但没验证**。若方法章的 MUST FIX 里仍出现"缺显著性检验",根因在此 |
+| 7 | 真 LLM 能否稳定吐合法 JSON | `review-v1.json` 的 schema 约束只在离线用假 Agent 测过。真模型在新增的类型判据 + 写作模式判据两段子句下会不会破坏 JSON 格式,未知 |
+| 8 | VERIFY 判定准不准 | 收敛循环靠 Review 判断 MUST FIX 是否已解决。判松了会假通过,判严了会跑满 4 轮 |
+| 9 | 证据挖掘质量 | idea 类视角(机制/新颖性)真模型答出来的东西有多少可用,未知 |
+| 10 | 骨架检测阈值 40 词是否合适 | "剥掉提问块后不足 40 词判为未填写"是拍的数。你填完 `idea.md` 如果被误判,调 `content_source.py::idea_is_skeleton` |
+| 11 | 审稿规范与提示词是否冲突 | `skills/review-rubric.md` 要求查数据-结论 mismatch,但提示词的类型判据告诉 Review "方法章不要索要统计显著性"。理论上提示词优先(它在任务里),**但没验证**。若方法章的 MUST FIX 里仍出现"缺显著性检验",根因在此 |
+| 12 | **Stage 5 的 upsert 契约真模型能否遵守** | 它要求每条 bullet 以 `- [<章名>] ` 开头并替换同前缀旧条目。Python 会校验标记是否出现在 Key Claims 小节内,校验失败会拦住 `--all`——但真模型多久能一次写对,未知 |
+| 13 | **写作契约的实际效果** | FULL/SINGLE 两套指令已注入每个改写正文的阶段并有测试断言,但"真模型会不会照做"要看实稿:逐章模式下还写不写 "as shown in Section 3",整篇模式下会不会重复定义前章符号 |
 
 ---
 
@@ -35,32 +38,63 @@
 
 | # | 缺口 | 影响 | 建议 |
 |---|---|---|---|
-| 11 | **增量补丁是提示词引导,非真 SEARCH/REPLACE** | 收敛循环让 Draft"只改问题处",靠提示词约束。省 token 和"护住好段落"的确定性不如硬补丁 | 等真跑几轮看它会不会重写无关段落,再决定要不要升级 |
-| 12 | **`build_stage1_parts` 里有 Alignment 章硬编码特例** | 从 survey 引擎继承来的,对实验论文无意义。当前会在含 "rlvr" + "constitutional" 小节时触发异常分组 | 建议直接删掉那个分支 |
-| 13 | **codex 上轮审查剩余 Important(~17) / Minor(8)** | 多数是健壮性打磨(防 SSRF、真 web 检索等)。在"web 检索默认关"前提下触发概率低 | 延后,等真数据暴露问题再针对性修 |
-| 14 | **`retrieval.py` 未接成 Agent 工具** | 两层检索已单测通过,但 Agent 拿不到这个工具,只能用 `search_references` | 需要时再接线 |
-| 15 | **`PAPER_MODE=survey` 路径在本项目里是残留** | 从 survey 复制来的分支,本项目没有 `paper/00 Background` 那套目录,走这条路会读到不存在的文件 | 要么删,要么明确标注"仅供对照,不要用" |
-| 16 | **`latex/main.tex` 是骨架** | 编译 PDF 时才需要,正文由 Agent 产出或你填 | 到编译阶段再处理 |
-| 17 | **整篇 brief 没有真流水线端到端测试** | 六小节整篇论文的分段路由只用"提示词捕获"验过(假 Agent),没跑过真模型 | 属于第 6 项的一部分 |
+| 14 | **增量补丁是提示词引导,非真 SEARCH/REPLACE** | 收敛循环让 Draft"只改问题处",靠提示词约束。省 token 和"护住好段落"的确定性不如硬补丁 | 等真跑几轮看它会不会重写无关段落,再决定要不要升级 |
+| 15 | **章节字数标准未写进提示词** | `format_stage1_parts` 按比例给区间(`target*0.85` ~ `target*1.2+30`),没有"顶会各类型章节平均多少词"的参考 | 待办:调研顶会各章节典型字数,作为参考写进提示词 |
+| 16 | **codex 审查剩余 Important / Minor** | 多数是健壮性打磨(防 SSRF、真 web 检索等)。在"web 检索默认关"前提下触发概率低 | 延后,等真数据暴露问题再针对性修 |
+| 17 | **`PAPER_MODE=survey` 路径在本项目里是残留** | 从 survey 复制来的分支,本项目没有 `paper/00 Background` 那套目录。已加 `_assert_survey_mode` 守卫,非 survey 模式下调用会明确抛错而非静默读到不存在的文件 | 可以删,但守卫已足够;留着供对照 |
+| 18 | **`latex/main.tex` 是骨架** | 编译 PDF 时才需要,正文由 Agent 产出或你填 | 到编译阶段再处理 |
+| 19 | **端到端没跑过真模型** | 六阶段流水线、分段路由、两条写作路由都只用假 Agent 验过接线 | 属于第 7~13 项的总和 |
 
 ---
 
-## 四、建议的推进顺序
+## 四、已完成(本轮)
+
+- **outline 驱动的逐章生成**:`outline.md` → `run.py --init` → 各章工作区 + 跨章状态;
+  `--all` 按 outline 顺序跑全篇
+- **两条写作路由**:整篇模式(FULL)与逐章模式(SINGLE),指令相反、判据相反,
+  契约注入每一个改写正文的阶段
+- **Stage 5 跨章交接自动化**:原先只打印"记得手动更新",现在自动 upsert + Python 校验,
+  失败会拦住 `--all`
+- **路由指纹**:类型路由 + 写作模式写进 `context-pack.md` 首行;路由变了而旧产物还在 → 硬停
+  (一个文件都不删)
+- **四道 brief 来源门禁**:手写 brief 配整篇路由 / brief 过期 / 改名遗留目录 / 缺跨章状态,
+  全部在调模型前硬停
+- **分段自适应**:段数 `min(小节数, 3)`,拼接按本次实际段数(不再硬编 3)
+- **删掉 Alignment 章硬编特例**(原 #12)
+- **`retrieval.py` 接成 `search_literature` 工具**(原 #14),三个 Agent 都能调;
+  web 命中标为"线索,不可引"
+- **`chapter_fingerprint` 改用 sha256**(原先用内置 `hash()`,受 `PYTHONHASHSEED` 影响,
+  `--init` 与运行是两次进程,指纹永远对不上)
+- **Agent 系统指令的跨章上下文改为按模式条件读取**(原先无条件要求读跨章状态和前章
+  `final.md`,系统指令优先级高于 task prompt,逐章模式压不住)
+
+---
+
+## 五、建议的推进顺序
 
 ```
 1. 填 idea.md(只填第 3、4 节也够起步)
-2. 配 .env 的三组 key
-3. 先跑纯 idea 类章节(type: method),不需要 data/
-   python run.py "<论文名>" --progress
-4. 看第一行 route 输出对不对;看 evidence-pack.md 质量
-5. 实验跑完后补 data/,再跑 results 章
-6. 全篇跑通后 python latex/build.py --paper <论文名>
+2. cp outline.example.md outline.md,写好章节结构
+3. 配 .env 的三组 key
+4. python run.py --init          # 生成各章工作区
+5. python run.py --list          # 确认每章的路由与类型都对
+6. 先跑纯 idea 类章节(不需要 data/):
+   python run.py "04-method" --progress
+7. 看 route / write-mode 两行输出对不对;看 evidence-pack.md 质量
+8. 实验跑完后补 data/,再跑 results 章
+9. 全篇:python run.py --all --progress
+10. python latex/build.py
 ```
 
-第 3 步是最省的验证路径——方法章不需要实验数据,可以在实验还没跑完时就验证整条流水线。
+第 6 步是最省的验证路径——方法章不需要实验数据,可以在实验还没跑完时就验证整条流水线。
 
 ---
 
-## 五、改了 brief.md 的 `type:` 之后
+## 六、改了路由之后要做什么
 
-`context-pack.md` 是按类型生成的,但断点续跑会跳过已存在的产物。**改完 `type:` 要删掉该章节的 `context-pack.md`**,否则读到的还是旧路由的包。
+**不用再记得手动删 `context-pack.md` 了。** 路由(章节类型 + 写作模式)写在它的首行指纹里,
+不一致时流水线会**硬停**并列出所有按旧路由生成的产物——一个文件都不会被自动删,由你决定
+删哪些。删完重跑即可。
+
+改了 `outline.md` 之后跑 `python run.py --init --force` 刷新各章 brief;
+忘了刷新的话运行时也会硬停并提示(`input.md` 里你填的素材不会被覆盖)。

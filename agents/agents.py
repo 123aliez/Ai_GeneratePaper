@@ -1,6 +1,6 @@
 from smolagents import CodeAgent, LiteLLMModel
 
-from .tools import read_file, write_file, list_folder, search_references
+from .tools import read_file, write_file, list_folder, search_references, search_literature
 from .prompts import DRAFT_INSTRUCTIONS, REVIEW_INSTRUCTIONS, MANAGER_INSTRUCTIONS
 
 import sys
@@ -11,6 +11,23 @@ from config import MAX_STEPS_AGENT, MAX_STEPS_MANAGER
 AUTHORIZED_IMPORTS = ["os", "json", "time", "textwrap"]
 
 
+def create_planner_agent(model_manager: LiteLLMModel):
+    """只装一个 Manager,不带 managed_agents —— 给 `--expand` 这类纯规划步骤用。
+
+    不复用 create_agents 是因为那会连带初始化 Draft/Review 两个模型:展开 outline
+    根本不调它们,而三组 key 里任意一组没配好就会在这一步白报错。
+    """
+    return CodeAgent(
+        tools=[read_file, write_file, list_folder],
+        model=model_manager,
+        instructions=MANAGER_INSTRUCTIONS,
+        additional_authorized_imports=AUTHORIZED_IMPORTS,
+        max_steps=MAX_STEPS_MANAGER,
+        verbosity_level=0,
+        stream_outputs=True,
+    )
+
+
 def create_agents(
     model_draft: LiteLLMModel,
     model_review: LiteLLMModel,
@@ -19,7 +36,7 @@ def create_agents(
     """Create the 3-agent hierarchy: Manager -> (Draft, Review)."""
 
     draft_agent = CodeAgent(
-        tools=[read_file, write_file, list_folder, search_references],
+        tools=[read_file, write_file, list_folder, search_references, search_literature],
         model=model_draft,
         name="draft_agent",
         description=(
@@ -34,7 +51,7 @@ def create_agents(
     )
 
     review_agent = CodeAgent(
-        tools=[read_file, write_file, list_folder, search_references],
+        tools=[read_file, write_file, list_folder, search_references, search_literature],
         model=model_review,
         name="review_agent",
         description=(
@@ -50,7 +67,7 @@ def create_agents(
     )
 
     manager_agent = CodeAgent(
-        tools=[read_file, write_file, list_folder, search_references],
+        tools=[read_file, write_file, list_folder, search_references, search_literature],
         model=model_manager,
         managed_agents=[draft_agent, review_agent],
         instructions=MANAGER_INSTRUCTIONS,

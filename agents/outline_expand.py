@@ -1,0 +1,283 @@
+"""Outline 展开:章节骨架 → 带小节与要点的完整 outline。
+
+分工的理由。`outline.md` 里有两类信息,该由不同的人来定:
+
+* **论文的结构** —— 分几章、每章叫什么、什么 `type:`、什么顺序。这是作者对
+  自己工作的判断,框架不替你决定,也没有默认模板。
+* **每章拆成哪几个小节、每节讲什么** —— 这是从「创新点」推导出的施工细节。
+  作者写得出来,但那正是 Manager 该干的活:它读 `idea.md`,知道方法有几个
+  模块、哪个模块需要单独一节、哪些内容属于邻章。
+
+所以流程是 `骨架(你写) → --expand(Manager 补) → 你审 → --init`。展开产物写到
+`outline.expanded.md` 而不是原地覆盖:Manager 的判断需要你过一遍再采纳。
+
+字数不由 Manager 定 —— 篇幅是投稿约束(会议页数、章节配比),只有作者知道。
+不带 `(~N words)` 的小节按 DEFAULT_SECTION_WORDS 处理。
+"""
+import re
+from pathlib import Path
+
+from .outline import (
+    DEFAULT_SECTION_WORDS, OUTLINE_PATH, OutlineRouteError, parse_outline,
+)
+from .chapter_type import DEFAULT_TYPE
+
+EXPANDED_PATH_NAME = "outline.expanded.md"
+
+# 展开产物的首行标记。用途是让 --init 能分辨"这是 --expand 的产物,作者可能还
+# 没审过",在生成工作区之前提醒一句。
+EXPANDED_MARKER = "<!-- outline-expanded: 由 --expand 生成,请审阅后改名为 outline.md -->"
+
+
+def outline_skeleton_digest(chapters: list[dict]) -> str:
+    """骨架摘要:章号 + 标题 + type。展开前后必须逐字一致,用它来比对。"""
+    return "\n".join(f"{c['number']}|{c['title']}|{c['type']}" for c in chapters)
+
+
+def render_outline(chapters: list[dict], title: str = "",
+                   marker: str = "") -> str:
+    """把章节清单序列化回 outline.md 的语法。
+
+    只写结构信息(章标题 / type / 小节 / 要点),不写任何说明文字 —— 这份产物是
+    给 `--init` 吃的,也是给作者审的,夹带模板注释只会让人分不清哪句是自己写的。
+    """
+    lines = []
+    if marker:
+        lines.append(marker)
+    lines.append(f"# {title or 'Paper outline'}")
+    lines.append("")
+    for chapter in chapters:
+        lines.append(f"## {chapter['number']}. {chapter['title']}")
+        lines.append("")
+        lines.append(f"type: {chapter['type']}")
+        lines.append("")
+        for section in chapter["sections"]:
+            # 只写作者显式标过的字数。把解析时填进去的默认值写回文件,等于
+            # 让作者以为 250 是自己定的,而这份文件下一步就要变成 outline.md。
+            words = (section.get("target_words")
+                     if section.get("words_explicit") else None)
+            suffix = f" (~{words} words)" if words else ""
+            lines.append(f"### {chapter['number']}.{section['number']} "
+                         f"{section['title']}{suffix}")
+            if section.get("type"):
+                lines.append(f"- type: {section['type']}")
+            for bullet in section["bullets"]:
+                lines.append(f"- {bullet}")
+            lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def skeleton_report(chapters: list[dict]) -> list[str]:
+    """展开前打印的骨架清单,让作者确认 Manager 将要按什么结构展开。"""
+    lines = []
+    for chapter in chapters:
+        count = len(chapter["sections"])
+        has = f"已有 {count} 个小节" if count else "无小节,待展开"
+        flag = "  ← type 无法识别" if chapter["type"] == DEFAULT_TYPE else ""
+        lines.append(f"  {chapter['number']:>2}. {chapter['title']:<28} "
+                     f"type={chapter['type']:<12} {has}{flag}")
+    return lines
+
+
+def build_expand_prompt(chapters: list[dict], out_path: str,
+                        idea_path: str, total: int) -> str:
+    """Manager 的展开任务。
+
+    刻意收紧到两件事:拆小节、写要点。不许改章节结构 —— 那是作者的设计,而
+    Manager 手里只有 `idea.md`,没有投稿目标、没有篇幅预算、也不知道作者为什么
+    把某两章分开写。越权改结构会让作者以为自己的设计被采纳了,实际没有。
+    """
+    skeleton = "\n".join(
+        f"{c['number']}. {c['title']}  (type: {c['type']}"
+        + (f", 作者已写了 {len(c['sections'])} 个小节,保留并在其基础上补要点"
+           if c["sections"] else ", 无小节")
+        + ")"
+        for c in chapters)
+
+    existing = []
+    for chapter in chapters:
+        if not chapter["sections"]:
+            continue
+        # 按 outline 的原始语法给,不做摘要式改写。作者写的字数和小节级 type 也是
+        # 他的决定,校验会核对它们有没有被动 —— 那就必须先让 Manager 看见。
+        existing.append(f"\n### 第 {chapter['number']} 章 作者已有的小节"
+                        f"(标题、字数、type 必须逐字保留)")
+        for section in chapter["sections"]:
+            words = (f" (~{section['target_words']} words)"
+                     if section.get("words_explicit") else "")
+            existing.append(f"### {chapter['number']}.{section['number']} "
+                            f"{section['title']}{words}")
+            if section.get("type"):
+                existing.append(f"- type: {section['type']}")
+            existing += [f"- {bullet}" for bullet in section["bullets"]]
+    existing_block = "\n".join(existing) if existing else ""
+
+    return (
+        f"You are planning the section-level structure of a paper outline.\n\n"
+        f"Read '{idea_path}' first. It states the author's contribution: the core "
+        f"insight, the method design, the delta against prior work, and the claim "
+        f"list. Everything you write must be derivable from it.\n\n"
+        f"The author has fixed the chapter structure. It is NOT yours to change:\n\n"
+        f"{skeleton}\n"
+        f"{existing_block}\n\n"
+        f"## Your task\n"
+        f"For each of the {total} chapters, decide its `###` subsections and write "
+        f"the drafting bullets under each one. Nothing else.\n\n"
+        f"## Hard constraints\n"
+        f"- Do NOT add, remove, merge, split, reorder or rename a chapter.\n"
+        f"- Do NOT change any chapter's `type:` line.\n"
+        f"- Do NOT write word counts for subsections you create. Omit the "
+        f"`(~N words)` annotation entirely — length is the author's call and "
+        f"will be filled in afterwards. Where the author already wrote one, "
+        f"reproduce it verbatim.\n"
+        f"- Where the author already wrote subsections, KEEP their titles and order "
+        f"verbatim; you may only add bullets to them.\n"
+        f"- Give each chapter 2 to 4 subsections. A chapter with 3+ subsections is "
+        f"drafted in three separate passes, so each subsection must be a coherent "
+        f"unit of writing, not an arbitrary slice.\n\n"
+        f"## What a good bullet looks like\n"
+        f"Bullets are instructions handed verbatim to the drafting agent. Each "
+        f"subsection needs 2 to 5 of them, covering:\n"
+        f"- WHAT to write, anchored to a specific part of the idea document "
+        f"(\"expand the spectral decomposition from idea.md section 4: why low "
+        f"frequency bands carry class identity\"), never a vague restatement of "
+        f"the title.\n"
+        f"- WHICH BOUNDARY not to cross — the single most valuable line you can "
+        f"write. Say what belongs to a neighbouring chapter and must be left out "
+        f"(\"state the mechanism only; every measured number belongs to the "
+        f"results chapter\"). Cross-chapter duplication and scope creep are the "
+        f"most common failure of this pipeline and the drafter cannot judge "
+        f"boundaries on its own.\n"
+        f"- WHAT TO MARK when the idea document does not supply something: "
+        f"[DESIGN DETAIL NEEDED] for a missing mechanism, [MISSING DATA] for a "
+        f"number, [CITATION NEEDED] for an unsupported claim. Never invent the "
+        f"content instead.\n\n"
+        f"Do not write bullets about chapter transitions or terminology "
+        f"consistency. The pipeline injects the writing contract and freezes a "
+        f"notation table on its own; bullets about them are noise.\n\n"
+        f"## Output\n"
+        f"Write the result to '{out_path}' with write_file, in exactly this "
+        f"syntax and nothing else — no preamble, no explanation, no code fences:\n\n"
+        f"## 4. Method\n\n"
+        f"type: method\n\n"
+        f"### 4.1 <subsection title>\n"
+        f"- <bullet>\n"
+        f"- <bullet>\n\n"
+        f"### 4.2 <subsection title>\n"
+        f"- <bullet>\n\n"
+        f"Subsection titles may be Chinese or English — match the language the "
+        f"author used for the chapter titles. Bullets: write them in the same "
+        f"language as the chapter titles too.\n"
+        f"Reproduce every chapter, in the author's order, with the author's exact "
+        f"title and `type:` value. Report only that the file was written.\n"
+    )
+
+
+def _section_problems(original: dict, expanded: dict) -> list[str]:
+    """作者**已经手写过小节**的那一章:核对它们没被动。
+
+    提示词里写的是「KEEP their titles and order verbatim」,但那只是请求。作者手写
+    小节意味着他对这一章已经有明确设计(常见的是给 Results 定死了 `(~300 words)`
+    和一条 `- type: ablation`),Manager 改名、重排、删要点或抹掉字数,那些决定就
+    静默消失了 —— 而展开产物看上去完全正常。
+    """
+    want = original["sections"]
+    if not want:
+        return []          # 作者没写小节,Manager 怎么拆都是它的活
+
+    got = expanded["sections"]
+    prefix = f"第 {original['number']} 章"
+    if len(got) < len(want):
+        return [f"{prefix}作者已有 {len(want)} 个小节,展开后只剩 {len(got)} 个"]
+
+    problems = []
+    for index, (wanted, actual) in enumerate(zip(want, got), start=1):
+        if actual["title"].strip() != wanted["title"].strip():
+            # 只报第一处错位:标题一旦对不上,后面每个位置都会连带报错,那种
+            # 输出看不出真正改了什么。
+            problems.append(
+                f"{prefix}第 {index} 个小节被改名或重排:"
+                f"'{wanted['title']}' → '{actual['title']}'")
+            break
+        if wanted.get("words_explicit") and not actual.get("words_explicit"):
+            problems.append(
+                f"{prefix}小节 '{wanted['title']}' 的字数标注被抹掉"
+                f"(原为 ~{wanted['target_words']} words)")
+        elif actual["target_words"] != wanted["target_words"]:
+            problems.append(
+                f"{prefix}小节 '{wanted['title']}' 的字数被改:"
+                f"{wanted['target_words']} → {actual['target_words']}")
+        if (wanted.get("type") or "") != (actual.get("type") or ""):
+            problems.append(
+                f"{prefix}小节 '{wanted['title']}' 的 type 被改:"
+                f"{wanted.get('type') or '(无)'} → {actual.get('type') or '(无)'}")
+        missing = [b for b in wanted["bullets"] if b not in actual["bullets"]]
+        if missing:
+            problems.append(
+                f"{prefix}小节 '{wanted['title']}' 删掉了作者写的要点:{missing}")
+    return problems
+
+
+def validate_expansion(original: list[dict], expanded: list[dict]) -> list[str]:
+    """校验 Manager 没越权改结构。返回问题列表,空列表表示通过。
+
+    必须校验而不是信任:章节结构是作者的设计,Manager 悄悄合并两章、改掉一个
+    `type:`,而 `--init` 照样生成工作区 —— 作者要到看见文件夹名不对才发现,
+    那时候 token 已经花了。
+    """
+    problems = []
+    if len(expanded) != len(original):
+        problems.append(
+            f"章节数变了:骨架 {len(original)} 章,展开后 {len(expanded)} 章")
+
+    # 顺序单独比一次。下面按章号建字典查,那样重排看不出来 —— 而章序决定文件夹的
+    # NN- 前缀,也就决定整篇模式的运行顺序和每章的邻章,不能让它被悄悄换掉。
+    want_order = [c["number"] for c in original]
+    got_order = [c["number"] for c in expanded]
+    if got_order != want_order:
+        problems.append(f"章节顺序变了:{want_order} → {got_order}")
+
+    by_number = {c["number"]: c for c in expanded}
+    for chapter in original:
+        got = by_number.get(chapter["number"])
+        if got is None:
+            problems.append(f"第 {chapter['number']} 章 '{chapter['title']}' 丢了")
+            continue
+        if got["title"].strip() != chapter["title"].strip():
+            problems.append(
+                f"第 {chapter['number']} 章标题被改:"
+                f"'{chapter['title']}' → '{got['title']}'")
+        if got["type"] != chapter["type"]:
+            problems.append(
+                f"第 {chapter['number']} 章 type 被改:"
+                f"{chapter['type']} → {got['type']}")
+        if not got["sections"]:
+            problems.append(
+                f"第 {chapter['number']} 章 '{chapter['title']}' 没展开出小节")
+        problems += _section_problems(chapter, got)
+
+    extra = sorted(set(by_number) - {c["number"] for c in original})
+    if extra:
+        problems.append(f"展开后多出了章节编号: {extra}")
+    return problems
+
+
+def expanded_outline_path(outline_path=None) -> Path:
+    """展开产物的路径:与 outline.md 同目录。"""
+    base = Path(outline_path) if outline_path is not None else Path(OUTLINE_PATH)
+    return base.parent / EXPANDED_PATH_NAME
+
+
+def read_expanded(path) -> list[dict]:
+    """解析展开产物。解析失败按 OutlineRouteError 上抛,由调用方决定怎么报。"""
+    return parse_outline(path)
+
+
+def missing_word_counts(chapters: list[dict]) -> int:
+    """有多少小节没标字数 —— 提醒作者补 `(~N words)` 的依据。
+
+    按 `words_explicit` 判断而不是比对 DEFAULT_SECTION_WORDS:作者真写了
+    `(~250 words)` 时那是他的决定,不该被催着再写一遍。
+    """
+    return sum(1 for c in chapters for s in c["sections"]
+               if not s.get("words_explicit"))

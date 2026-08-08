@@ -21,6 +21,16 @@ from .chapter_type import (
     resolve_run_route, route_banner,
     IDEA, DATA, MIXED, BLOCKING, ADVISORY, OFF,
 )
+# 写作路由的常量与函数改为模块级导入。原先是函数体内懒加载 + 宽泛 except:
+# 一旦 outline.md 读取或解析出错,write_mode 虽预设成 SINGLE,mode_clause 却还是
+# 空串——实际效果是"没有任何写作契约",而不是安全地按自包含模式跑。现在解析失败
+# 直接硬停(见 run_4stage_with_progress 里的 OutlineRouteError 分支)。
+from .outline import (
+    FULL, SINGLE, CROSS_CHAPTER_STATE, XCHAP_HEADINGS,
+    OutlineRouteError,
+    build_outline_excerpt, build_mode_clause, build_mode_review_clause,
+    resolve_write_mode, read_brief_fingerprint, chapter_fingerprint,
+)
 
 # Project-local reference index (config points it at this project's references/,
 # not the survey's). Kept as a module global for build_reference_excerpt.
@@ -59,6 +69,68 @@ VERIFY_JSON_SCHEMA_HINT = """{
   "all_resolved": true or false,
   "items": [{"id": "MF1", "resolved": true or false, "note": "how it was resolved, or what is still missing"}]
 }"""
+
+# ── context-pack 路由指纹 ────────────────────────────────────────────────
+# context-pack.md 的内容完全由 route 决定(family 决定 idea/结果表谁在前、谁标
+# PRIMARY)。断点续跑会复用已存在的产物,所以改了 brief.md 的 `type:` 之后,旧的
+# pack 会被继续喂给 Agent——方法章拿到的是结果章的证据排序。原先靠"记得手动删
+# context-pack.md"这条人为纪律来防,这里改成代码保证:把 route 指纹写进 pack 的
+# 首行,复用前先比对,不一致就重建。
+_PACK_FINGERPRINT_PREFIX = "<!-- route-fingerprint: "
+_PACK_FINGERPRINT_RE = re.compile(r"^<!--\s*route-fingerprint:\s*(.*?)\s*-->\s*$")
+
+
+def pack_fingerprint(route: dict, write_mode: str = "") -> str:
+    """把决定 pack 内容的 route 字段压成一行可比对的指纹。
+
+    只取真正影响 pack 排序与标注的三个字段:type / family / gate。小节级类型也
+    纳入,因为整篇 brief 改了某一节的 `- type:` 同样会改变 family 的并集结果。
+
+    write_mode(FULL/SINGLE)也必须纳入:手建的单章后来被补进 outline.md,证据
+    路由一个字都没变,但写作契约从"自包含"翻成"整篇第 N 章"——已经落盘的 plan、
+    各 part、review 全是按自包含写的,断点续跑会把它们原样复用。
+    """
+    section_types = route.get("section_types") or {}
+    sections = ",".join(f"{n}:{t}" for n, t in sorted(section_types.items()))
+    return (f"type={route.get('type', 'unknown')} "
+            f"family={route.get('family', MIXED)} "
+            f"gate={route.get('gate', ADVISORY)}"
+            + (f" write_mode={write_mode}" if write_mode else "")
+            + (f" sections={sections}" if sections else ""))
+
+
+def read_pack_fingerprint(pack_path: str):
+    """读出已有 context-pack.md 的指纹。
+
+    返回值区分三种状态,不能压成同一个空串:
+
+    * ``None``  — pack 不存在。真正的首跑,没有任何下游产物需要担心。
+    * ``""``    — pack 存在但读不出有效指纹:加指纹机制之前生成的旧产物、首行
+                  被改坏、或读取失败。此时**无法证明**路由没变,而下游产物是否
+                  按当前路由生成同样无法证明,所以必须按"可能已变"处理并报警。
+    * 指纹串    — 正常情况,直接与当前 route 比对。
+
+    早先把这三种都返回 "" 是个真实的漏报:`bool(have)` 对旧版产物为假,于是从旧版
+    升级后的第一次运行会静默复用旧路由的 evidence-pack / plan / review——正是这套
+    指纹机制要防的那个场景。
+    """
+    path = Path(pack_path)
+    if not path.is_file():
+        return None
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            first_line = handle.readline()
+    except OSError:
+        return ""
+    match = _PACK_FINGERPRINT_RE.match(first_line.strip())
+    return match.group(1) if match else ""
+
+
+def stamp_pack_fingerprint(pack_text: str, route: dict,
+                           write_mode: str = "") -> str:
+    """在 pack 正文前加一行 HTML 注释指纹(Markdown 渲染时不可见)。"""
+    fingerprint = pack_fingerprint(route, write_mode)
+    return f"{_PACK_FINGERPRINT_PREFIX}{fingerprint} -->\n{pack_text}"
 
 
 def display_path(path: str) -> str:
@@ -161,8 +233,8 @@ def build_reference_excerpt(chapter: str) -> str:
     if not REFERENCE_INDEX_PATH.exists():
         return (
             f"# Reference index excerpt for {chapter}\n"
-            f"(No reference index at {REFERENCE_INDEX_PATH.name}; "
-            f"run generate_reference_index.py or work notes-free.)\n"
+            f"(No reference index at {REFERENCE_INDEX_PATH.name}. This project "
+            f"cites from references/bibliography.md instead; work notes-free.)\n"
             f"Use search_references(query, chapter) only if an index exists.\n"
         )
     lines = REFERENCE_INDEX_PATH.read_text(encoding="utf-8").splitlines()
@@ -183,7 +255,7 @@ def build_reference_excerpt(chapter: str) -> str:
         f"Rows: {len(rows)} of {total}",
         "",
         "Evidence grades: A=peer-reviewed, B=arXiv/preprint, C=technical report/system card, D=blog/model card, E=third-party/weak source.",
-        "Do not read paper/references/index.md directly; use this excerpt or bounded search_references for additional lookup.",
+        "Do not read references/index.md directly; use this excerpt or bounded search_references for additional lookup.",
         "",
         "| ID | Title | Year | Evidence | Primary Chapter | Also Relevant To | Paradigm Tags | Key Use | Note Path | Full Text Path |",
         "|---|---|---:|:---:|---|---|---|---|---|---|",
@@ -214,17 +286,26 @@ def parse_brief_sections(folder_path: str) -> list[dict]:
 
 
 def build_stage1_parts(sections: list[dict]) -> list[dict]:
-    titles = [section["title"].lower() for section in sections]
-    is_alignment = any("rlvr" in title for title in titles) and any("constitutional" in title for title in titles)
-    if len(sections) >= 6 and is_alignment:
-        groups = [[sections[0]], [sections[1], sections[3]], [sections[2], *sections[4:]]]
-    elif len(sections) >= 6:
+    """把小节分成起草段。段数随小节数自适应,最多三段。
+
+    分组只依据小节数量,不做任何按标题的特例判断。此前从 survey 引擎继承来一个
+    Alignment 章特例(含 "rlvr" + "constitutional" 小节时改用异常分组),对实验型
+    论文没有意义,只会在小节命名恰好命中时把边界打乱,已删除。
+
+    段数不再固定为三:逐章模式下 Abstract 这类章只有 1-2 个小节,硬凑三段会生出
+    "Chapter part 2/3" 这种没有来源的空段,并给它们 700 词的目标——150 词的摘要
+    因此被要求写成两千词。段数 = min(小节数, 3),没有小节时退回单段。
+    """
+    count = len(sections)
+    if count >= 6:
         groups = [sections[:2], sections[2:4], sections[4:]]
-    elif len(sections) >= 3:
-        size = (len(sections) + 2) // 3
+    elif count >= 3:
+        size = (count + 2) // 3
         groups = [sections[:size], sections[size:size * 2], sections[size * 2:]]
+    elif count:
+        groups = [[section] for section in sections]   # 1 或 2 个小节 → 1 或 2 段
     else:
-        groups = [sections, [], []]
+        groups = [[]]  # brief 没解析出小节,单段兜底(调用方会警告)
 
     parts = []
     for index, group in enumerate(groups, start=1):
@@ -266,10 +347,17 @@ def part_family(part: dict, route: dict) -> str:
 
 
 def format_stage1_parts(parts: list[dict]) -> str:
+    """把段边界渲染成规划提示词里的一段说明。
+
+    字数区间按比例放宽,不用固定的 ±词数。原先是 `max(300, target-100)` 到
+    `target+150`:那个 300 下限是照 survey 章节(每段 700+ 词)定的,用在逐章模式下
+    一个 150 词的摘要上会被抬成 "300-300 words" —— 目标翻倍,区间还塌成一个点。
+    """
     blocks = []
     for part in parts:
-        lower = max(300, part["target_words"] - 100)
-        upper = part["target_words"] + 150
+        target = max(1, part["target_words"])
+        lower = max(60, int(target * 0.85))
+        upper = max(lower + 40, int(target * 1.2) + 30)
         blocks.append(
             f"Part {part['index']} -> {part['output']}\n"
             f"Target length: {lower}-{upper} words\n"
@@ -278,10 +366,15 @@ def format_stage1_parts(parts: list[dict]) -> str:
     return "\n\n".join(blocks)
 
 
-def concatenate_stage1_parts(folder_path: str) -> None:
+def concatenate_stage1_parts(folder_path: str, part_count: int = 3) -> None:
+    """把本次实际产出的 part 拼成 draft-v1.md。
+
+    part_count 必须传本次运行的段数:段数自适应之后,上一次跑三段留下的
+    draft-v1.part-3.md 若被无条件拼进来,这一次两段的草稿会多出一截旧内容。
+    """
     folder = Path(folder_path)
     chunks = []
-    for index in range(1, 4):
+    for index in range(1, max(1, part_count) + 1):
         part_path = folder / f"draft-v1.part-{index}.md"
         if part_path.exists():
             chunks.append(part_path.read_text(encoding="utf-8").strip())
@@ -404,7 +497,7 @@ def _escalate_unresolved(folder_path: str, rounds: int) -> None:
 
 def run_convergence_loop(draft_agent, review_agent, folder_path, folder_rel,
                          reference_excerpt, cross, structure,
-                         run_agent_stage, verify):
+                         run_agent_stage, verify, mode_clause: str = ""):
     """Freeze the first review's MUST FIX list as an acceptance checklist, then
     iterate revise -> verify up to MAX_REVISION_ROUNDS. Each verify round re-checks
     ONLY the frozen checklist (no new issues). Stop when every frozen item is
@@ -412,7 +505,11 @@ def run_convergence_loop(draft_agent, review_agent, folder_path, folder_rel,
 
     run_agent_stage and verify are passed in from run_4stage_with_progress (they
     carry that call's closure state). Every round's artifacts are round-numbered so
-    a crashed run resumes instead of restarting. Returns the last draft result."""
+    a crashed run resumes instead of restarting. Returns the last draft result.
+
+    mode_clause 是 FULL/SINGLE 写作契约。修订轮同样要带上它:收敛循环会重写整篇
+    草稿,不带这段的话,自包含单章在第 2 轮就可能被补上"承接上一章"的过渡句——
+    而那正是首轮已经按 SINGLE 规则清掉的东西。"""
     review = read_json_artifact(folder_path, "review-v1.json")
     frozen = review.get("must_fix", []) if isinstance(review, dict) else None
 
@@ -422,7 +519,8 @@ def run_convergence_loop(draft_agent, review_agent, folder_path, folder_rel,
         set_agent_context("Draft")
         result = run_agent_stage(draft_agent, "Draft", (
             f"Read brief.md, input.md, draft-v1.md, review-v1.md from '{folder_path}'. "
-            f"Also read '{cross}' and '{structure}'. Do not read paper/references/index.md directly; use the filtered reference excerpt below. "
+            f"Also read '{cross}' and '{structure}'. Do not read references/index.md directly; use the filtered reference excerpt below. "
+            f"{mode_clause}"
             f"Address ALL 'MUST FIX' items. Write '{folder_path}/draft-v2.md' and '{folder_path}/todo.md'. "
             f"If major rewrite, also write '{folder_path}/decision.md'.\n\n{reference_excerpt}"
         ))
@@ -434,7 +532,8 @@ def run_convergence_loop(draft_agent, review_agent, folder_path, folder_rel,
         set_agent_context("Draft")
         result = run_agent_stage(draft_agent, "Draft", (
             f"Read brief.md, input.md, draft-v1.md, review-v1.md from '{folder_path}'. "
-            f"Also read '{cross}' and '{structure}'. Do not read paper/references/index.md directly; use the filtered reference excerpt below. "
+            f"Also read '{cross}' and '{structure}'. Do not read references/index.md directly; use the filtered reference excerpt below. "
+            f"{mode_clause}"
             f"There are no MUST FIX items. Address SHOULD FIX items where supported by evidence, "
             f"then write a clean '{folder_path}/draft-v2.md' and '{folder_path}/todo.md'.\n\n{reference_excerpt}"
         ))
@@ -456,7 +555,8 @@ def run_convergence_loop(draft_agent, review_agent, folder_path, folder_rel,
             set_agent_context("Draft")
             last_result = run_agent_stage(draft_agent, "Draft", (
                 f"Read brief.md, input.md, {prev_draft}, review-v1.md from '{folder_path}'. "
-                f"Also read '{cross}' and '{structure}'. Do not read paper/references/index.md directly; use the filtered reference excerpt below.\n\n"
+                f"Also read '{cross}' and '{structure}'. Do not read references/index.md directly; use the filtered reference excerpt below.\n\n"
+                f"{mode_clause}"
                 f"Resolve EVERY item in this frozen acceptance checklist (JSON):\n{checklist_text}\n\n"
                 f"Make the concrete change at each item's location. Preserve everything already correct — "
                 f"do not rewrite unaffected paragraphs. Write the full revised draft to '{folder_path}/{draft_round}'.\n\n"
@@ -471,7 +571,7 @@ def run_convergence_loop(draft_agent, review_agent, folder_path, folder_rel,
         if not os.path.exists(os.path.join(folder_path, verdict_round)):
             set_agent_context("Review")
             run_agent_stage(review_agent, "Review", (
-                f"Read {draft_round} and brief.md from '{folder_path}'. Do not read paper/references/index.md directly; use the filtered reference excerpt below.\n\n"
+                f"Read {draft_round} and brief.md from '{folder_path}'. Do not read references/index.md directly; use the filtered reference excerpt below.\n\n"
                 f"VERIFY mode: check ONLY whether each item in this frozen checklist is now resolved in {draft_round}. "
                 f"Do NOT raise new issues.\n{checklist_text}\n\n"
                 f"Write '{folder_path}/{verdict_round}' with EXACTLY this schema (valid JSON only):\n"
@@ -617,7 +717,165 @@ def build_review_routing_clause(route: dict) -> str:
     return clause + "\n\n"
 
 
+# 内容随路由变化的下游产物,按流水线顺序排列。context-pack.md 每次运行都会按
+# 指纹重建,所以它自己不会陈旧;真正的陷阱在它下游:evidence-pack.md(提问视角随
+# family 变)、draft-v1.plan.md 与各 part(路由子句随 family 变)、number-check.md
+# (严格度随 gate 变)、review-v1.*(判据随 family 变)都带"存在即跳过"的断点续跑
+# 逻辑。改完 `type:` 直接重跑,这些文件会以旧路由的身份被静默复用——方法章于是
+# 拿着结果章的证据包继续写,而流水线全程显示"成功"。
+# todo.md / decision.md 不在清单内:可能含人工手写内容。
+ROUTE_DEPENDENT_ARTIFACTS = [
+    "evidence-pack.md",
+    "draft-v1.plan.md",
+    "draft-v1.part-1.md", "draft-v1.part-2.md", "draft-v1.part-3.md",
+    "draft-v1.md",
+    "number-check.md",
+    "review-v1.md", "review-v1.json",
+    "citation-insertions.md",
+    "draft-v2.md",
+    "final.md", "final.zh.md",
+    "number-check-final.md",
+]
+# 收敛循环的轮次产物:orchestrator 对它们也有"存在即跳过"的逻辑,路由变了同样
+# 会被静默复用,甚至把旧路由的 round draft 提升为 draft-v2.md。数量不固定,用 glob。
+ROUTE_DEPENDENT_ARTIFACT_GLOBS = [
+    "draft-v2.round-*.md",
+    "review-verify.round-*.json",
+]
+
+
+def warn_stale_route_artifacts(folder_path: str, folder_rel: str,
+                               old_fingerprint, new_fingerprint: str) -> list[str]:
+    """路由变了就报警,并列出仍留在盘上的旧路由产物。返回陈旧文件名列表。
+
+    old_fingerprint 可以是:
+    * 正常指纹串 — 正常路由变更
+    * ""          — pack 存在但无有效指纹(旧版/损坏/读取失败),无法证明未变
+    * None        — pack 不存在,通常是首跑,不应调到这里
+
+    只提示不删除:这些产物是真金白银的 token 换来的,是否作废由使用者决定。
+    """
+    folder = Path(folder_path)
+    stale = [name for name in ROUTE_DEPENDENT_ARTIFACTS
+             if (folder / name).exists()]
+    for pattern in ROUTE_DEPENDENT_ARTIFACT_GLOBS:
+        stale.extend(p.name for p in sorted(folder.glob(pattern)) if p.is_file())
+
+    old_label = (old_fingerprint if old_fingerprint
+                 else "(无有效指纹:旧版产物/损坏/读取失败)")
+    print(f"[Manager  ] route-chg  | brief.md 的路由已改变:", flush=True)
+    print(f"[Manager  ] route-chg  |   旧: {old_label}", flush=True)
+    print(f"[Manager  ] route-chg  |   新: {new_fingerprint}", flush=True)
+    if not stale:
+        print(f"[Manager  ] route-chg  | 无陈旧产物,本次将按新路由完整重跑。", flush=True)
+        return stale
+    print(f"[Manager  ] STALE      | 下列产物按旧路由生成,断点续跑会直接复用:", flush=True)
+    for name in stale:
+        print(f"[Manager  ] STALE      |   {folder_rel}/{name}", flush=True)
+    print(f"[Manager  ] STALE      | 想按新路由重写,请先删除上述文件再重跑;"
+          f"想保留就当心它们的证据来源与判据仍是旧类型的。", flush=True)
+    return stale
+
+
+def run_agent_stage_standalone(agent, agent_name: str, prompt: str,
+                               attempts: int = 3):
+    """在流水线之外跑一次 Agent(如 `--expand` 的 outline 展开)。
+
+    与流水线内的 run_agent_stage 同样带重试与进度过滤,但不依赖章节工作区的闭包
+    变量。重试次数默认少一次:这一步没有已落盘的产物要保护,失败重跑一条命令就行。
+    """
+    last_error = None
+    for attempt in range(1, attempts + 1):
+        print(f"[{agent_name:<8.8}] running    | model request in progress "
+              f"(attempt {attempt}/{attempts})", flush=True)
+        try:
+            seen_progress = set()
+            events = []
+            visible_stdout = os.sys.stdout
+            filtered = ProgressFilteringStdout(agent_name, seen_progress, visible_stdout)
+            with contextlib.redirect_stdout(filtered):
+                try:
+                    stream = agent.run(prompt, stream=True)
+                except TypeError:
+                    return agent.run(prompt)
+                for event in stream:
+                    events.append(event)
+                    content = getattr(event, "content", None)
+                    if content is not None:
+                        print_stream_progress(content, seen_progress, agent_name,
+                                              visible_stdout)
+            return events[-1] if events else None
+        except Exception as exc:
+            last_error = exc
+            error_text = " ".join(str(exc).split())[:260]
+            if attempt >= attempts:
+                print(f"[{agent_name:<8.8}] failed     | "
+                      f"{type(exc).__name__}: {error_text}", flush=True)
+                return {"error": error_text, "exception_type": type(exc).__name__}
+            label = ("transient API/network error"
+                     if TRANSIENT_ERROR_RE.search(str(exc))
+                     else type(exc).__name__)
+            print(f"[{agent_name:<8.8}] retry      | {label}: {error_text}", flush=True)
+    return {"error": str(last_error)[:260] if last_error else "unknown error"}
+
+
+def cross_chapter_state_has_claim(text: str, chapter: str) -> bool:
+    """跨章状态结构完好,且本章在 **Key Claims 小节内**有 Stage 5 标记。
+
+    必须限定在小节内:文件顶部有一份章节顺序清单,里面本来就写着每个文件夹名。
+    全文搜 `- [<章名>] ` 会把那份清单当成交接凭证,于是 Stage 5 完全没跑也判成
+    成功——这套校验存在的意义就没了。
+    """
+    starts = []
+    for heading in XCHAP_HEADINGS:
+        if text.count(heading) != 1:
+            return False
+        starts.append(text.index(heading))
+    if starts != sorted(starts):
+        return False
+    claims = text[starts[1] + len(XCHAP_HEADINGS[1]):starts[2]]
+    return f"- [{chapter}] " in claims
+
+
+def cross_chapter_state_preserves_others(before: str, after: str,
+                                         chapter: str) -> bool:
+    """Stage 5 的候选文件有没有动到**别的章**。
+
+    只允许两种改动:增删本章自己的 `- [<本章>] ` 条目,以及在小节内插入新行。前几章
+    积累的术语约定是后续每一章对齐的唯一依据,被静默删掉时下游全部各写一套,而
+    Stage 5 自己会显示成功——所以判据是"旧内容的每一行都还在",不是"行数没变少"。
+
+    比较时忽略空行:Agent 重排小节内的空行是无害的格式变化,拿它当失败会让这道
+    校验频繁误报,最后只能被关掉。
+    """
+    prefix = f"- [{chapter}] "
+
+    def meaningful(text: str) -> list[str]:
+        return [line for line in text.splitlines()
+                if line.strip() and not line.startswith(prefix)]
+
+    kept = meaningful(after)
+    # 逐行判存在而不是整表相等:允许在中间插入本章的新条目,不允许旧行消失或被改写。
+    return all(line in kept for line in meaningful(before))
+
+
+def _assert_survey_mode(fn_name: str) -> None:
+    """在非 survey 模式下调用 survey 专用路径时给出明确提示并中止。
+
+    run.py 已在入口层拦截 experiment 模式下的非 --progress 调用，这里是第二道
+    防线：防止将来有代码绕过 run.py 直接调用这些函数，导致 Agent 读取本项目里
+    不存在的 `paper/00 Background & Example/` 目录而静默失败。
+    """
+    if PAPER_MODE != "survey":
+        raise RuntimeError(
+            f"{fn_name}() is for PAPER_MODE=survey only. "
+            f"Current mode is '{PAPER_MODE}'. "
+            f"Use run_4stage_with_progress() in experiment mode."
+        )
+
+
 def build_4stage_manager_prompt(folder_path: str) -> str:
+    _assert_survey_mode("build_4stage_manager_prompt")
     folder_path = folder_path.replace("\\", "/")
     chapter = chapter_name_from_folder(folder_path)
     reference_excerpt = build_reference_excerpt(chapter)
@@ -628,7 +886,7 @@ Before starting, note the cross-chapter context files:
 - paper/00 Background & Example/cross-chapter-state.md (read for terminology and prior chapter summaries)
 - paper/01 Structure/final.md (read for the paper's logic line)
 - filtered reference excerpt below (use for primary and cross-chapter literature reuse)
-- Do not read paper/references/index.md directly; call search_references(query, chapter) only for bounded lookup.
+- Do not read references/index.md directly; call search_references(query, chapter) only for bounded lookup.
 
 Terminal output rules:
 - Print concise progress only, with an explicit owner prefix and relative paths: `[Manager] Stage 1/4 | Calling draft_agent`, `[Manager] Tool      | read_file -> paper/...`, `[Manager] Tool      | write_file -> paper/...`, and `[Manager] Verify    | draft-v1.md exists`.
@@ -636,16 +894,16 @@ Terminal output rules:
 - Let sub-agents write content to files; summarize only file names and status in terminal output.
 
 Stage 1 - Draft:
-  Call draft_agent with task: "Read brief.md, input.md, and cross-chapter context from '{folder_path}'. Also read 'paper/00 Background & Example/cross-chapter-state.md' and 'paper/01 Structure/final.md'. Use the filtered reference excerpt injected below to identify primary and cross-chapter papers, then open listed Note Path files only when needed. Do not read paper/references/index.md directly. Write a complete academic draft to '{folder_path}/draft-v1.md' and '{folder_path}/todo.md'."
+  Call draft_agent with task: "Read brief.md, input.md, and cross-chapter context from '{folder_path}'. Also read 'paper/00 Background & Example/cross-chapter-state.md' and 'paper/01 Structure/final.md'. Use the filtered reference excerpt injected below to identify primary and cross-chapter papers, then open listed Note Path files only when needed. Do not read references/index.md directly. Write a complete academic draft to '{folder_path}/draft-v1.md' and '{folder_path}/todo.md'."
 
 Stage 2 - Review:
-  Call review_agent with task: "Read draft-v1.md, brief.md, and input.md from '{folder_path}'. Also read 'paper/00 Background & Example/cross-chapter-state.md' and 'paper/01 Structure/final.md'. Use the filtered reference excerpt injected below to check whether important primary or cross-chapter references were missed. Do not read paper/references/index.md directly. Write a detailed review to '{folder_path}/review-v1.md' and '{folder_path}/todo.md'. Categorize issues as MUST FIX / SHOULD FIX / CONSIDER."
+  Call review_agent with task: "Read draft-v1.md, brief.md, and input.md from '{folder_path}'. Also read 'paper/00 Background & Example/cross-chapter-state.md' and 'paper/01 Structure/final.md'. Use the filtered reference excerpt injected below to check whether important primary or cross-chapter references were missed. Do not read references/index.md directly. Write a detailed review to '{folder_path}/review-v1.md' and '{folder_path}/todo.md'. Categorize issues as MUST FIX / SHOULD FIX / CONSIDER."
 
 Stage 3 - Revise:
-  Call draft_agent with task: "Read brief.md, input.md, draft-v1.md, and review-v1.md from '{folder_path}'. Also read 'paper/00 Background & Example/cross-chapter-state.md' and 'paper/01 Structure/final.md'. Use the filtered reference excerpt injected below. Do not read paper/references/index.md directly. Address ALL 'MUST FIX' items, including missing reference reuse when supported by notes. Write improved draft to '{folder_path}/draft-v2.md' and '{folder_path}/todo.md'. If major rewrite, also write '{folder_path}/decision.md'."
+  Call draft_agent with task: "Read brief.md, input.md, draft-v1.md, and review-v1.md from '{folder_path}'. Also read 'paper/00 Background & Example/cross-chapter-state.md' and 'paper/01 Structure/final.md'. Use the filtered reference excerpt injected below. Do not read references/index.md directly. Address ALL 'MUST FIX' items, including missing reference reuse when supported by notes. Write improved draft to '{folder_path}/draft-v2.md' and '{folder_path}/todo.md'. If major rewrite, also write '{folder_path}/decision.md'."
 
 Stage 4 - Finalize:
-  Call review_agent with task: "Read draft-v1.md, draft-v2.md, review-v1.md, brief.md, and input.md from '{folder_path}'. Also read 'paper/00 Background & Example/cross-chapter-state.md' and 'paper/01 Structure/final.md'. Use the filtered reference excerpt injected below. Do not read paper/references/index.md directly. Merge the best parts of both drafts, resolving all issues and preserving valid cross-chapter reference reuse. Write '{folder_path}/final.md' as the English publication-ready version, '{folder_path}/final.zh.md' as a Chinese reading/review version for the user, '{folder_path}/decision.md' (explaining what was kept/dropped), and '{folder_path}/todo.md' (remaining issues)."
+  Call review_agent with task: "Read draft-v1.md, draft-v2.md, review-v1.md, brief.md, and input.md from '{folder_path}'. Also read 'paper/00 Background & Example/cross-chapter-state.md' and 'paper/01 Structure/final.md'. Use the filtered reference excerpt injected below. Do not read references/index.md directly. Merge the best parts of both drafts, resolving all issues and preserving valid cross-chapter reference reuse. Write '{folder_path}/final.md' as the English publication-ready version, '{folder_path}/final.zh.md' as a Chinese reading/review version for the user, '{folder_path}/decision.md' (explaining what was kept/dropped), and '{folder_path}/todo.md' (remaining issues)."
 
 After each stage, call list_folder on '{folder_path}' to verify the output files exist.
 After Stage 4 completes, read '{folder_path}/final.md' and '{folder_path}/todo.md', then update 'paper/00 Background & Example/cross-chapter-state.md' with new terminology decisions, a one-sentence chapter summary, and any unresolved cross-chapter issues.
@@ -662,11 +920,15 @@ def run_4stage_via_manager(manager_agent, folder_path: str) -> str:
 
     The manager generates Python code to call draft_agent and review_agent
     in sequence, verifying outputs at each stage.
+
+    survey 专用 — experiment 模式请使用 run_4stage_with_progress()。
     """
+    _assert_survey_mode("run_4stage_via_manager")
     return manager_agent.run(build_4stage_manager_prompt(folder_path))
 
 
 def run_4stage_via_manager_stream(manager_agent, folder_path: str, raw: bool = False) -> list:
+    _assert_survey_mode("run_4stage_via_manager_stream")
     events = []
     seen_progress = set()
     for event in manager_agent.run(build_4stage_manager_prompt(folder_path), stream=True):
@@ -689,7 +951,10 @@ def run_4stage_direct(draft_agent, review_agent, folder_path: str) -> dict:
     Calls sub-agents sequentially without the Manager Agent.
     More predictable but less flexible.
     Note: cross-chapter-state.md update must be done manually after this completes.
+
+    ⚠️  Survey mode only — experiment mode must use run_4stage_with_progress().
     """
+    _assert_survey_mode("run_4stage_direct")
     folder_path = folder_path.replace("\\", "/")
     results = {}
 
@@ -701,7 +966,7 @@ def run_4stage_direct(draft_agent, review_agent, folder_path: str) -> dict:
     print(f"\n[Stage 1/4] Drafting v1...")
     results["stage1_draft"] = draft_agent.run(
         f"Read brief.md and input.md from '{folder_path}'. "
-        f"Also read '{cross_chapter}' and '{structure}'. Do not read paper/references/index.md directly; use the filtered reference excerpt below. "
+        f"Also read '{cross_chapter}' and '{structure}'. Do not read references/index.md directly; use the filtered reference excerpt below. "
         f"Write a complete academic draft to '{folder_path}/draft-v1.md' "
         f"and '{folder_path}/todo.md' listing known gaps.\n\n"
         f"{reference_excerpt}"
@@ -714,7 +979,7 @@ def run_4stage_direct(draft_agent, review_agent, folder_path: str) -> dict:
     print(f"\n[Stage 2/4] Reviewing v1...")
     results["stage2_review"] = review_agent.run(
         f"Read draft-v1.md and brief.md from '{folder_path}'. "
-        f"Also read '{cross_chapter}' and '{structure}'. Do not read paper/references/index.md directly; use the filtered reference excerpt below for terminology consistency and missing reference reuse. "
+        f"Also read '{cross_chapter}' and '{structure}'. Do not read references/index.md directly; use the filtered reference excerpt below for terminology consistency and missing reference reuse. "
         f"Write a detailed review to '{folder_path}/review-v1.md' and '{folder_path}/todo.md'. "
         f"Categorize issues as MUST FIX / SHOULD FIX / CONSIDER.\n\n"
         f"{reference_excerpt}"
@@ -727,7 +992,7 @@ def run_4stage_direct(draft_agent, review_agent, folder_path: str) -> dict:
     print(f"\n[Stage 3/4] Revising (draft v2)...")
     results["stage3_revise"] = draft_agent.run(
         f"Read brief.md, input.md, draft-v1.md, and review-v1.md from '{folder_path}'. "
-        f"Also read '{cross_chapter}' and '{structure}'. Do not read paper/references/index.md directly; use the filtered reference excerpt below. "
+        f"Also read '{cross_chapter}' and '{structure}'. Do not read references/index.md directly; use the filtered reference excerpt below. "
         f"Address ALL 'MUST FIX' items from the review. "
         f"Write improved draft to '{folder_path}/draft-v2.md' and '{folder_path}/todo.md'. "
         f"If this is a major rewrite, also write '{folder_path}/decision.md' explaining trade-offs.\n\n"
@@ -741,7 +1006,7 @@ def run_4stage_direct(draft_agent, review_agent, folder_path: str) -> dict:
     print(f"\n[Stage 4/4] Finalizing...")
     results["stage4_final"] = review_agent.run(
         f"Read draft-v1.md, draft-v2.md, review-v1.md, brief.md, and input.md from '{folder_path}'. "
-        f"Also read '{cross_chapter}' and '{structure}'. Do not read paper/references/index.md directly; use the filtered reference excerpt below. "
+        f"Also read '{cross_chapter}' and '{structure}'. Do not read references/index.md directly; use the filtered reference excerpt below. "
         f"Merge the best parts of both drafts, resolving all issues. "
         f"Write '{folder_path}/final.md' as the English publication-ready version, "
         f"'{folder_path}/final.zh.md' as a Chinese reading/review version for the user, "
@@ -850,30 +1115,129 @@ def run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manage
             except Exception as exc:
                 print(f"[Manager  ] notice     | pre-flight results check skipped: "
                       f"{str(exc)[:160]}", flush=True)
+        # ── 两条写作路由 ────────────────────────────────────────────
+        # FULL(整篇):文件夹来自 outline.md,有邻章、有跨章状态,符号沿用前章。
+        # SINGLE(逐章):手建文件夹,outline 里没有它,本章必须自包含、禁止跨章过渡。
+        # 判据是"这个文件夹在不在 outline.md 里",而不是命令行怎么写的:同一个
+        # 文件夹用 --all 还是单章命令跑,写作契约都该一样。
+        #
+        # 必须在 context-pack 之前解析:write_mode 进指纹,而 pack 与其下游产物都
+        # 带"存在即跳过"。解析失败不能退回"空的 mode_clause"——那等于两种模式都
+        # 不下指令,是比任何一种模式都糟的第三种行为,所以这里直接停。
+        xchap = os.path.join(str(Path(folder_path).parent), CROSS_CHAPTER_STATE)
+        try:
+            info = resolve_write_mode(chapter)
+        except (OutlineRouteError, OSError) as exc:
+            print(f"[Manager  ] FAIL      | 无法确定写作路由: {exc}", flush=True)
+            print(f"[Manager  ] FAIL      | 修好 outline.md 再重跑;"
+                  f"不确定是整篇还是逐章时,任何一种指令都可能是错的。", flush=True)
+            return results
+
+        write_mode = info["mode"]
+        mode_clause = build_mode_clause(chapter, cross_chapter_path=xchap)
+        mode_review_clause = build_mode_review_clause(
+            chapter, cross_chapter_path=xchap)
+        # 邻章视野只在 FULL 下有意义,也只给规划者:它需要知道前后章覆盖什么
+        # 才能划清边界。有界——三章的标题与小节清单,不含要点正文,整篇 outline
+        # 不进任何 Agent 的上下文。
+        outline_clause = build_outline_excerpt(chapter)
+        cross_xchap_hint = ""
+        if write_mode == FULL and os.path.exists(xchap):
+            cross_xchap_hint = (
+                f"\nAlso read '{xchap}': it holds the terminology decisions and "
+                f"key claims of the chapters already written. Reuse those "
+                f"definitions verbatim instead of coining new ones.\n")
+        detail = (f"整篇第 {info['position']}/{info['total']} 章,可跨章引用"
+                  if write_mode == FULL else
+                  "自包含单章,术语本章自定义、禁止跨章过渡句")
+        print(f"[Manager  ] write-mode | {write_mode} — {detail}", flush=True)
+        # brief.md 的来源必须与路由一致。三种不一致全部硬停而不是报警继续:
+        # 报警继续意味着这一次就用相反的写作契约生成正文,而且下一次运行指纹已被
+        # 覆盖、警告不再出现,错误产物从此静默传递下去。硬停不删任何文件。
+        brief_fp = read_brief_fingerprint(os.path.join(folder_path, "brief.md"))
+        if write_mode == FULL and not brief_fp:
+            results["route_blocked"] = "FULL chapter has a handwritten brief"
+            print(f"[Manager  ] FAIL      | '{chapter}' 在 outline.md 里(整篇第 "
+                  f"{info['position']} 章),但 brief.md 不是 --init 生成的版本", flush=True)
+            print(f"[Manager  ] FAIL      | 手写 brief 没有章序号与结构约定,"
+                  f"按整篇跑会写出错的衔接。先跑 `python run.py --init --force`", flush=True)
+            return results
+        if write_mode == FULL and chapter_fingerprint(info["chapter"]) != brief_fp:
+            results["route_blocked"] = "brief is stale against outline"
+            print(f"[Manager  ] FAIL      | outline.md 已改动,但本章 brief.md 还是旧版本",
+                  flush=True)
+            print(f"[Manager  ] FAIL      | 继续跑用的是旧章节规格。"
+                  f"跑 `python run.py --init --force` 刷新后重试", flush=True)
+            return results
+        if write_mode == SINGLE and brief_fp:
+            # 带生成指纹却不在当前 outline 里:大概率是改了章标题导致文件夹改名。
+            # 按 SINGLE 继续跑,会拿着按整篇写出来的旧草稿套自包含约束——两套要求
+            # 相反,而且这一章的产物永远进不了整篇。
+            results["route_blocked"] = "generated brief is absent from current outline"
+            print(f"[Manager  ] FAIL      | '{chapter}' 的 brief.md 是 --init 生成的,"
+                  f"但当前 outline.md 里没有这个文件夹", flush=True)
+            print(f"[Manager  ] FAIL      | 大概率是改了章标题导致文件夹改名。"
+                  f"改回标题、或把 input.md 迁到新目录后 `--init`;"
+                  f"确实要按逐章写,请删掉 brief.md 首行的 outline 指纹", flush=True)
+            return results
+        if write_mode == FULL and not os.path.isfile(xchap):
+            results["route_blocked"] = "FULL chapter has no cross-chapter state"
+            print(f"[Manager  ] FAIL      | 整篇路由但 {display_path(xchap)} 不存在;"
+                  f"本章无处读取前章术语、也无处写下自己的约定", flush=True)
+            print(f"[Manager  ] FAIL      | 跑 `python run.py --init` 生成它后重试", flush=True)
+            return results
+
         try:
             from .content_source import build_context_pack, content_source_summary
-            context_pack = build_context_pack(chapter, str(DATA_ROOT), family=family)
             pack_path = os.path.join(folder_path, "context-pack.md")
-            Path(pack_path).write_text(context_pack, encoding="utf-8")
+            want = pack_fingerprint(route, write_mode)
+            have = read_pack_fingerprint(pack_path)
+            # read_pack_fingerprint 返回三种值:
+            #   None  — 文件不存在(首跑),无下游产物,直接重建即可
+            #   ""    — 文件存在但无有效指纹(旧版/损坏/读取失败),无法证明路由
+            #           没变过,下游产物同样无法证明有效,必须按"可能已变"报警
+            #   指纹串 — 正常情况,与当前 route 直接比对
+            # 报警必须在 context-pack 重建之前执行:重建失败时仍能列出陈旧产物
+            route_changed = have is not None and have != want
+            if route_changed:
+                stale = warn_stale_route_artifacts(
+                    folder_path, folder_rel, have, want)
+                if stale:
+                    # 一个文件都不删——这些产物是真金白银的 token,留不留由使用者
+                    # 决定。但也绝不能继续:继续会把 pack 指纹覆盖成新路由,警告
+                    # 下一次就不再出现,而旧路由的 plan / part / review / final
+                    # 会被"存在即跳过"静默复用,最后 Stage 5 还会把它们的术语写进
+                    # 跨章状态。报警只有一次机会,这里必须停在报警的那一刻。
+                    results["stale_route_artifacts"] = stale
+                    print(f"[Manager  ] FAIL      | 路由已变,上列产物是按旧路由生成的,"
+                          f"不能在新契约下自动复用。文件全部保留,未做任何删除。", flush=True)
+                    print(f"[Manager  ] FAIL      | 备份需要留的内容、删掉上列生成产物后"
+                          f"重跑;或把路由改回原样。", flush=True)
+                    return results
+            context_pack = build_context_pack(chapter, str(DATA_ROOT), family=family)
+            Path(pack_path).write_text(
+                stamp_pack_fingerprint(context_pack, route, write_mode),
+                encoding="utf-8")
             print(f"[Manager  ] content    | {content_source_summary(family)}", flush=True)
             print(f"[Manager  ] write_file | {folder_rel}/context-pack.md", flush=True)
         except Exception as exc:
-            print(f"[Manager  ] notice     | content pack unavailable: {str(exc)[:160]}", flush=True)
-            pack_path = "context-pack.md"
+            error_text = str(exc)
+            print(f"[Manager  ] FAIL      | content pack unavailable: {error_text[:160]}", flush=True)
+            results["context_pack_error"] = error_text
+            return results
         cross = f"{folder_path}/context-pack.md"
         structure = f"{folder_path}/brief.md"
-        # 逐章模式:如果 workspace/cross-chapter-state.md 存在(前章 Manager 写的),
-        # 提示词会要求 agent 读取它获取前章术语/结论,保证章节衔接。
-        xchap = os.path.join(str(Path(folder_path).parent), "cross-chapter-state.md")
-        cross_xchap_hint = (f"\nAlso read '{xchap}' if it exists — it holds prior chapters' "
-                            "terminology decisions and conclusions for cross-chapter consistency.\n"
-                            if os.path.exists(xchap) else "")
         routing_clause = build_routing_clause(route)
     else:
         cross = "paper/00 Background & Example/cross-chapter-state.md"
         structure = "paper/01 Structure/final.md"
+        write_mode = FULL   # survey 引擎本来就是整篇模式
+        xchap = ""
         cross_xchap_hint = ""
         routing_clause = ""
+        outline_clause = ""
+        mode_clause = ""
+        mode_review_clause = ""
 
     def verify(expected: list[str]) -> bool:
         for name in expected:
@@ -943,9 +1307,13 @@ def run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manage
     # ── Stage 1: Draft ──────────────────────────────────────────────
     # `sections` was parsed above for chapter-type routing; reuse it.
     stage1_parts = build_stage1_parts(sections)
+    part_count = len(stage1_parts)
     stage1_plan = format_stage1_parts(stage1_parts)
     framework = (f"{folder_path}/context-pack.md" if PAPER_MODE == "experiment"
                  else "paper/00 Background & Example/AI大模型综述论文完整框架.md")
+    if not sections:
+        print(f"[Manager  ] WARN       | brief.md 没解析出小节(标题行须形如 "
+              f"`1. **标题** (~250 words)`);退回单段起草", flush=True)
 
     print(f"\n[Manager  ] Stage 1/4  | Draft plan → {folder_rel}/draft-v1.plan.md", flush=True)
     if os.path.exists(os.path.join(folder_path, "draft-v1.plan.md")):
@@ -970,13 +1338,17 @@ def run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manage
             f"{routing_clause}"
             f"{evidence_clause}"
             f"{cross_xchap_hint}"
-            f"Do not read paper/references/index.md directly; use the filtered reference excerpt below. "
-            f"Write a concrete construction plan to '{folder_path}/draft-v1.plan.md' for exactly three draft parts. "
+            f"{mode_clause}"
+            f"{outline_clause}"
+            f"Do not read references/index.md directly; use the filtered reference excerpt below. "
+            f"Write a concrete construction plan to '{folder_path}/draft-v1.plan.md' for exactly "
+            f"{part_count} draft part{'s' if part_count > 1 else ''}. "
             f"Use these Python-fixed part boundaries; do not move sections across parts:\n\n{stage1_plan}\n\n"
             f"Begin the plan with a '## Notation and Terminology Table' that fixes, for the whole chapter: "
             f"the canonical spelling of each key term (pick ONE variant, e.g. 'fine-tuning' not 'finetuning'); "
             f"every abbreviation with its first-use expansion; and any mathematical symbol with its definition. "
-            f"All three parts must obey this table verbatim, so keep it explicit and unambiguous. "
+            f"All {part_count} part{'s' if part_count > 1 else ''} must obey this table verbatim, "
+            f"so keep it explicit and unambiguous. "
             f"For each part, specify target claims, required REF IDs, forbidden overlap, transition role, and output file. "
             f"Also write '{folder_path}/todo.md' for known planning gaps. Do not write draft prose.\n\n"
             f"{reference_excerpt}"
@@ -1014,8 +1386,9 @@ def run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manage
             f"Read brief.md, input.md, and draft-v1.plan.md from '{folder_path}'. "
             f"Also read '{cross}' and '{structure}' only if needed for terminology. "
             f"{build_routing_clause(route, part_family(part, route), part) if PAPER_MODE == 'experiment' else ''}"
+            f"{mode_clause}"
             f"{evidence_draft_clause}"
-            f"Do not read paper/references/index.md directly; use the filtered reference excerpt below. "
+            f"Do not read references/index.md directly; use the filtered reference excerpt below. "
             f"Obey the 'Notation and Terminology Table' in draft-v1.plan.md verbatim: one canonical spelling per term, "
             f"fixed abbreviation expansions, fixed symbol definitions. Never redefine a term or symbol fixed by an earlier part. "
             f"Write only Part {part['index']} to '{folder_path}/{part['output']}'. "
@@ -1030,7 +1403,7 @@ def run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manage
         if not verify([part["output"]]):
             return results
 
-    concatenate_stage1_parts(folder_path)
+    concatenate_stage1_parts(folder_path, len(stage1_parts))
     print(f"[Manager  ] write_file | {folder_rel}/draft-v1.md", flush=True)
     if not verify(["draft-v1.md", "todo.md"]):
         return results
@@ -1092,8 +1465,9 @@ def run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manage
             )
         results["stage2"] = run_agent_stage(review_agent, "Review", (
             f"Read draft-v1.md, brief.md, input.md from '{folder_path}'. "
-            f"Also read '{cross}' and '{structure}'. Do not read paper/references/index.md directly; use the filtered reference excerpt below. "
+            f"Also read '{cross}' and '{structure}'. Do not read references/index.md directly; use the filtered reference excerpt below. "
             f"{build_review_routing_clause(route)}"
+            f"{mode_review_clause}"
             f"{number_check_clause}"
             f"Write a detailed review to '{folder_path}/review-v1.md' and '{folder_path}/todo.md', "
             f"categorizing issues as MUST FIX / SHOULD FIX / CONSIDER.\n\n"
@@ -1169,7 +1543,7 @@ def run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manage
         results["stage3"] = run_convergence_loop(
             draft_agent, review_agent, folder_path, folder_rel,
             reference_excerpt, cross, structure,
-            run_agent_stage, verify,
+            run_agent_stage, verify, mode_clause,
         )
     if not verify(["draft-v2.md"]):
         return results
@@ -1184,7 +1558,8 @@ def run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manage
         set_agent_context("Review")
         results["stage4"] = run_agent_stage(review_agent, "Review", (
             f"Read draft-v1.md, draft-v2.md, review-v1.md, brief.md, input.md from '{folder_path}'. "
-            f"Also read '{cross}' and '{structure}'. Do not read paper/references/index.md directly; use the filtered reference excerpt below. "
+            f"Also read '{cross}' and '{structure}'. Do not read references/index.md directly; use the filtered reference excerpt below. "
+            f"{mode_clause}"
             f"Merge the best parts, resolve all issues. "
             f"Write '{folder_path}/final.md' (English), '{folder_path}/final.zh.md' (Chinese review), "
             f"'{folder_path}/decision.md', and '{folder_path}/todo.md'.\n\n"
@@ -1222,7 +1597,95 @@ def run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manage
         except Exception as exc:
             print(f"[Manager  ] notice     | final number gate skipped: {str(exc)[:160]}", flush=True)
 
+    # ── Stage 5: 更新跨章状态(仅 FULL 路由) ──────────────────────────
+    # 整篇模式下 cross-chapter-state.md 是章节间传递术语与结论的唯一载体:下一章
+    # 的 Agent 靠它拿到"上一章把这个符号定成了什么""哪些结论已经建立"。原先只打印
+    # 一行"记得手动更新"——而漏一次,后面章节的术语就开始漂。
+    #
+    # SINGLE 路由(手建文件夹、outline 里没有这一章)明确跳过:那一章按自包含写的,
+    # 把它的术语写进跨章状态会让后来 --init 的整篇运行继承一份不属于该结构的约定。
+    if PAPER_MODE == "experiment" and all_ok and write_mode == FULL:
+        xchap_path = os.path.join(str(Path(folder_path).parent), CROSS_CHAPTER_STATE)
+        results["stage5_xchap_ok"] = False
+        if os.path.exists(xchap_path):
+            before_text = Path(xchap_path).read_text(encoding="utf-8", errors="replace")
+            candidate_path = os.path.join(folder_path, "stage5-candidate.md")
+            candidate = Path(candidate_path)
+            if candidate.exists():
+                candidate.unlink()
+            print(f"\n[Manager  ] Stage 5/5  | Update cross-chapter state → "
+                  f"{display_path(xchap_path)}", flush=True)
+            set_agent_context("Review")
+            results["stage5_xchap"] = run_agent_stage(review_agent, "Review", (
+                f"Read '{folder_path}/final.md' and '{folder_path}/todo.md', then read "
+                f"'{xchap_path}'.\n\n"
+                f"Prepare the complete updated contents for '{xchap_path}' so the NEXT "
+                f"chapter can stay consistent with this one, but write the result to "
+                f"'{candidate_path}' and do not modify '{xchap_path}'. Upsert THIS chapter's "
+                f"entries in the three existing sections; do not "
+                f"delete other chapters' entries and do not restructure the file. Every "
+                f"bullet you write for this chapter MUST begin exactly `- [{chapter}] `, "
+                f"and you must replace any existing bullets carrying that same prefix so "
+                f"that re-running this stage is idempotent:\n"
+                f"- '## Terminology Decisions': every term whose canonical spelling, "
+                f"abbreviation expansion, or symbol definition this chapter fixed. Take them "
+                f"from the Notation and Terminology Table in draft-v1.plan.md if present.\n"
+                f"- '## Per-Chapter Key Claims': ONE sentence naming what this chapter "
+                f"established.\n"
+                f"- '## Unresolved Cross-Chapter Issues': only items from todo.md that a "
+                f"LATER chapter must resolve or coordinate on. Skip anything local to this "
+                f"chapter.\n\n"
+                f"Keep the three `## ` headings exactly as they are — the pipeline locates "
+                f"the sections by those titles.\n\n"
+                f"Do NOT restate the contribution or the novelty claim — those live in the "
+                f"author's idea.md, which every chapter reads directly; a second copy here "
+                f"would drift. Keep the whole file concise: it is injected into later "
+                f"chapters' prompts, so every line costs context in every subsequent run.\n\n"
+                f"Write the complete updated file to '{candidate_path}' with write_file."
+            ))
+            set_agent_context("Manager")
+            # 验证候选文件,通过了才原子替换。Stage 5 是整篇模式下章节间的唯一交接点:
+            # 它静默失败,后面每一章都会各自另立一套术语,而流水线全程显示 DONE。
+            # 让它写候选文件而不是直接写目标,是因为"它删掉了前几章的条目"这种失败
+            # 只能在写完之后才发现——那时目标文件已经被覆盖,前章的约定找不回来了。
+            if not candidate.is_file():
+                print(f"[Manager  ] FAIL      | Stage 5 没写出 "
+                      f"{display_path(candidate_path)};{CROSS_CHAPTER_STATE} 未更新",
+                      flush=True)
+                print(f"[Manager  ] FAIL      | 下一章将拿不到本章的术语约定;"
+                      f"重跑本章(final.md 已在,只会重跑 Stage 5)", flush=True)
+                all_ok = False
+            else:
+                after_text = candidate.read_text(encoding="utf-8", errors="replace")
+                preserved = cross_chapter_state_preserves_others(
+                    before_text, after_text, chapter)
+                has_claim = cross_chapter_state_has_claim(after_text, chapter)
+                results["stage5_xchap_ok"] = preserved and has_claim
+                if not preserved:
+                    print(f"[Manager  ] FAIL      | Stage 5 改动或删除了其他章节的条目;"
+                          f"{CROSS_CHAPTER_STATE} 未更新,候选结果留在 "
+                          f"{display_path(candidate_path)}", flush=True)
+                elif not has_claim:
+                    print(f"[Manager  ] FAIL      | Stage 5 的候选文件没在 "
+                          f"'{XCHAP_HEADINGS[1]}' 小节里留下 `- [{chapter}] ` 标记,"
+                          f"或破坏了三个 `## ` 标题;{CROSS_CHAPTER_STATE} 未更新",
+                          flush=True)
+                if results["stage5_xchap_ok"]:
+                    os.replace(candidate_path, xchap_path)
+                else:
+                    print(f"[Manager  ] FAIL      | 下一章将拿不到本章的术语约定;"
+                          f"检查 {display_path(candidate_path)} 后重跑本章"
+                          f"(final.md 已在,只会重跑 Stage 5)", flush=True)
+                    all_ok = False
+        else:
+            # 不能只是提示。FULL 路由却没有跨章状态文件 = 这一章的术语约定无处落盘,
+            # 后面每一章都会各自另立一套,而流水线会打印 DONE。
+            print(f"[Manager  ] FAIL      | FULL 路由但 {display_path(xchap_path)} 不存在;"
+                  f"本章的术语约定无处落盘", flush=True)
+            print(f"[Manager  ] FAIL      | 跑 `python run.py --init` 生成它后重跑本章"
+                  f"(只会重跑 Stage 5)", flush=True)
+            all_ok = False
+
     if all_ok:
-        print(f"\n[Manager  ] DONE       | All 4 stages complete for {folder_rel}", flush=True)
-        print("[Manager  ] NOTE       | Update cross-chapter-state.md after reviewing final.md", flush=True)
+        print(f"\n[Manager  ] DONE       | All stages complete for {folder_rel}", flush=True)
     return results

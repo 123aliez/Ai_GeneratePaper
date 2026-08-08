@@ -24,15 +24,35 @@ def _log(action: str, path: str) -> None:
 
 
 def _is_full_reference_index(path: str) -> bool:
-    return _rel(path).replace("\\", "/") == "paper/references/index.md"
+    """这个路径是不是那份全量文献索引(不该整份读进上下文)。
+
+    按文件名判断而不是拼死路径:索引在本项目里是 `references/index.md`,而在
+    survey 引擎里是 `paper/references/index.md`,两边都要挡住。
+    """
+    normalized = _rel(path).replace("\\", "/")
+    return normalized.endswith("references/index.md")
 
 
 def _index_path() -> Path:
-    return Path(__file__).resolve().parents[2] / "paper" / "references" / "index.md"
+    """全量文献索引的位置。以 config 为准 —— 原先硬编码 `../../paper/references/`,
+    那是 survey 引擎的布局,在本项目里永远指向一个不存在的路径。"""
+    from config import REFERENCE_INDEX_PATH
+    return Path(REFERENCE_INDEX_PATH)
 
 
 def _reference_rows():
-    lines = _index_path().read_text(encoding="utf-8").splitlines()
+    """索引里的 `| REF-...` 行;索引不存在时返回空列表。
+
+    本项目默认没有 index.md(引用来自 references/bibliography.md),所以缺文件是
+    正常状态而不是错误 —— 让 search_references 返回"0 行"比抛异常有用。
+    """
+    path = _index_path()
+    if not path.is_file():
+        return []
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
     return [line for line in lines if line.startswith("| REF-")]
 
 
@@ -92,6 +112,13 @@ def search_references(query: str, chapter: str = "") -> str:
             rows.append(row)
         if len(rows) >= max_rows:
             break
+    if not rows and not _index_path().is_file():
+        # 说清是"没有索引"而不是"搜不到" —— 否则 Agent 会反复换关键词重试。
+        return (f"# Reference search results\n"
+                f"No reference index at {_index_path()}. This project cites from "
+                f"references/bibliography.md; use search_literature(query) for "
+                f"leads, or work notes-free.\n")
+
     header = [
         f"# Reference search results",
         f"Query: {query or '(none)'}",
@@ -102,6 +129,94 @@ def search_references(query: str, chapter: str = "") -> str:
         "|---|---|---:|:---:|---|---|---|---|---|---|",
     ]
     return "\n".join(header + rows) + "\n"
+
+
+# 模块级引用,让测试可以直接赋值 mock(函数内 import 的话补丁打不进去)。
+try:
+    from .retrieval import two_tier_search
+except Exception:  # retrieval 不可用时工具调用会返回错误字符串而非崩溃
+    two_tier_search = None
+
+
+def _format_literature_result(query: str, result) -> str:
+    """把 two_tier_search 的返回值渲染成 Agent 可读的 Markdown。
+
+    独立函数便于测试直接传 mock 结果,无需触碰网络或真实检索模块。
+    result 不是 dict 时返回错误字符串;字段缺失的条目被防御性过滤,不 KeyError。
+    """
+    if not isinstance(result, dict):
+        return "Error: literature retrieval returned an invalid response."
+
+    raw_notes = result.get("notes", [])
+    raw_web   = result.get("web", [])
+    notes = [hit for hit in raw_notes
+             if isinstance(hit, dict) and str(hit.get("id") or "").strip()
+             ] if isinstance(raw_notes, list) else []
+    web   = [hit for hit in raw_web
+             if isinstance(hit, dict)
+             and str(hit.get("title") or "").strip()
+             and str(hit.get("url")   or "").strip()
+             ] if isinstance(raw_web, list) else []
+
+    lines = [f"# Literature search: {query}", ""]
+    lines.append("## Tier 1 — local bibliography / notes (AUTHORITATIVE)")
+    if notes:
+        lines.append("")
+        lines.append("| ID | Title | Note path | Key use |")
+        lines.append("|---|---|---|---|")
+        for hit in notes:
+            lines.append(
+                f"| {hit.get('id')} | {hit.get('title') or '(untitled)'} | "
+                f"{hit.get('note_path') or '(none)'} | {hit.get('snippet') or ''} |"
+            )
+        lines.append("")
+        lines.append("Cite these with \\cite{<ID>} — they exist in the user's bibliography.")
+    else:
+        lines.append("")
+        lines.append("(no local match — do NOT invent a \\cite key for this claim)")
+
+    # Tier 2 是补充线索,不是可引用来源:web 命中没有本地 bib 条目,插 \cite 会造成
+    # 悬空引用,编译前的引用闭合门禁会拦住。所以这里明确标注用途边界。
+    lines += ["", "## Tier 2 — web lookup (LEADS ONLY, not citable yet)"]
+    if web:
+        lines.append("")
+        for hit in web:
+            lines.append(f"- **{hit.get('title')}** — {hit.get('url')}")
+            if hit.get("snippet"):
+                lines.append(f"  - {hit.get('snippet')}")
+        lines += [
+            "",
+            "These have NO bibliography entry, so they have no \\cite key. Do not cite "
+            "them. Report them in todo.md so the user can add the ones worth keeping.",
+        ]
+    else:
+        lines.append("")
+        lines.append("(web tier disabled or no result — work from Tier 1 only)")
+    return "\n".join(lines) + "\n"
+
+
+@tool
+def search_literature(query: str, k: int = 5) -> str:
+    """Search the local bibliography and (if configured) the web for references.
+
+    Args:
+        query: What to look for, e.g. "frequency-domain channel attention".
+        k: Maximum number of hits per tier (default 5).
+    """
+    _log("search_lit", (query or "")[:60])
+    # 检索与格式化都包在同一个 try 里:工具函数的返回值会直接进 Agent 的上下文,
+    # 抛异常会打断它当前那一步的推理。宁可回一句可读的错误让它继续走,也不要
+    # 让一次检索失败把整个起草阶段带崩。
+    try:
+        search_fn = two_tier_search  # 模块级引用,测试可替换
+        if search_fn is None:
+            from .retrieval import two_tier_search as _fn
+            search_fn = _fn
+        result = search_fn(query, k)
+        return _format_literature_result(query, result)
+    except Exception as exc:
+        return f"Error: literature retrieval failed ({exc})."
+
 
 
 @tool
