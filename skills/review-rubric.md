@@ -34,11 +34,11 @@
 禁止:fabricating review comments、generic feedback("could be improved")、sycophantic score inflation(无根据给高分)、**向本类型不该负责的内容索要证据**。
 
 ## 创新点忠实度检查(idea 类章节关键)
-逐条对照 context pack 的 `## Core idea` 块:
-- 正文声称的贡献,是否都在 Core idea 的贡献清单里? → 超出的**必须** MUST FIX
+逐条对照 `idea.md`(作者的全局文档,读全文):
+- 正文声称的贡献,是否都在 idea.md 的贡献清单里? → 超出的**必须** MUST FIX
 - 核心洞察被弱化或改写了吗? → 改写作者的论断是 MUST FIX
 - 机制只说了"做什么",没说"为什么work"? → MUST FIX(这是 idea 章的核心失效模式)
-- 关键设计选择没给理由? → MUST FIX,但如果 Core idea 本身没写,**标给作者**而不是让 Draft 编
+- 关键设计选择没给理由? → MUST FIX,但如果 idea.md 本身没写,**标给作者**而不是让 Draft 编
 - 出现 `[DESIGN DETAIL NEEDED]` 标记? → **这是正确行为**,不是缺陷。转成给作者的待办
 
 ## 数据-结论 mismatch 检查(data 类章节关键)

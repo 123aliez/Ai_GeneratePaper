@@ -9,26 +9,26 @@
 
 | family | 主源 | 另一个源的角色 |
 |---|---|---|
-| `idea` | **`## Core idea` 块**(作者写的 `idea.md`) | 结果表只作辅助,最多引一个 headline 数 |
-| `data` | **结果表**(`data/` 结果库) | Core idea 只用来决定narrative,不重述方法设计 |
-| `mixed` | 两者并重 | 论断来自 Core idea,支撑来自结果表 |
+| `idea` | **`idea.md`**(作者写的全局文档,读全文) | 数字只作辅助,最多引一个 headline 数 |
+| `data` | **`data-index.md`**(导航 `data/` 结果的三级索引) | idea.md 只用来决定 narrative,不重述方法设计 |
+| `mixed` | 两者并重 | 论断来自 idea.md,支撑来自 data-index.md |
 
 **不许跨类型代偿**:方法章不许用实验结果代替机制解释("我们的方法涨了 3.4 点"
 不是"为什么这样设计能work"的答案);结果章不许用方法阐述填篇幅。
 
 ## 创新点纪律(idea 类章节最高优先)
-- **创新点、机制、方法设计只能来自 `## Core idea` 块**,那是作者自己的表述
+- **创新点、机制、方法设计只能来自 `idea.md`**,那是作者自己的表述
 - 不许**弱化**也不许**放大**作者的论断;贡献清单以外的贡献一律不许声称
-- Core idea 没写到的设计细节标 `[DESIGN DETAIL NEEDED]`,**绝不"合理地"补一个**
+- idea.md 没写到的设计细节标 `[DESIGN DETAIL NEEDED]`,**绝不"合理地"补一个**
 - 整份创新点文档缺失时标 `[IDEA NEEDED]`——框架会拦住,不该走到起草这步
 - 解释机制要回答"为什么work",不是"效果多好"
 
 ## 数字纪律(data 类章节最高优先)
-- **每个数字必须来自 data/ 结果库**,能追溯到 context-pack 的结果表
+- **每个数字必须来自 `data/` 结果库**,能从 `data-index.md` 的索引追回原值
 - 引用数字必须带来源:如 `run_1_ours 的 top1_accuracy = 81.7%`
 - 缺数据标 `[MISSING DATA]`,绝不猜、绝不 extrapolate
 - 结果与讨论必须引**同一组数**——同一指标在不同章节值不能变
-- idea 类章节引 headline 数时同样受这条约束:不在结果表里的数字一律不许写
+- idea 类章节引 headline 数时同样受这条约束:不在 data-index.md 里的数字一律不许写
 
 ## 章节内容边界
 | 章节 | type | 只写什么 |

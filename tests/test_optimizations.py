@@ -113,61 +113,44 @@ def test_survey_paths_refuse_in_experiment_mode():
             raise AssertionError(f"{name} 应当拒绝执行,却正常返回了")
 
 
-# ── 优化 3:context-pack 路由指纹 ─────────────────────────────────────
-def test_pack_fingerprint():
-    import inspect
-    method = {"type": "method", "family": IDEA, "gate": ADVISORY, "section_types": {1: "method"}}
-    results = {"type": "results", "family": DATA, "gate": BLOCKING, "section_types": {1: "results"}}
+# ── 优化 3:brief 指纹捕获路由变化 + 陈旧产物告警 ─────────────────────
+# context-pack 已删除,路由变化改由 brief.md 首行的 outline 指纹(chapter_fingerprint,
+# 覆盖 type + 小节级 type + 要点)统一捕获。pack_fingerprint/stamp_pack_fingerprint/
+#read_pack_fingerprint 三件套随之移除。这里验陈旧产物检测本身仍然成立(告警函数保留,
+#触发源改成 brief 指纹)。
+def test_chapter_fingerprint_captures_route():
+    from agents.outline import chapter_fingerprint
+    method = {"type": "method",
+              "sections": [{"number": 1, "title": "Framework", "target_words": 200,
+                            "bullets": ["design"], "type": None}]}
+    results = {"type": "results",
+               "sections": [{"number": 1, "title": "Main", "target_words": 200,
+                             "bullets": ["numbers"], "type": None}]}
+    fp_method = chapter_fingerprint(method)
+    fp_results = chapter_fingerprint(results)
+    check("不同路由(type 不同)产生不同指纹", fp_method != fp_results,
+          f"{fp_method} == {fp_results}")
+    check("同一路由指纹稳定", chapter_fingerprint(dict(method)) == fp_method)
+    check("method 指纹含 type=method", "type=method" in fp_method, fp_method)
+    # 小节级 type 也进指纹(分段路由靠它)。
+    a = {"type": "method",
+         "sections": [{"number": 1, "title": "S1", "target_words": 200,
+                       "bullets": [], "type": "method"},
+                      {"number": 2, "title": "S2", "target_words": 200,
+                       "bullets": [], "type": "results"}]}
+    b = {"type": "method",
+         "sections": [{"number": 1, "title": "S1", "target_words": 200,
+                       "bullets": [], "type": "method"},
+                      {"number": 2, "title": "S2", "target_words": 200,
+                       "bullets": [], "type": "discussion"}]}
+    check("小节级 type 变化会改变指纹", chapter_fingerprint(a) != chapter_fingerprint(b))
 
-    # 写作模式已删,pack_fingerprint 只接收证据路由这一个参数。
-    check("pack_fingerprint 只接收证据路由",
-          len(inspect.signature(orch.pack_fingerprint).parameters) == 1)
-    check("stamp_pack_fingerprint 只接收正文与证据路由",
-          len(inspect.signature(orch.stamp_pack_fingerprint).parameters) == 2)
 
-    fp_method, fp_results = orch.pack_fingerprint(method), orch.pack_fingerprint(results)
-    check("不同路由产生不同指纹", fp_method != fp_results, f"{fp_method} == {fp_results}")
-    check("同一路由指纹稳定", orch.pack_fingerprint(dict(method)) == fp_method)
-    check("指纹格式只含证据路由字段",
-          fp_method == "type=method family=idea gate=advisory sections=1:method", fp_method)
-    check("指纹含 family 与 gate",
-          "family=idea" in fp_method and "gate=advisory" in fp_method, fp_method)
-
-    # 只改一个小节的 type 也必须换指纹(brief 的分段路由靠它)。
-    a = {"type": "method", "family": MIXED, "gate": ADVISORY,
-         "section_types": {1: "method", 2: "results"}}
-    b = {"type": "method", "family": MIXED, "gate": ADVISORY,
-         "section_types": {1: "method", 2: "discussion"}}
-    check("小节级 type 变化会改变指纹",
-          orch.pack_fingerprint(a) != orch.pack_fingerprint(b))
-
-    # 盖章 → 读回,能往返。
-    folder = tempfile.mkdtemp()
-    pack = Path(folder, "context-pack.md")
-    pack.write_text(orch.stamp_pack_fingerprint("# pack\n\nbody\n", method), encoding="utf-8")
-    check("指纹可从落盘的 pack 读回", orch.read_pack_fingerprint(str(pack)) == fp_method,
-          orch.read_pack_fingerprint(str(pack)))
-    check("指纹是 HTML 注释,不干扰正文",
-          pack.read_text(encoding="utf-8").splitlines()[0].startswith("<!--"))
-    check("pack 正文完整保留", "# pack" in pack.read_text(encoding="utf-8"))
-
-    # 三种状态必须可区分:None=首跑,""=旧版/损坏(无法证明未变,要报警),指纹串=正常。
-    plain = Path(folder, "old-pack.md")
-    plain.write_text("# pack without fingerprint\n", encoding="utf-8")
-    check("旧版无指纹产物读出空串(不是 None)",
-          orch.read_pack_fingerprint(str(plain)) == "",
-          repr(orch.read_pack_fingerprint(str(plain))))
-    check("文件不存在读出 None(区别于旧版产物)",
-          orch.read_pack_fingerprint(str(Path(folder, "nope.md"))) is None)
-
-    # 这是审查抓出的漏报:旧版产物必须判为"路由可能已变",不能因为空串被跳过。
-    def route_changed(have) -> bool:
-        return have is not None and have != fp_method
-
-    check("首跑(None)不报警", not route_changed(None))
-    check("指纹一致不报警", not route_changed(fp_method))
-    check("指纹不一致要报警", route_changed(fp_results))
-    check("旧版无指纹产物要报警(修复前会被静默跳过)", route_changed(""))
+def test_pack_fingerprint_helpers_removed():
+    # context-pack 删除后,这三件套不应再存在(测试 import 它们的旧代码会 AttributeError)。
+    check("pack_fingerprint 已移除", not hasattr(orch, "pack_fingerprint"))
+    check("stamp_pack_fingerprint 已移除", not hasattr(orch, "stamp_pack_fingerprint"))
+    check("read_pack_fingerprint 已移除", not hasattr(orch, "read_pack_fingerprint"))
 
 
 def test_stale_artifact_warning():

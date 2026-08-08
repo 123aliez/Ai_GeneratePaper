@@ -173,6 +173,42 @@ def build_expand_prompt(chapters: list[dict], out_path: str,
     )
 
 
+def build_data_index_prompt(data_root: str, out_path: str, idea_path: str) -> str:
+    """Manager 生成 data-index.md 的任务。
+
+    data/ 里是作者跑出来的原始结果(CSV/JSON/日志/图),名字与结构千差万别,Agent 直接
+    读原始文件既慢又容易漏。这份索引把原始数字按三级组织——实验名 → 实验结果项 → 具体
+    数值——给 data 类章节(结果/实验/消融)导航用。Manager 只负责*忠实搬运与分组*:
+    每个数字必须能在 data/ 里找到原文,绝不补、不推断、不计算。数字门禁仍直读 data/
+    作为 ground truth,这份索引只是 Agent 的导航。
+    """
+    from .content_source import load_results_store, list_plots, render_results_summary
+    store = load_results_store(data_root)
+    plots = list_plots(data_root)
+    summary = render_results_summary(store, plots)
+    return (
+        f"You are building a NAVIGATION INDEX over the author's experiment results.\n\n"
+        f"Read '{idea_path}' first so you know which runs/metrics are the contribution "
+        f"and how the paper will name them — the index should use the SAME experiment "
+        f"names the paper will cite.\n\n"
+        f"Below is a faithful dump of everything found under '{data_root}' "
+        f"(numeric results, textual run metadata, and plot filenames). Organize it "
+        f"into a THREE-LEVEL index and write it to '{out_path}':\n\n"
+        f"Level 1 = EXPERIMENT (a run / config / ablation group)\n"
+        f"Level 2 = RESULT (a metric or measured outcome under that experiment)\n"
+        f"Level 3 = VALUE (the specific number, exactly as recorded, with its unit)\n\n"
+        f"Hard rules:\n"
+        f"- Every number in the index MUST appear verbatim in the dump below. Do not "
+        f"round, average, derive, or invent any value. If a value is missing, omit it.\n"
+        f"- Do NOT paraphrase the run metadata (hardware/dataset/hyperparameters) — "
+        f"copy it as-is under the relevant experiment.\n"
+        f"- Keep it a navigation index, not prose. One number per line is fine.\n\n"
+        f"Write ONLY '{out_path}'. If data/ is empty, write a file saying so and listing "
+        f"nothing.\n\n"
+        f"=== RAW DUMP FROM data/ ===\n{summary}\n"
+    )
+
+
 def _section_problems(original: dict, expanded: dict) -> list[str]:
     """作者**已经手写过小节**的那一章:核对它们没被动。
 

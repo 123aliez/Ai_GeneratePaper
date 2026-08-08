@@ -23,7 +23,7 @@ from agents.orchestrator import (
     build_routing_clause, build_review_routing_clause,
 )
 from agents.evidence_mining import perspectives_for_mode, build_evidence_mining_prompt
-from agents.content_source import build_context_pack, load_idea_document
+from agents.content_source import load_idea_document, idea_is_skeleton, render_results_summary
 
 PASSED = []
 
@@ -144,9 +144,9 @@ def test_part_family_splits_by_section():
     check("part 3 (results+conclusion) is mixed", families[2] == MIXED, str(families))
     # The method part must be told the idea document is primary, not the numbers.
     clause = build_routing_clause(route, families[1], parts[1])
-    check("method part's prompt names the idea block as primary",
-          "'## Core idea' block" in clause and "IDEA chapter" in clause, clause[:200])
-    check("method part's prompt demotes the results table",
+    check("method part's prompt names idea.md as primary",
+          "idea.md" in clause and "IDEA chapter" in clause, clause[:200])
+    check("method part's prompt demotes the results to supporting evidence",
           "supporting evidence" in clause, clause[:300])
 
 
@@ -186,12 +186,23 @@ def test_perspectives_differ_by_family():
 
 
 def test_evidence_prompt_grounding_rule_matches_family():
-    idea_prompt = build_evidence_mining_prompt("Method", "PACK", "", "/tmp/x", IDEA)
-    data_prompt = build_evidence_mining_prompt("Results", "PACK", "", "/tmp/x", DATA)
-    check("idea mining grounds answers in the author's design statement",
-          "'## Core idea' block" in idea_prompt, idea_prompt[:400])
-    check("data mining grounds answers in logged values",
-          "results table" in data_prompt, data_prompt[:400])
+    idea_prompt = build_evidence_mining_prompt("Method", "REF", "/tmp/x", IDEA)
+    data_prompt = build_evidence_mining_prompt("Results", "REF", "/tmp/x", DATA)
+    check("idea mining grounds answers in idea.md (read in full)",
+          "idea.md" in idea_prompt, idea_prompt[:400])
+    check("data mining grounds answers in data-index.md values",
+          "data-index.md" in data_prompt, data_prompt[:400])
+
+
+def test_results_summary_is_a_faitxhful_dump_for_data_index():
+    # data-index.md 由 Manager 组织,render_results_summary 只负责把 data/ 的数字与图
+    # 忠实摊开(不替 Manager 决定怎么分组)。
+    summary = render_results_summary({"run_0.accuracy": 0.817, "run_0.loss": 0.12},
+                                     plots=["plot.png"])
+    check("numeric results appear verbatim in the dump", "0.817" in summary, summary[:300])
+    check("plots appear in the dump", "plot.png" in summary, summary[:300])
+    check("the dump marks numbers as the citable values",
+          "citable values" in summary, summary[:300])
 
 
 def test_review_criteria_follow_family():
@@ -203,12 +214,14 @@ def test_review_criteria_follow_family():
           "Do NOT demand more experimental numbers" in idea_clause, idea_clause[:400])
     check("reviewer is told an advisory gate means an empty store is not a defect",
           "ADVISORY" in idea_clause, idea_clause)
-    check("reviewer is told to check every number against the store for a data chapter",
-          "results table" in data_clause, data_clause[:400])
+    check("reviewer is told to check every number against data-index for a data chapter",
+          "data-index.md" in data_clause, data_clause[:400])
 
 
-# ── 4. context pack presents the right primary source ───────────────────
-def test_context_pack_promotes_the_right_source():
+# ── 4. idea is read whole as the primary input (no context pack) ────────
+def test_idea_is_read_whole_and_results_dumped_for_data_index():
+    # idea 不再复制进任何 pack:它是每个 stage 提示词第一行直接指向的全局文件。
+    # 这里只验纯读取函数:idea 全文能读出、data/ 数字被忠实摊开供 Manager 组织索引。
     idea_file = _write_temp_idea(
         "# Idea — Spec Module\n\n"
         "## Contribution\nOur Spec module rescales spectral channels with negligible "
@@ -219,30 +232,15 @@ def test_context_pack_promotes_the_right_source():
         "## Design\nThe input feature map is transformed with an FFT, per-channel band "
         "energy is pooled, a two-layer MLP produces gating coefficients, and the "
         "result is transformed back to the spatial domain.\n")
-    check("idea document loads", "Spec module" in load_idea_document(idea_file))
-
-    idea_pack = build_context_pack("Method", family=IDEA, idea_path=idea_file)
-    data_pack = build_context_pack("Results", family=DATA, idea_path=idea_file)
-
-    check("idea pack leads with the core idea",
-          idea_pack.index("## Core idea") < idea_pack.index("## Experiment results"),
-          "ordering wrong")
-    check("idea pack carries the author's own text",
-          "Spec module rescales" in idea_pack)
-    check("idea pack demotes results to supporting evidence",
-          "SUPPORTING EVIDENCE ONLY" in idea_pack)
-    check("data pack leads with the results",
-          data_pack.index("## Experiment results") < data_pack.index("## Core idea"),
-          "ordering wrong")
-    check("data pack marks results primary",
-          "THE PRIMARY SOURCE" in data_pack.split("## Core idea")[0])
+    idea_text = load_idea_document(idea_file)
+    check("idea document loads whole", "Spec module rescales" in idea_text)
+    check("loaded idea is not flagged as a skeleton", not idea_is_skeleton(idea_text)[0])
 
 
 def test_unfilled_skeleton_counts_as_missing():
     # The pre-flight gate checks that idea.md exists. A file that is 100% template
     # is the dangerous case: the run proceeds and the drafter mistakes the
     # template's own questions for the paper's claims.
-    from agents.content_source import idea_is_skeleton
     skeleton = (
         "# Idea — <方法名>\n\n"
         "> **状态:未填写**(填完请删掉这一行)\n\n"
@@ -270,12 +268,8 @@ def test_unfilled_skeleton_counts_as_missing():
     is_skel, words = idea_is_skeleton(filled)
     check("a genuinely written idea document is not a skeleton", not is_skel, f"words={words}")
 
-    empty_pack = build_context_pack("Method", family=IDEA,
-                                    idea_path=_write_temp_idea(skeleton))
-    check("skeleton context pack announces the template is unfilled",
-          "TEMPLATE NOT FILLED IN" in empty_pack, empty_pack[:300])
-    check("skeleton context pack forbids answering the template's own questions",
-          "Do NOT answer those questions yourself" in empty_pack, empty_pack[:600])
+    check("an empty idea document is a skeleton",
+          idea_is_skeleton("")[0])
 
 
 def _write_temp_idea(text: str) -> Path:
@@ -285,14 +279,10 @@ def _write_temp_idea(text: str) -> Path:
 
 
 def test_missing_idea_document_is_declared_not_invented():
+    # idea.md 不存在时,load_idea_document 返回空串(预检门禁据此拒绝开写、绝不编贡献)。
     missing = Path(tempfile.mkdtemp()) / "absent.md"
-    pack = build_context_pack("Method", family=IDEA, idea_path=missing)
-    check("missing idea document is announced", "## Core idea (MISSING)" in pack, pack[:400])
-    check("missing idea document forbids inventing a contribution",
-          "Do NOT invent a contribution" in pack or "Do not invent a contribution" in pack,
-          pack[:600])
-    check("missing idea document names the marker to write",
-          "[IDEA NEEDED]" in pack, pack[:600])
+    check("missing idea document loads as empty", load_idea_document(missing) == "")
+    check("empty idea is detected as a skeleton", idea_is_skeleton("")[0])
 
 
 if __name__ == "__main__":

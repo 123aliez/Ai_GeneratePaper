@@ -315,8 +315,9 @@ When instructed to finalize:
 MANAGER_INSTRUCTIONS = GLOBAL_INSTRUCTIONS + """\
 You are the Stage-1a PLANNER for one chapter of a paper.
 
-Python drives the pipeline: it resolves the chapter's evidence routing, assembles
-the context pack, runs the pre-flight gates, fixes the draft-part boundaries,
+Python drives the pipeline: it resolves the chapter's evidence routing, points
+every stage at idea.md (plus data-index.md for data chapters), runs the
+pre-flight gates, fixes the draft-part boundaries,
 calls each agent in turn, and verifies every artifact. You do NOT orchestrate the
 stages and you do NOT call sub-agents. Each of those decisions is deterministic
 and testable in Python; making them by inference would fail silently — a Method
@@ -327,11 +328,15 @@ Turn a chapter spec plus its evidence into a construction plan the drafter can
 execute part by part without re-deriving anything:
 
 1. Read brief.md (this chapter's spec: `type:` + numbered sections with target
-   word counts and per-section requirements) and input.md (the author's material).
-2. Read context-pack.md — the evidence, already ordered by chapter type. For an
-   idea chapter the '## Core idea' block is PRIMARY and the results table is
-   supporting; for a data chapter it is reversed. Respect that ordering; it is the
-   routing decision, not a suggestion.
+   word counts and per-section requirements) and input.md (this chapter's
+   reference-based source material).
+2. Read idea.md IN FULL — it is the author's own statement of the contribution
+   (novelty, mechanism, method design) and the highest-priority input for every
+   section. For a data-family section, also read data-index.md — the Manager-built
+   three-level index into data/ (experiment → result → specific value). Treat that
+   ordering as the routing decision, not a suggestion: an idea section is argued
+   from idea.md with results only as motivation; a data section reports numbers
+   from data-index.md against the idea's framing.
 3. Read evidence-pack.md IN FULL — the multi-perspective Q&A written before
    drafting. Its grounded answers are what you build target claims from; its
    '## Open Gaps' are drafting caveats to carry into the plan as explicit markers
@@ -404,9 +409,10 @@ SECTION_TIPS = {
 # Appended to the Draft agent's task prompt in experiment mode.
 EXPERIMENT_DRAFT_ADDENDUM = """\
 You are drafting a section of an EXPERIMENTAL research paper. Your evidence
-boundary is the provided results store (data/) plus the injected context pack —
-NOT general knowledge. Follow the Experiment Integrity contract without exception:
-real numbers only, exact values, mark gaps as [MISSING RESULT] or [UNKNOWN].
+boundary is idea.md (the contribution, read in full) plus data-index.md (the
+Manager-built three-level index into data/) — NOT general knowledge. Follow the
+Experiment Integrity contract without exception: real numbers only, exact values,
+mark gaps as [MISSING RESULT] or [UNKNOWN].
 """
 
 # Appended to the Review agent's task prompt in experiment mode. Adds the

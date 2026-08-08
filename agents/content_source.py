@@ -1,10 +1,15 @@
-"""Content-source abstraction — the seam that lets one Draft/Review skeleton
-write either a survey (evidence = literature notes) or an experiment paper
-(evidence = a results store: CSV/JSON/logs/plots).
+"""内容源抽象 —— 让同一套 Draft/Review 骨架能写综述(证据=文献笔记)或实验论文
+(证据=结果库:CSV/JSON/日志/图)。
 
-`PAPER_MODE` in config picks the backend. Everything above this module (the
-orchestrator, the agents) asks for a "context pack" for a section and does not
-care where the evidence came from.
+`PAPER_MODE` 决定后端。本模块只负责"读取并整理原始素材",不再产出聚合文件:
+- idea 全文:不再复制进任何 pack,每个 stage 的提示词第一行直接指向全局 idea.md,
+  Agent 用 read_file 读原文(见 orchestrator 的 idea_clause 注入)。
+- data/ 结果:Manager 在 --init 时按三级索引生成 data/data-index.md 供 data 类章节
+  导航(见 build_data_index_prompt);数字门禁仍直读 data/ 原文作为 ground truth。
+
+所以本模块现在只剩两类纯读取/整理函数:idea 相关(load_idea_document / idea_is_skeleton)
+与 data 相关(load_results_store / list_plots / render_results_summary)。前者服务于
+预检门禁,后者服务于 data-index 生成。
 """
 import csv
 import json
@@ -20,7 +25,7 @@ from .chapter_type import IDEA, DATA, MIXED
 
 # ── Results store (experiment mode) ─────────────────────────────────────
 def _flatten_json(obj, prefix: str = "") -> dict:
-    """Recursively flatten nested dicts to dotted numeric leaves."""
+    """递归把嵌套 dict/list 压成 {点号键: 数值}。"""
     flat = {}
     if isinstance(obj, dict):
         for key, value in obj.items():
@@ -37,10 +42,9 @@ def _flatten_json(obj, prefix: str = "") -> dict:
 
 
 def load_results_store(data_root=None) -> dict:
-    """Scan data_root for *.json / *.csv and flatten to {metric: float}.
+    """扫 data_root 下 *.json / *.csv,压成 {metric: float}。
 
-    Prefers number_gate.load_results_store if that module is present (so the
-    two stay in sync); falls back to this local loader otherwise.
+    优先委托 number_gate.load_results_store(两者保持一致);失败回退本地实现。
     """
     data_root = str(data_root or DATA_ROOT)
     try:
@@ -77,7 +81,7 @@ def load_results_store(data_root=None) -> dict:
 
 
 def list_plots(data_root=None) -> list[str]:
-    """Return available plot filenames (png/pdf/jpg) under data_root/plots or data_root."""
+    """列 data_root 下可用图文件名(png/pdf/jpg)。"""
     data_root = Path(data_root or DATA_ROOT)
     plots = []
     for pattern in ("*.png", "*.pdf", "*.jpg", "*.jpeg"):
@@ -85,12 +89,41 @@ def list_plots(data_root=None) -> list[str]:
     return sorted(plots)
 
 
-def _format_results_table(store: dict, limit: int = 120) -> str:
-    """Render numeric metrics as a table and textual metadata as a list.
+def data_dir_has_content(data_root=None) -> bool:
+    """data/ 下有没有任何内容(数字结果、文本元数据、图、日志都算)。
 
-    Textual metadata (run_name, description, hardware, dataset, hyperparameters)
-    is stored with a leading ":" marker; it is NOT a citable number and is shown
-    as run context, separate from the numeric table the number gate checks."""
+    `_maybe_build_data_index` 用它判断是否该跳过 data-index 生成:空目录才跳过。
+    注意 load_results_store 只扫 JSON/CSV,所以这里要单独把图和其它文件也算上,
+    否则一个只有 experiment_log.md + plot.png 的目录会被误判为空。
+    """
+    data_root = Path(data_root or DATA_ROOT)
+    if not data_root.is_dir():
+        return False
+    if load_results_store(str(data_root)):
+        return True
+    if list_plots(str(data_root)):
+        return True
+    # JSON/CSV 之外的内容(日志 .md/.txt 等):data-index 不解析它们,但它们说明
+    # data/ 非空、作者放了东西进来,跳过会在终端产生"目录为空"的误导信息。让 Manager
+    # 自己看到这些文件名、决定要不要把它们写进索引。
+    for path in data_root.rglob("*"):
+        if path.is_file() and not path.name.startswith("."):
+            return True
+    return False
+
+
+def render_results_summary(store: dict, plots: list[str] = None,
+                           limit: int = 120) -> str:
+    """把结果库渲染成三级索引草稿用的 Markdown(数字表 + 文本元数据 + 图清单)。
+
+    这是给 Manager 生成 data-index.md 时的素材概览:Manager 看到这堆原始数字后,
+    按"实验名 → 实验结果项 → 具体数值"组织成 data-index.md。这里不替它决定如何分组,
+    只把数字与图忠实摊开。
+
+    文本元数据(run_name/description/hardware 等,以 ":" 前缀存)单独列出,因为它
+    不是可引用的数字,而是描述"跑了什么"的上下文。
+    """
+    plots = plots if plots is not None else []
     numeric = {k: v for k, v in store.items() if not (isinstance(v, str) and v.startswith(":"))}
     textual = {k: v[1:] for k, v in store.items() if isinstance(v, str) and v.startswith(":")}
 
@@ -105,21 +138,22 @@ def _format_results_table(store: dict, limit: int = 120) -> str:
             rows.append(f"| {key} | {numeric[key]} |")
         if len(numeric) > limit:
             rows.append(f"| … | ({len(numeric) - limit} more) |")
-        blocks.append("## Results table (numbers — these are the ONLY citable values)")
+        blocks.append("## Numeric results (the ONLY citable values)")
         blocks.append("\n".join(rows))
     else:
         blocks.append("(no numeric results found in data/ — provide CSV/JSON results first)")
+    if plots:
+        blocks.append("## Available plots (reference by filename; do not invent figures)")
+        blocks.append("\n".join(f"- {p}" for p in plots))
     return "\n\n".join(blocks)
 
 
-# ── Idea document (idea-family chapters) ────────────────────────────────
+# ── Idea document (read whole by every agent) ───────────────────────────
 def load_idea_document(idea_path=None) -> str:
-    """Read the user's global idea document, or "" if absent.
+    """读取作者的全局 idea 文档;不存在返回 ""。
 
-    This is the primary input for Method / Introduction / Related Work: the
-    novelty and mechanism the paper argues for. Deliberately passed through
-    whole rather than summarized — the drafter needs the user's own framing of
-    the contribution, and paraphrasing it upstream is how a paper's claims drift.
+    这是所有章节的最高优先输入:贡献、机制、方法设计。故意全文透传而非摘要——
+    起草者需要作者自己对贡献的原始表述,在上游改写正是论文论点漂移的开端。
     """
     path = Path(idea_path or IDEA_PATH)
     if not path.is_file():
@@ -127,24 +161,20 @@ def load_idea_document(idea_path=None) -> str:
     return path.read_text(encoding="utf-8", errors="replace").strip()
 
 
-# Minimum words of actual authored prose before an idea document counts as
-# filled in. A skeleton copied from the template is mostly `>` prompt blocks and
-# empty table rows; stripping those leaves almost nothing. 40 words is low enough
-# that a terse one-line-per-section answer passes, high enough that an untouched
-# skeleton does not.
+# 作者实际写出的最低词数,低于此值视为"还是没填的模板"。从模板抄来的骨架大部分是
+# `>` 提示块和空表格行,剥掉后几乎不剩什么。40 词低到一句逐节简答能过,高到完全没
+# 动过的骨架过不了。
 _IDEA_MIN_WORDS = 40
 
 
 def idea_is_skeleton(idea_text: str) -> tuple[bool, int]:
-    """Detect an idea document that exists but was never filled in.
+    """检测一份"存在但从未填写"的 idea 文档。
 
-    Returns (is_skeleton, authored_word_count).
+    返回 (是否骨架, 作者实际词数)。
 
-    The pre-flight gate checks that idea.md *exists*; without this it would also
-    accept a file that is 100% template — the worst case, because the run then
-    proceeds and the drafter treats the template's own questions as content.
-    Everything that is scaffolding is stripped: `>` prompt blocks, headings,
-    table rules, empty table rows, and bare `- $$:` symbol stubs.
+    预检门禁会查 idea.md 是否*存在*;没有这道检查它也会接受一个 100% 模板的文件——
+    那是最坏情况,因为运行会继续,起草者把模板自己的问题当成正文内容。所有脚手架
+    都剥掉:`>` 提示块、标题、表格分隔线、空表格行、`- $$:` 占位符号。
     """
     if not idea_text:
         return True, 0
@@ -155,142 +185,26 @@ def idea_is_skeleton(idea_text: str) -> tuple[bool, int]:
     for line in idea_text.splitlines():
         stripped = line.strip()
         if not stripped or stripped.startswith((">", "#", "---")):
-            continue                                  # prompts, headings, rules
+            continue                                  # 提示、标题、分隔线
         if set(stripped) <= set("|-: "):
-            continue                                  # table rule / empty row
+            continue                                  # 表格分隔线 / 空行
         if stripped.startswith("|") and not re.sub(r"[|\s]", "", stripped):
-            continue                                  # blank table row
+            continue                                  # 空表格行
         if re.fullmatch(r"[-*+]?\s*\$*\s*\$*\s*[:：]?\s*", stripped):
-            continue                                  # unfilled `- $$:` stub
+            continue                                  # 没填的 `- $$:` 占位
         if re.fullmatch(r"[-*+]\s*", stripped):
-            continue                                  # empty bullet
+            continue                                  # 空项目符号
         if re.fullmatch(r"\d+\.\s*", stripped):
-            continue                                  # empty numbered item
+            continue                                  # 空编号项
         authored.append(stripped)
     words = len(" ".join(authored).split())
-    # Chinese prose has few spaces; count CJK characters as words too.
+    # 中文几乎没有空格,把 CJK 字符也算作词。
     words += len(re.findall(r"[一-鿿]", " ".join(authored)))
     return words < _IDEA_MIN_WORDS, words
 
 
-def _idea_block(section_title: str, idea_text: str) -> list[str]:
-    """The idea-document half of a context pack."""
-    skeleton, words = idea_is_skeleton(idea_text)
-    if idea_text and skeleton:
-        return [
-            "## Core idea (TEMPLATE NOT FILLED IN)",
-            "",
-            f"An idea document exists at {IDEA_PATH} but contains only the template "
-            f"skeleton ({words} words of authored text). The `>` blocks in it are "
-            "questions addressed to the author, NOT content for the paper.",
-            "",
-            "Do NOT answer those questions yourself and do NOT treat them as the",
-            "paper's claims. Write [IDEA NEEDED] where the contribution belongs and",
-            "record in todo.md that the idea document needs to be written.",
-        ]
-    if not idea_text:
-        return [
-            "## Core idea (MISSING)",
-            "",
-            f"No idea document was found at {IDEA_PATH}. This section's primary",
-            "input is the paper's novelty and method design, which only the author",
-            "can state. Do NOT invent a contribution: write [IDEA NEEDED] where the",
-            "novelty claim belongs and note it in todo.md.",
-        ]
-    return [
-        "## Core idea — THE PRIMARY SOURCE FOR THIS SECTION",
-        "",
-        "The text below is the author's own statement of the contribution: the",
-        "novelty, the mechanism, and the method design. Write this section from it.",
-        "Do not water down or re-invent the claim; do not add a contribution the",
-        "author did not make. Where a design detail is absent, write",
-        "[DESIGN DETAIL NEEDED] rather than filling it in plausibly.",
-        "",
-        idea_text,
-    ]
-
-
-def _results_block(section_title: str, store: dict, plots: list[str],
-                   primary: bool) -> list[str]:
-    """The results-store half of a context pack.
-
-    `primary` distinguishes a Results chapter (numbers ARE the content) from an
-    idea chapter that may quote one headline number for motivation.
-    """
-    if primary:
-        head = [
-            "## Experiment results — THE PRIMARY SOURCE FOR THIS SECTION",
-            "",
-            "You may ONLY state numbers that appear in the results table below. Do not",
-            "invent, round beyond the given precision, or extrapolate. Do not describe",
-            "hardware, hyperparameters, or dataset sizes not present in data/. If a",
-            "needed value is absent, write [MISSING DATA] rather than guessing.",
-        ]
-    else:
-        head = [
-            "## Experiment results — SUPPORTING EVIDENCE ONLY",
-            "",
-            "This section is about the idea, not the numbers. Quote a value here only",
-            "when it directly supports a claim about the contribution (e.g. one",
-            "headline result for motivation). Every number you do write must appear",
-            "verbatim in the table below; leave the detailed reporting to the results",
-            "section. If a value is absent, write [MISSING DATA] rather than guessing.",
-        ]
-    return head + [
-        "",
-        _format_results_table(store),
-        "",
-        "## Available plots (reference by filename; do not invent figures)",
-        ("\n".join(f"- {p}" for p in plots) if plots else "(none provided)"),
-    ]
-
-
-# ── Context pack ────────────────────────────────────────────────────────
-def build_context_pack(section_title: str = "", data_root=None,
-                       family: str = DATA, idea_path=None) -> str:
-    """Build the evidence block injected into a Draft prompt for one section.
-
-    `family` (from chapter_type) decides what the pack leads with:
-
-    * ``idea``  — the idea document is primary; the results table is appended as
-                  clearly-labelled supporting evidence so a Method chapter can
-                  still quote one headline number without inventing it.
-    * ``data``  — the results store is primary; the idea document is appended as
-                  context so the results are narrated against the actual claim.
-    * ``mixed`` — both presented as primary (discussion/conclusion).
-
-    Survey mode defers to the reference excerpt the orchestrator injects.
-    """
-    if PAPER_MODE != "experiment":
-        return ""  # survey mode uses the orchestrator's reference excerpt
-
-    idea_text = load_idea_document(idea_path)
-    store = load_results_store(data_root)
-    plots = list_plots(data_root)
-
-    lines = [f"# Context pack for: {section_title or '(this section)'}",
-             f"Evidence routing: {family}", ""]
-    if family == IDEA:
-        lines += _idea_block(section_title, idea_text)
-        lines += ["", *_results_block(section_title, store, plots, primary=False)]
-    elif family == DATA:
-        lines += _results_block(section_title, store, plots, primary=True)
-        if idea_text:
-            lines += [
-                "", "## Core idea — CONTEXT for interpreting the results",
-                "",
-                "Narrate the numbers against this claim; do not restate the method",
-                "design in full (it belongs to the method section).",
-                "", idea_text,
-            ]
-    else:
-        lines += _idea_block(section_title, idea_text)
-        lines += ["", *_results_block(section_title, store, plots, primary=True)]
-    return "\n".join(lines) + "\n"
-
-
 def content_source_summary(family: str = "") -> str:
-    """One-line description of the active content source (for run banners)."""
+    """运行横幅用的单行素材状态摘要。"""
     if PAPER_MODE != "experiment":
         return f"survey mode — reference notes in {REFERENCES_ROOT}"
     numeric = {k: v for k, v in load_results_store().items()
@@ -306,15 +220,12 @@ def content_source_summary(family: str = "") -> str:
 if __name__ == "__main__":
     print("PAPER_MODE:", PAPER_MODE)
     print("summary:", content_source_summary())
-    for fam in (IDEA, DATA, MIXED):
-        pack = build_context_pack("Method", family=fam)
-        head = pack.splitlines()[:6]
-        print(f"\n--- family={fam} ---")
-        print("\n".join(head))
-        assert f"Evidence routing: {fam}" in pack
-    # An idea chapter must never present the results table as primary.
-    idea_pack = build_context_pack("Method", family=IDEA)
-    assert "SUPPORTING EVIDENCE ONLY" in idea_pack, "idea chapters must demote the results table"
-    data_pack = build_context_pack("Results", family=DATA)
-    assert "THE PRIMARY SOURCE" in data_pack.split("## Core idea")[0]
-    print("\nSELF-TEST PASSED: context packs route by family.")
+    # idea 相关函数自检:填了的 idea 不算骨架,没填的算。
+    filled = "# Idea\n\n## 贡献\n我们提出 Spec 模块,提升细粒度分类精度。\n"
+    assert not idea_is_skeleton(filled)[0], "填了的 idea 不应被判为骨架"
+    assert idea_is_skeleton("")[0], "空文档应判为骨架"
+    # render_results_summary 把数字与图忠实摊开(不替 Manager 决定如何分组)。
+    summary = render_results_summary({"run_0.accuracy": 0.817, "run_0.loss": 0.12},
+                                     plots=["plot.png"])
+    assert "0.817" in summary and "plot.png" in summary, summary
+    print("\nSELF-TEST PASSED: content_source readers work without any context pack.")

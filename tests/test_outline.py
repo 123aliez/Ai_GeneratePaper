@@ -268,12 +268,10 @@ def test_init_creates_workspaces():
           str(sorted(result["created"])))
     for name in result["created"]:
         check(f"{name}/brief.md 已生成", (Path(ws, name, "brief.md")).exists())
-        check(f"{name}/input.md 已生成", (Path(ws, name, "input.md")).exists())
 
-    # input.md 是空骨架:素材只有作者能给,预填会被 Agent 当成事实
-    stub = Path(ws, "04-method", "input.md").read_text(encoding="utf-8")
-    check("input.md 列出各小节标题", "总体框架" in stub and "Spec 模块" in stub, stub)
-    check("input.md 不含捏造的素材内容", "78.3" not in stub and "%" not in stub)
+    # input.md 不再由 --init 生成:它改由 Stage 0 时 Manager 从参考文献组织。
+    check("input.md 不再由 --init 生成(改由 Stage 0)",
+          not (Path(ws, "04-method", "input.md")).exists())
 
 
 def test_init_never_clobbers_user_edits():
@@ -292,14 +290,15 @@ def test_init_never_clobbers_user_edits():
           "04-method" in again["skipped"] or "04-method" in again["stale"],
           str(again))
     check("手改的 brief 内容仍在", "我手改过的" in brief.read_text(encoding="utf-8"))
-    check("手填的 input 内容仍在", "我的实验素材" in user_input.read_text(encoding="utf-8"))
+    check("手填的 input 内容仍在(--init 不碰 input.md)",
+          "我的实验素材" in user_input.read_text(encoding="utf-8"))
 
-    # --force 才覆盖 brief,但 input 永远不动
+    # --force 才覆盖 brief,input 不由 --init 管,自然不动
     forced = ol.init_chapter_workspaces(outline, ws, force=True)
     check("--force 会刷新 brief", "04-method" in forced["updated"], str(forced))
     check("--force 后 brief 是生成版本",
           "outline-fingerprint" in brief.read_text(encoding="utf-8"))
-    check("--force 也不覆盖 input.md",
+    check("--force 也不碰 input.md",
           "我的实验素材" in user_input.read_text(encoding="utf-8"))
 
 

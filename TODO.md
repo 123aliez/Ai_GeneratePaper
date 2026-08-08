@@ -13,7 +13,7 @@
 | 2 | **写 `outline.md`** | 根目录(`cp outline.example.md outline.md`) | `--init` 没有输入,跑不起来 |
 | 3 | **放实验结果** | `data/results/<run>/final_info.json` | data 类章节(Results/Experiments/Ablation)pre-flight 直接拒绝 |
 | 4 | **填参考文献** | `references/bibliography.md` | 目前只有 1 行示例。引用补全无 key 可匹配,全部标 `needs_human` |
-| 5 | **填各章 `input.md`** | `workspace/<章>/input.md`(`--init` 生成骨架) | 素材为空,起草只能靠 `idea.md`。它**永不被覆盖**,`--force` 也不动 |
+| 5 | **填参考文献清单** | `references/bibliography.md` | 各章 `input.md` 由 Stage 0 时 Manager 从它生成;清单空则 input 内容空洞 |
 | 6 | **填 API key** | `.env`(已存在但值为空) | 无法调模型。三组 Agent 各自独立配 |
 
 第 1 项最关键:`idea.md` 的第 3 节(核心洞察)和第 4 节(方法设计)是框架**唯一不能替你补**的部分。
@@ -55,7 +55,7 @@
 - **写作契约**:整篇对齐(第几章/可跨章引用/复用前章符号),契约注入每一个改写正文的阶段
 - **Stage 5 跨章交接自动化**:原先只打印"记得手动更新",现在自动 upsert + Python 校验,
   失败会拦住 `--all`
-- **路由指纹**:类型路由写进 `context-pack.md` 首行;路由变了而旧产物还在 → 硬停
+- **路由指纹**:类型路由写进 `brief.md` 首行的 outline 指纹;路由变了而旧产物还在 → 硬停
   (一个文件都不删)
 - **brief 来源门禁**:非生成式 brief / brief 过期 / 缺跨章状态,全部在调模型前硬停
 - **分段自适应**:段数 `min(小节数, 3)`,拼接按本次实际段数(不再硬编 3)
@@ -90,9 +90,15 @@
 
 ## 六、改了路由之后要做什么
 
-**不用再记得手动删 `context-pack.md` 了。** 类型路由写在它的首行指纹里,
-不一致时流水线会**硬停**并列出所有按旧路由生成的产物——一个文件都不会被自动删,由你决定
-删哪些。删完重跑即可。
+**正确做法:删陈旧产物,而不是只 `--init --force`。** 类型路由(类型/小节类型)写进 `brief.md`
+首行的 outline 指纹。改了 type 而旧产物还在,流水线会**硬停**并列出所有按旧路由生成的产物
+(含 `brief.md`、`evidence-pack.md`、`draft-v1.md`、`review-v1.json`、`final.md` 等)。备份后
+删掉这些文件再重跑,才能让它们按新路由重新生成。
 
-改了 `outline.md` 之后跑 `python run.py --init --force` 刷新各章 brief;
-忘了刷新的话运行时也会硬停并提示(`input.md` 里你填的素材不会被覆盖)。
+**为什么不能只跑 `--init --force`**:那只会刷新 `brief.md` 的指纹,把"路由变了"的信号擦掉,
+而下游的 evidence-pack / plan / review / final 仍是旧路由的,会被"存在即跳过"静默复用——
+看起来跑通了,实际还是旧路由的内容。
+
+改了 `outline.md` 的结构(章数/标题/顺序)后,`--init --force` 会刷新各章 brief——这跟"改 type"
+不同,改结构不会动证据路由,下游产物继续有效。`input.md` 由 Stage 0 生成,不归 `--init` 管,
+自然不动。

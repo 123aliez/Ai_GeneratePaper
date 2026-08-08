@@ -14,7 +14,7 @@
   换掉它是无收益的大改。
 
 代价是两份文件可能不同步,所以生成的 brief 顶部盖一行 outline 指纹:
-outline 改了却没重新 `--init`,运行时会警告(机制与 context-pack 的路由指纹一致)。
+outline 改了(类型/小节/要点)却没重新 `--init`,运行时检测到指纹不符会硬停。
 """
 import hashlib
 import os
@@ -370,22 +370,6 @@ def render_brief(chapter: dict, total_chapters: int = 0) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
-def render_input_stub(chapter: dict) -> str:
-    """input.md 骨架。故意留空:素材只有作者能给,预填会被 Agent 当成事实。"""
-    lines = [
-        f"# Input material — {chapter['number']}. {chapter['title']}",
-        "",
-        "> 本章特有的素材写在这里(生成的是空骨架,内容由你填)。",
-        "> 全局创新点写在 `idea.md`,实验数字放在 `data/`,都不必在这里重复。",
-        "",
-    ]
-    for section in chapter["sections"]:
-        lines += [f"## {section['number']}. {section['title']}", "", ""]
-    if not chapter["sections"]:
-        lines += ["(本章素材)", ""]
-    return "\n".join(lines).rstrip() + "\n"
-
-
 def refresh_cross_chapter_state(old: str, chapters: list[dict]) -> str:
     """刷新顶部的章节顺序清单,同时原样保留三个状态小节里已积累的内容。
 
@@ -448,7 +432,6 @@ def init_chapter_workspaces(outline_path=None, workspace_root=None,
     for chapter in chapters:
         folder = root / chapter["folder"]
         brief_path = folder / "brief.md"
-        input_path = folder / "input.md"
         want = chapter_fingerprint(chapter)
 
         if brief_path.exists():
@@ -470,11 +453,6 @@ def init_chapter_workspaces(outline_path=None, workspace_root=None,
             folder.mkdir(parents=True, exist_ok=True)
             brief_path.write_text(render_brief(chapter), encoding="utf-8")
             result["created"].append(chapter["folder"])
-
-        # input.md 永不覆盖:那是使用者的素材。
-        if not input_path.exists():
-            folder.mkdir(parents=True, exist_ok=True)
-            input_path.write_text(render_input_stub(chapter), encoding="utf-8")
     return result
 
 

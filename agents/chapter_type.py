@@ -4,7 +4,7 @@ The core correction over the framework's first design: a paper's contribution is
 the *idea* (novelty, mechanism, method design). Experiment numbers only support
 it. So a Method / Introduction / Related Work chapter must be drafted from the
 user's `idea.md`, and only Experiments / Results chapters read the results store
-under `data/`. Applying the results-store context pack (and its fail-closed
+under `data/`. Applying the results store (and its fail-closed
 number gate) to every chapter was an architecture-level mistake: it starved the
 idea chapters of their real source and blocked runs that legitimately have no
 numbers yet.

@@ -98,6 +98,46 @@ def outline_chapters_in_order():
     return outline_folders, []
 
 
+def _maybe_build_data_index() -> None:
+    """--init 末尾:若 data/data-index.md 不存在,让 Manager 读 data/ 生成它。
+
+    存在则跳过(作者可能审改过,不覆盖)。data/ 为空(没有真实结果)时也跳过:
+    data-index 是 data 类章节写正文的数字导航,没数字可索引时硬造一份空索引只会误导。
+    等作者补了 data/ 结果,删掉它重跑 --init 即可重建。
+    """
+    from config import DATA_INDEX_PATH, DATA_ROOT
+    if DATA_INDEX_PATH.exists():
+        print(f"\ndata-index: {DATA_INDEX_PATH.name} 已存在,跳过(不覆盖)。"
+              f"要重建就删掉它再 --init。")
+        return
+    try:
+        from agents.content_source import data_dir_has_content
+        if not data_dir_has_content(str(DATA_ROOT)):
+            print(f"\ndata-index: data/ 是空目录,跳过 data-index 生成。")
+            print(f"补好实验结果后,删掉 {DATA_INDEX_PATH} 再跑 python run.py --init 重建。")
+            return
+    except Exception as exc:
+        print(f"\ndata-index: 扫描 data/ 失败,跳过: {str(exc)[:120]}")
+        return
+
+    from config import get_manager_model, IDEA_PATH
+    from agents import create_planner_agent
+    from agents.outline_expand import build_data_index_prompt
+    from agents.orchestrator import run_agent_stage_standalone
+
+    print(f"\ndata-index: 让 Manager 读 data/ 生成 {DATA_INDEX_PATH.name} "
+          f"(三级索引:实验 → 结果 → 数值)...")
+    DATA_INDEX_PATH.parent.mkdir(parents=True, exist_ok=True)
+    manager = create_planner_agent(get_manager_model())
+    prompt = build_data_index_prompt(str(DATA_ROOT), str(DATA_INDEX_PATH), str(IDEA_PATH))
+    run_agent_stage_standalone(manager, "Manager", prompt)
+    if DATA_INDEX_PATH.is_file():
+        print(f"data-index: 已生成 {DATA_INDEX_PATH.name}。data 类章节写正文时读它导航。")
+    else:
+        print(f"data-index: Manager 没写出 {DATA_INDEX_PATH.name};"
+              f"data 类章节将缺少导航,可重跑 --init 重试。")
+
+
 def init_workspaces(force: bool) -> int:
     """读 outline.md 生成各章工作区 + 跨章状态。返回退出码。
 
@@ -163,13 +203,17 @@ def init_workspaces(force: bool) -> int:
         for name in result["stale"]:
             print(f"  {name}")
         print("确认要用 outline 的新结构覆盖它们,就跑: python run.py --init --force")
-        print("(input.md 里你填的素材不会被覆盖)")
+
+    # --init 末尾:若 data/data-index.md 不存在,让 Manager 读 data/ 原始结果生成它。
+    # 它是 data 类章节(结果/实验/消融)写正文时的数字导航;数字门禁仍直读 data/ 作
+    # ground truth,这份索引只供 Agent 导航。存在则跳过——作者可能审改过,不覆盖。
+    _maybe_build_data_index()
 
     on_disk = set(chapter_folders_in_order())
     ready = [chapter["folder"] for chapter in skeleton
              if chapter["folder"] in on_disk]
     if ready:
-        print(f"\n下一步:填各章的 input.md,然后")
+        print(f"\n下一步:跑第一章(它会先生成本章 input.md,再挖证据、起草):")
         print(f"  python run.py \"{ready[0]}\" --progress     # 跑第一章")
         print(f"  python run.py --all --progress            # 按 outline 顺序跑全部")
         print(f"\n这些章都走【整篇模式】:知道自己是第几章,符号沿用前章,"

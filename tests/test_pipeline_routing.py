@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import config
 import agents.content_source as content_source
+from agents.content_source import idea_is_skeleton, load_idea_document
 import agents.orchestrator as orch
 from agents.outline import XCHAP_HEADINGS as XCHAP
 
@@ -51,7 +52,9 @@ class RecordingAgent:
 
 
 def set_idea(text: str):
-    """Point every module's IDEA_PATH at a temp file (or a nonexistent one)."""
+    """Point every module's IDEA_PATH at a temp file (or a nonexistent one).
+
+    idea_clause (orchestrator) 也在运行时读 IDEA_PATH,所以要一并指过去。"""
     path = Path(tempfile.mkdtemp()) / "idea.md"
     if text is not None:
         path.write_text(text, encoding="utf-8")
@@ -140,18 +143,25 @@ def test_method_chapter_runs_without_data():
     text = agent.text()
     check("method chapter is not blocked by an empty results store",
           len(agent.prompts) > 0, "no model call was made")
-    check("the author's idea text reaches the prompt chain",
-          "Spec module" in text or "Spec module" in
-          Path(folder, "context-pack.md").read_text(encoding="utf-8"))
+    check("the author's idea is named in the prompt chain (idea.md pointed to)",
+          "idea.md" in text, text[:800])
     check("idea perspectives are used for evidence mining",
           "Novelty reviewer" in text, text[:200])
     check("statistics perspectives are NOT used for a method chapter",
           "Statistics reviewer" not in text)
-    check("drafter is told the idea block is primary",
-          "IDEA chapter" in text and "'## Core idea' block" in text)
-    pack = Path(folder, "context-pack.md").read_text(encoding="utf-8")
-    check("context pack demotes the results table for a method chapter",
-          "SUPPORTING EVIDENCE ONLY" in pack)
+    check("drafter is told idea.md is primary (idea chapter)",
+          "IDEA chapter" in text and "idea.md" in text)
+    # 单章 RecordingAgent 只跑到起草段;Stage 3/4 的 idea 注入由 full-paper 测试覆盖
+    # (test_full_paper_rewrite_stages_lead_with_idea)。这里只验规划/起草段开头是 idea。
+    rewrite_starts = [p for p in agent.prompts
+                      if any(m in p for m in (
+                          "acting only as the planner for Stage 1",
+                          "Write only Part"))]
+    check("规划+各起草段提示词被触发", len(rewrite_starts) >= 2,
+          str([p[:50] for p in agent.prompts]))
+    check("规划/起草段都以 idea.md 开头",
+          all(p.startswith("FIRST read idea.md") for p in rewrite_starts),
+          str([p[:60] for p in rewrite_starts if not p.startswith("FIRST read idea.md")]))
 
 
 # ── 2. a results chapter with no data blocks before any model call ───────
@@ -208,10 +218,11 @@ def test_method_chapter_runs_on_filled_idea():
         "type: method\n\n1. **Method** (~300 words)\n- design\n", "01-method")
     agent, _ = run_pipeline_in_outline(folder, make_data(None), outline)
     check("a filled idea document passes the pre-flight gate", len(agent.prompts) > 0)
-    pack = Path(folder, "context-pack.md").read_text(encoding="utf-8")
-    check("filled idea document is not flagged as a template",
-          "TEMPLATE NOT FILLED IN" not in pack)
-    check("filled idea text reaches the context pack", "谱域重标定" in pack)
+    # idea 现在直读全文,不再有 pack 的"模板/缺失"标注;骨架判定在 idea_is_skeleton 里。
+    check("filled idea is not flagged as a skeleton",
+          not idea_is_skeleton(load_idea_document())[0])
+    check("filled idea is pointed to (read whole) in the prompts",
+          "idea.md" in agent.text(), agent.text()[:400])
 
 
 # ── 4. a results chapter WITH data runs and is told numbers are primary ──
@@ -227,10 +238,13 @@ def test_results_chapter_runs_with_data():
     check("novelty perspectives are NOT used for a results chapter",
           "Novelty reviewer" not in text)
     check("drafter is told the results are primary", "DATA chapter" in text)
-    pack = Path(folder, "context-pack.md").read_text(encoding="utf-8")
-    check("context pack marks results primary for a results chapter",
-          "THE PRIMARY SOURCE" in pack.split("## Core idea")[0])
-    check("recorded metric appears in the context pack", "0.817" in pack)
+    check("data chapter prompts point at data-index.md for numbers",
+          "data-index.md" in text, text[:600])
+    # 数字门禁直读 data/ 作 ground truth;data-index 只供 Agent 导航。
+    # 这里验 number gate 在跑该章时确实执行过(产物存在或终端日志可见)。
+    check("data chapter 跑过数字门禁(number-check.md 由门禁生成)",
+          os.path.exists(os.path.join(folder, "number-check.md")),
+          str([p[:50] for p in agent.prompts]))
 
 
 # ── 5. a related-work chapter skips the number gate entirely ─────────────
@@ -360,7 +374,7 @@ class FullRunAgent(RecordingAgent):
             # 新契约:Agent 读跨章状态但**写候选文件**,由编排器校验后才原子替换。
             # 直接写目标文件的旧行为已经不可能通过校验——那正是这次改动要防的:
             # Agent 静默删掉前章条目时,原文件必须保持不动。
-            candidate = _re.search(r"'([^']*stage5-candidate\.md)'", prompt)
+            candidate = _re.search(r"'([^']*cross-chapter-draft\.md)'", prompt)
             source = _re.search(r"'([^']*cross-chapter-state\.md)'", prompt)
             if candidate and source and os.path.exists(source.group(1)):
                 old = Path(source.group(1)).read_text(encoding="utf-8")
@@ -455,9 +469,41 @@ def test_full_paper_route_reaches_prompts():
     for prompt in rewrite_prompts:
         check("每个整篇正文改写提示词都带 FULL 契约",
               "WRITING MODE: FULL-PAPER" in prompt, prompt[:400])
+        check("每个整篇正文改写阶段都以 idea.md 开头",
+              prompt.startswith("FIRST read idea.md"),
+              prompt[:80])
 
     # 审稿侧同样按整篇判
     check("审稿按整篇判(查重复定义)", "re-defines a term already fixed" in text)
+
+
+def test_full_paper_rewrite_stages_lead_with_idea():
+    """整篇跑到底:Stage 1a / 1b~1c / Stage 3 每一轮 / Stage 4 都必须以 idea.md 开头。
+
+    单章 RecordingAgent 只跑到起草段,验不到修订/定稿。这里用 FullRunAgent 跑到底,
+    确认每一个会改写正文的阶段(含收敛循环的三种分支与定稿)都先读 idea.md——
+    漏一个,那一步就会不读 idea 直接改,把前面按 idea 写好的部分改回去。
+    """
+    set_idea(IDEA_TEXT)
+    folder, outline_path, ws = make_full_paper_ws("02-method")
+    agent, _ = run_pipeline_to_end(folder, make_data({"test_accuracy": 0.817}), outline_path)
+    rewrite_prompts = [p for p in agent.prompts if _is_rewrite_prompt(p)]
+    check("整篇跑到了足够多的改写阶段", len(rewrite_prompts) >= 4,
+          str([p[:50] for p in rewrite_prompts]))
+    # 覆盖 Stage 1a(规划)、起草段、修订轮、定稿四类标记各至少一次。
+    kinds = {
+        "Stage 1a 规划": any("acting only as the planner for Stage 1" in p for p in rewrite_prompts),
+        "起草段": any("Write only Part" in p for p in rewrite_prompts),
+        "修订轮": any(("Address ALL 'MUST FIX' items" in p
+                       or "Resolve EVERY item in this frozen acceptance checklist" in p
+                       or "There are no MUST FIX items" in p) for p in rewrite_prompts),
+        "定稿": any("final.zh.md" in p for p in rewrite_prompts),
+    }
+    for name, hit in kinds.items():
+        check(f"整篇跑到了 {name} 阶段", hit)
+    check("每个正文改写阶段都以 idea.md 开头",
+          all(p.startswith("FIRST read idea.md") for p in rewrite_prompts),
+          str([p[:60] for p in rewrite_prompts if not p.startswith("FIRST read idea.md")]))
 
 
 def test_system_prompts_require_cross_chapter_context():
@@ -546,10 +592,11 @@ def test_run_all_rejects_workspace_outline_drift():
 
 
 def test_evidence_route_change_blocks_and_keeps_artifacts():
-    """改了 brief 的 `type:`(证据路由变了)同样硬停,并列出陈旧产物。
+    """改了 brief 的路由(加 `- type: results`)同样硬停,并列出陈旧产物。
 
-    这是 pack 指纹那条路径的直接验证:方法章改成结果章之后,evidence-pack 的
-    提问视角、各 part 的路由子句、review 的判据全变了,而它们都带"存在即跳过"。
+    context-pack 删除后,路由变化改由 brief.md 首行的 outline 指纹(chapter_fingerprint,
+    覆盖 type + 小节级 type + 要点)统一捕获:方法章的小节被改成 results 小节后,指纹
+    不符即硬停,并把 evidence-pack / plan / review 等带"存在即跳过"的旧产物一并列出。
     """
     set_idea(IDEA_TEXT)
     folder, outline, ws = make_ws_in_outline(
@@ -559,19 +606,21 @@ def test_evidence_route_change_blocks_and_keeps_artifacts():
     first, _ = run_pipeline_to_end(folder, data, outline)
     check("首次按 method 跑出了完整产物",
           Path(folder, "final.md").exists() and bool(first.prompts))
-    old_fp = orch.read_pack_fingerprint(os.path.join(folder, "context-pack.md"))
-    check("旧 pack 记录的是 method 路由", "type=method" in old_fp, old_fp)
+    old_fp = orch.read_brief_fingerprint(os.path.join(folder, "brief.md"))
+    check("旧 brief 指纹记录的是 method 路由", "type=method" in old_fp, old_fp)
 
-    # 给唯一小节加 `- type: results`(章标题/type 不变 → 文件夹名稳定)。这让 pack
-    # 指纹的 sections 字段变化(无 data 小节 → 有 data 小节),验证 pack 指纹触发硬停。
+    # 给唯一小节加 `- type: results`(章标题/type 不变 → 文件夹名稳定)。这让 brief
+    # 指纹的 section 段变化(无 type → 有 results)。**不重新 --init**:模拟"改了 outline
+    # 的 type 却直接重跑"的真实疏漏——brief.md 还是旧指纹,与改后的 outline 不符即硬停。
     outline_content = Path(outline).read_text(encoding="utf-8")
     Path(outline).write_text(outline_content.rstrip() + "\n- type: results\n",
                              encoding="utf-8")
     import agents.outline as ol
-    ol.init_chapter_workspaces(outline, str(ws), force=True)
+    new_fp = ol.chapter_fingerprint(
+        ol.resolve_write_mode(Path(folder).name, outline_path=outline)["chapter"])
     second, result = run_pipeline_to_end(folder, data, outline)
 
-    check("证据路由变化后不再调用任何 Agent",
+    check("路由变化后不再调用任何 Agent",
           not second.prompts, str([p[:60] for p in second.prompts]))
     check("返回值列出了陈旧产物",
           "final.md" in result.get("stale_route_artifacts", []), str(result))
@@ -580,8 +629,9 @@ def test_evidence_route_change_blocks_and_keeps_artifacts():
           <= set(result.get("stale_route_artifacts", [])), str(result))
     check("昂贵的旧产物一个都没删",
           Path(folder, "final.md").exists() and Path(folder, "draft-v1.md").exists())
-    check("硬停前没有覆盖旧 pack 指纹",
-          orch.read_pack_fingerprint(os.path.join(folder, "context-pack.md")) == old_fp)
+    check("brief.md 仍是旧路由指纹(硬停在 --init 之前,不自动刷新)",
+          orch.read_brief_fingerprint(os.path.join(folder, "brief.md")) == old_fp)
+    check("新路由指纹确实 differs 于旧的", new_fp != old_fp)
 
 
 def test_renamed_outline_folder_is_not_a_chapter():

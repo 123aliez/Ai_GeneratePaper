@@ -20,13 +20,24 @@ REFERENCES_ROOT = PROJECT_ROOT / "references"  # bibliography + reading notes
 REFERENCE_INDEX_PATH = REFERENCES_ROOT / "index.md"
 BIBLIOGRAPHY_PATH = REFERENCES_ROOT / "bibliography.md"
 
-# ── The idea document (primary input for idea-family chapters) ───────────
+# ── The idea document (highest-priority input, read by EVERY agent) ──────
 # One global file the user writes: the novelty, the mechanism, the method
 # design, the claims. This — not the results store — is what a Method /
 # Introduction / Related Work chapter is written from. Experiment numbers only
-# support the idea; they are not the contribution. Every chapter can read it, so
-# the novelty is stated identically across the paper.
+# support the idea; they are not the contribution. Every chapter reads the SAME
+# idea.md, so the novelty is stated identically across the paper. It is injected
+# as the first instruction of every stage prompt (idea is never copied into a
+# pack or paraphrased — paraphrasing upstream is how a paper's claims drift).
 IDEA_PATH = Path(os.getenv("IDEA_PATH") or (PROJECT_ROOT / "idea.md"))
+
+# ── The data index (Manager-built navigation over data/) ─────────────────
+# data/ holds the raw experiment files (CSV/JSON/logs/plots). Agents drafting
+# data-family chapters (results/experiments/ablation) navigate them via this
+# index — a three-level map (experiment → result → specific value) the Manager
+# writes during `--init`. Once it exists it is NOT overwritten (the author may
+# have edited it). The number gate still reads the raw data/ as ground truth;
+# this index is only for the agents' navigation, never for verification.
+DATA_INDEX_PATH = Path(os.getenv("DATA_INDEX_PATH") or (DATA_ROOT / "data-index.md"))
 
 # Kept as a str for parity with the survey engine's tool code.
 PAPER_ROOT = str(WORKSPACE_ROOT)

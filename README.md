@@ -109,7 +109,7 @@ Ai_GeneratePaper/
 │   └── experiment-writing.md
 ├── workspace/                 # 章节工作区
 │   ├── cross-chapter-state.md # (--init 生成 + Stage 5 追加)跨章术语与结论载体
-│   └── <NN-章名>/             # (--init 生成)brief.md + input.md + 产物
+│   └── <NN-章名>/             # (--init 生成 brief.md;Stage 0 生成 input.md + 各产物)
 └── latex/                     # LaTeX 编译(build.py 带引用闭合校验)
 ```
 
@@ -133,9 +133,9 @@ cp outline.example.md outline.md   # `##` 是章(带 type:),`###` 是小节(带 
 # 5. 放实验数据(见 data/README.md 的格式契约)
 #    data/<experiment>/final_info.json, results.csv, logs, plots/
 
-# 6. 生成各章工作区,然后填素材
-python run.py --init          # → workspace/<NN-章名>/{brief.md,input.md} + 跨章状态
-#    往各章的 input.md 里填素材(它永不被覆盖)
+# 6. 生成各章工作区(顺带让 Manager 读 data/ 生成 data-index.md)
+python run.py --init          # → workspace/<NN-章名>/brief.md + 跨章状态 + data/data-index.md
+#    input.md 由 Stage 0 时 Manager 从你的 bibliography.md 自动生成
 
 # 7. 确认路由,然后跑
 python run.py --list          # 每章的路由 + 类型 + 状态
@@ -160,22 +160,25 @@ python tests/test_expand.py            # --expand 的越权改结构校验
 
 ```
     Python  → 路由解析                              章节位置 + brief 门禁 + type: → family/gate
-    Python  → context-pack.md                       按类型排序证据(idea 优先 / data 优先)
-0   Draft   → evidence-pack.md                      多视角挖证据,视角随类型切换
+0a  Manager → input.md                          从 bibliography 挑选本章文献素材(--init 不再生成 input.md)
+0b  Draft   → evidence-pack.md                      多视角挖证据,视角随类型切换(idea.md 全文 + data-index.md)
 1a  Manager → draft-v1.plan.md + Notation Table     规划 + 术语/符号表冻结
 1b~ Draft ×N→ draft-v1.part-N.md                    分段起草(段数 = min(小节数,3)),每段按自己的小节类型路由
     Python  → draft-v1.md                           按本次实际段数拼接
-    Python  → number-check.md                       数字门禁(blocking/advisory/off 按类型)
+    Python  → number-check.md                       数字门禁(blocking/advisory/off 按类型,直读 data/)
 2   Review  → review-v1.md + review-v1.json         评审(判据随类型+随模式)+ 打分 + needs_citation
     Python  → citation-insertions.md                引用补全(插 \cite,选不到的交人工)
 3   收敛循环 → draft-v2.md                           冻结首轮 MUST FIX,≤4 轮修到清
 4   Review  → final.md + final.zh.md + decision.md  定稿
-    Python  → final 数字门禁                         定稿复核
+    Python  → number-check.md(覆盖)                定稿复核数字门禁,两次只留一个文件
 5   Review  → cross-chapter-state.md                跨章交接 + Python 校验
 ```
 
-**编排由 Python 做,不由 Manager 做。** Manager 只承担 Stage 1a 的规划;阶段推进、门禁、
-断点续跑、重试全是确定性代码。
+> `idea.md` 是每个阶段提示词第一行直接指向的全局文件,Agent 用 read_file 读全文;
+> 不再有任何聚合资料文件。data 类章节写数字时读 `--init` 生成的 `data/data-index.md` 导航。
+
+**编排由 Python 做,不由 Manager 做。** Manager 只承担 Stage 0a 备料 + Stage 1a 的规划;
+阶段推进、门禁、断点续跑、重试全是确定性代码。
 
 **两个维度贯穿全流程**:
 - **类型路由**(取材)— 证据挖掘视角、起草主输入、审稿判据、数字门禁严格度
@@ -186,8 +189,9 @@ python tests/test_expand.py            # --expand 的越权改结构校验
 **收敛循环**是本框架相对 STORM / AI-Scientist 的增强:冻结首轮 MUST FIX 当验收单,
 循环修订直到全部解决或到 4 轮上限(未清项升级到 todo/decision,不空转)。
 
-**断点续跑**:每个产物"存在即跳过"。所以证据路由(类型/小节类型)写进 `context-pack.md`
-首行指纹;路由变了而旧产物还在,流水线**硬停**——一个文件都不删,但也绝不用旧路由的产物继续。
+**断点续跑**:每个产物"存在即跳过"。所以证据路由(类型/小节类型)写进 `brief.md`
+首行的 outline 指纹;路由变了(改了 type 没重新 --init)而旧产物还在,流水线**硬停**——
+一个文件都不删,但也绝不用旧路由的产物继续。
 
 ---
 
@@ -198,8 +202,11 @@ python tests/test_expand.py            # --expand 的越权改结构校验
 1. **`idea.md`** — 你的贡献/原理/方法设计(模板 `idea.example.md`)。**最重要的一份**
 2. **`outline.md`** — 整篇章节结构(模板 `outline.example.md`)
 3. `.env` 里的 API key
-4. `data/` 里的实验结果(格式见 `data/README.md`)
-5. 各章的 `input.md` 素材(`--init` 生成骨架,你往里填;永不被覆盖)
+4. `data/` 里的实验结果(格式见 `data/README.md`;`--init` 会据此生成 `data/data-index.md`)
+5. `references/bibliography.md` — 你的参考文献清单(Stage 0 据此生成各章 `input.md`)
+
+> `input.md` 不再由你手写,也不由 `--init` 生成:跑某章的 Stage 0 时 Manager 会从
+> 你的 `bibliography.md` 自动组织它。
 
 `idea.md`、`outline.md`、`data/` 都不进 git(`.gitignore` 挡掉),模板和契约文档进。
 

@@ -160,7 +160,7 @@ def _flatten(obj, prefix: str, store: dict) -> None:
                 store[prefix] = v
             else:
                 # I12: keep textual metadata (run_name, description, hardware,
-                # dataset, hyperparameters) so the context pack / evidence mining
+                # dataset, hyperparameters) so data-index.md / evidence mining
                 # can describe WHAT was run, not just the numbers. Non-numeric
                 # strings are stored with a ":" marker to distinguish text from
                 # numeric metrics for downstream table rendering.
