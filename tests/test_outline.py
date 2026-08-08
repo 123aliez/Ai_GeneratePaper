@@ -1,4 +1,4 @@
-"""outline.md 解析与逐章工作区生成的离线验证(不调 API、不发网络)。
+"""outline.md 解析与章节工作区生成的离线验证(不调 API、不发网络)。
 
 运行: python tests/test_outline.py
 """
@@ -363,8 +363,8 @@ def test_outline_excerpt_is_bounded():
 def test_part_count_adapts_to_section_count():
     """1/2 个小节的章不再被硬凑成三段。
 
-    逐章模式下 Abstract 常常只有 1 个小节;旧行为会补出 "Chapter part 2/3" 两个
-    没有来源的空段,还各给 700 词目标,于是 150 词的摘要被要求写成两千词。
+    Abstract 常常只有 1 个小节;旧行为会补出 "Chapter part 2/3" 两个没有来源的
+    空段,还各给 700 词目标,于是 150 词的摘要被要求写成两千词。
     """
     def sections(n):
         return [{"number": i, "title": f"S{i}", "target_words": 150}

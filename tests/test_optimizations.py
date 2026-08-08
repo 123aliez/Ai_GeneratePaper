@@ -79,7 +79,7 @@ def test_no_alignment_special_case():
           [p["numbers"] for p in parts] == [[1, 2], [3, 4], [5, 6]],
           str([p["numbers"] for p in parts]))
 
-    # 段数随小节数自适应(逐章模式引入):1/2 个小节不再硬凑三段,
+    # 段数随小节数自适应:1/2 个小节不再硬凑三段,
     # 否则 Abstract 章会多出两个没有来源的空段、各带 700 词目标。
     for count, want in {
         0: [[]],                                    # brief 没解析出小节 → 单段兜底

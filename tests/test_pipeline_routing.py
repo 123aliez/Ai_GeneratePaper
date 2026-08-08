@@ -63,8 +63,8 @@ def set_idea(text: str):
 def make_ws_in_outline(brief: str, chapter_folder: str = "chapter") -> str:
     """单章用的工作区:从 brief 推导出 outline,再走真正的 --init 生成它。
 
-    删掉逐章模式后,所有章节都必须在 outline 里,且 brief 必须带 outline 指纹(否则
-    门禁 ① 拦下)。这里从 brief 解析 type 与各小节(含小节级 `- type:` 与要点),镜像
+    所有章节都必须在 outline 里,且 brief 必须带 outline 指纹(否则非生成式 brief
+    门禁拦下)。这里从 brief 解析 type 与各小节(含小节级 `- type:` 与要点),镜像
     进一份单章 outline,调 init_chapter_workspaces 生成带指纹的 brief——这样路由解析、
     brief 指纹门禁、跨章状态门禁全部成立。返回 (章节目录, outline 路径, workspace 根)。
     """

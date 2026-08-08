@@ -45,7 +45,7 @@ def list_paper_folders():
     for name in sorted(os.listdir(PAPER_ROOT)):
         folder = os.path.join(PAPER_ROOT, name)
         if not os.path.isdir(folder) or name.startswith("_"):
-            continue      # `_EXAMPLE-whole-paper` 等脚手架目录不是章节
+            continue      # `template` 等脚手架目录不是章节
         has_brief = os.path.exists(os.path.join(folder, "brief.md"))
         done = os.path.exists(os.path.join(folder, "final.md"))
         status = "done" if done else "ready" if has_brief else "no brief.md"
