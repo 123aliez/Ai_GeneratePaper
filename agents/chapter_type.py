@@ -54,6 +54,27 @@ CHAPTER_TYPES = {
 DEFAULT_TYPE = "unknown"
 DEFAULT_ROUTE = (MIXED, ADVISORY)
 
+# 各 type 的经验默认词数(顶会经验值,非硬规定)。作者显式标 `(~N words)` 的小节优先;
+# 没标的小节按这条表给个合理默认,而不是清一色 250。数值取顶会常见区间中段:Abstract
+# 多在 180–220;Intro 约 500–900(一页);Related/Background 0.5–1.5 页;Method/Theory
+# 是核心 2–3 页;Experiments/Results/Ablation 常占大头;Limitations/Conclusion 偏短。
+# 仅供参考——篇幅最终是投稿约束(页数/章节配比),由作者定。
+DEFAULT_WORDS_BY_TYPE = {
+    "abstract": 200,
+    "intro": 700,
+    "related": 700,
+    "background": 700,
+    "method": 1500,
+    "theory": 1500,
+    "experiments": 1800,
+    "results": 1800,
+    "analysis": 1200,
+    "ablation": 1200,
+    "discussion": 600,
+    "limitations": 200,
+    "conclusion": 300,
+}
+
 # Spellings a user might reasonably write in brief.md, mapped to canonical types.
 # Kept generous on purpose: a typo silently falling back to `unknown` is worse
 # than accepting a synonym, because `unknown` routes to mixed/advisory and the

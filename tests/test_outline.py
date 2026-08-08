@@ -132,12 +132,43 @@ def test_parse_edge_cases():
     check("无章号时自动编号", [c["number"] for c in chapters] == [1, 2],
           str([c["number"] for c in chapters]))
 
-    # 缺字数 → 用默认值
+    # 缺字数 → 按 type 查表给默认值(method=1500),不是清一色 250
     chapters = ol.parse_outline(write_outline(
         "## 1. Method\ntype: method\n### 设计\n- x\n"))
-    check("小节缺字数用默认值",
-          chapters[0]["sections"][0]["target_words"] == ol.DEFAULT_SECTION_WORDS,
+    check("method 章小节缺字数按 type 给默认 1500",
+          chapters[0]["sections"][0]["target_words"] == ol.DEFAULT_WORDS_BY_TYPE["method"],
           str(chapters[0]["sections"][0]["target_words"]))
+    check("缺字数小节 words_explicit 仍是 False(默认值不算作者的决定)",
+          chapters[0]["sections"][0]["words_explicit"] is False)
+
+    # 不同 type 给不同默认值
+    results = ol.parse_outline(write_outline("## 1. Results\ntype: results\n### 主结果\n- x\n"))
+    check("results 章缺字数给 1800",
+          results[0]["sections"][0]["target_words"] == ol.DEFAULT_WORDS_BY_TYPE["results"])
+
+    # 小节级 type 优先于章 type:results 章里一个 ablation 小节按 1200
+    mixed = ol.parse_outline(write_outline(
+        "## 1. Results\ntype: results\n### 主结果\n- x\n\n### 消融\n- type: ablation\n- y\n"))
+    check("小节级 type 覆盖章 type 的默认字数",
+          mixed[0]["sections"][0]["target_words"] == ol.DEFAULT_WORDS_BY_TYPE["results"],
+          str(mixed[0]["sections"][0]["target_words"]))
+    check("ablation 小节按 ablation 的默认字数 1200",
+          mixed[0]["sections"][1]["target_words"] == ol.DEFAULT_WORDS_BY_TYPE["ablation"],
+          str(mixed[0]["sections"][1]["target_words"]))
+
+    # 显式标注优先于查表默认
+    explicit = ol.parse_outline(write_outline("## 1. Method\ntype: method\n### 设计 (~400 words)\n- x\n"))
+    check("显式标字数优先于 type 默认值",
+          explicit[0]["sections"][0]["target_words"] == 400,
+          str(explicit[0]["sections"][0]["target_words"]))
+    check("显式标了 words_explicit=True",
+          explicit[0]["sections"][0]["words_explicit"] is True)
+
+    # 无法识别的 type 没有默认字数 → 退回兜底 250
+    unknown = ol.parse_outline(write_outline("## 1. Foo\ntype: 火星文\n### A\n- x\n"))
+    check("无法识别 type 的小节退回兜底 250",
+          unknown[0]["sections"][0]["target_words"] == ol.DEFAULT_SECTION_WORDS,
+          str(unknown[0]["sections"][0]["target_words"]))
 
     # 章级没写 type → 从标题推
     chapters = ol.parse_outline(write_outline("## 5. Results\n### 主结果 (~300 words)\n- x\n"))

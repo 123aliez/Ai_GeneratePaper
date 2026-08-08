@@ -12,7 +12,8 @@
 `outline.expanded.md` 而不是原地覆盖:Manager 的判断需要你过一遍再采纳。
 
 字数不由 Manager 定 —— 篇幅是投稿约束(会议页数、章节配比),只有作者知道。
-不带 `(~N words)` 的小节按 DEFAULT_SECTION_WORDS 处理。
+不带 `(~N words)` 的小节,框架按该小节 type 查 DEFAULT_WORDS_BY_TYPE 给经验默认值
+(小节级 type 优先 → 章 type),都查不到才退回 DEFAULT_SECTION_WORDS=250。
 """
 import re
 from pathlib import Path
@@ -135,6 +136,27 @@ def build_expand_prompt(chapters: list[dict], out_path: str,
         f"- Give each chapter 2 to 4 subsections. A chapter with 3+ subsections is "
         f"drafted in three separate passes, so each subsection must be a coherent "
         f"unit of writing, not an arbitrary slice.\n\n"
+        f"## Length & structure heuristics (how to slice chapters, venue-style)\n"
+        f"- Prioritise the parts most readers actually read: Abstract + Introduction "
+        f"+ the headline figure. Make those subsections crisp.\n"
+        f"- Method and Experiments/Results are the content core — they should get "
+        f"the most subsections and the most bullets. Ablation/Analysis subsections "
+        f"add a lot of persuasiveness; include them when the idea supports it.\n"
+        f"- Tune the balance to the paper kind: a theory-heavy paper puts more in "
+        f"Method/Theory and less in experiments; a pure empirical/systems paper "
+        f"does the reverse.\n"
+        f"- Related Work can sit after Intro or near the Conclusion — your call; do "
+        f"not force one placement.\n"
+        f"- Venue-mandated sections: an ACL-style paper MUST have a standalone "
+        f"Limitations chapter (it does not count against the main page limit); some "
+        f"venues also want Broader Impact / Ethics. If the author's chapter list "
+        f"lacks these for such a venue, do NOT add chapters (structure is fixed) — "
+        f"but a Limitations subsection inside the right chapter is fine.\n"
+        f"- Appendices hold hyperparameters, proofs, extra experiments; keep the main "
+        f"text self-contained. You are planning the MAIN text only.\n"
+        f"- You do NOT write word counts — length is the author's call (page budget, "
+        f"venue limits). The framework fills a sensible per-type default where the "
+        f"author left it blank; the author overrides the important ones.\n\n"
         f"## What a good bullet looks like\n"
         f"Bullets are instructions handed verbatim to the drafting agent. Each "
         f"subsection needs 2 to 5 of them, covering:\n"

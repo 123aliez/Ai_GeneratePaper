@@ -24,13 +24,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from config import WORKSPACE_ROOT, PROJECT_ROOT
-from .chapter_type import normalize_type, route_for_type, DEFAULT_TYPE
+from .chapter_type import normalize_type, route_for_type, DEFAULT_TYPE, DEFAULT_WORDS_BY_TYPE
 
 OUTLINE_PATH = Path(os.getenv("OUTLINE_PATH") or (PROJECT_ROOT / "outline.md"))
 
 # `## 4. Method` / `## 4 Method` / `## Method`(无号则按出现顺序编号)
 _CHAPTER_RE = re.compile(r"^##\s+(?:(\d+)[.、]?\s+)?(.+?)\s*$")
-# `### 4.1 总体框架 (~250 words)`;字数段可缺省,缺省用 DEFAULT_SECTION_WORDS
+# `### 4.1 总体框架 (~250 words)`;字数段可缺省——没标时按该小节 type 查
+# DEFAULT_WORDS_BY_TYPE(小节级优先 → 章 type),都查不到才退回 DEFAULT_SECTION_WORDS
 _SECTION_RE = re.compile(
     r"^###\s+(?:[\d.]+\s+)?(.+?)\s*(?:\(~?\s*(\d+)\s*words?\s*\))?\s*$",
     re.IGNORECASE)
@@ -164,13 +165,22 @@ def _slug(text: str) -> str:
 
 
 def _finalize_chapters(chapters: list[dict]) -> list[dict]:
-    """补齐 family/gate/folder,两种骨架语法的共用收尾逻辑。"""
+    """补齐 family/gate/folder 与按 type 的默认字数,两种骨架语法的共用收尾逻辑。"""
     by_folder: dict[str, dict] = {}
     for chapter in chapters:
         if not chapter["type"]:
             guessed = normalize_type(chapter["title"])
             chapter["type"] = guessed if guessed != DEFAULT_TYPE else DEFAULT_TYPE
         chapter["family"], chapter["gate"] = route_for_type(chapter["type"])
+        # 没显式标字数的小节,按 type 给经验默认值(小节级 type 优先 → 章 type → 兜底 250)。
+        # 显式标过的保持不动(words_explicit=True,不在这里覆盖)。
+        for section in chapter["sections"]:
+            if not section.get("words_explicit"):
+                section_type = section.get("type") or ""
+                fallback = DEFAULT_WORDS_BY_TYPE.get(section_type) \
+                    or DEFAULT_WORDS_BY_TYPE.get(chapter["type"]) \
+                    or DEFAULT_SECTION_WORDS
+                section["target_words"] = fallback
         slug = _slug(chapter["title"]) or chapter["type"]
         if chapter["type"] != DEFAULT_TYPE and chapter["type"] not in slug:
             slug = f"{slug}-{chapter['type']}" if slug else chapter["type"]
