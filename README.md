@@ -1,6 +1,6 @@
 # Paper Agent — 实验数据驱动的多 Agent 论文写作框架
 
-从**你的创新点**(`idea.md`)、**论文结构**(`outline.md`)和**实验结果**(`data/`)生成实验型论文的多 Agent 框架。三个异构 Agent(Draft = Claude Opus / Review = GPT-5.5 / Manager = GPT-5.5)在文件系统上协作,对每个章节执行"证据挖掘 → 规划 → 分段起草 → 评审 → 收敛修订 → 定稿 → 跨章交接"的迭代。
+从**你的创新点**(`idea.md`)、**论文结构**(`outline.md`)和**实验结果**(`data/`)生成实验型论文的多 Agent 框架。三个异构 Agent 在文件系统上协作(规划者 Manager = GPT-5.5 / 起草者 Draft = Claude Opus / 评审者 Review = GPT-5.5),对每个章节执行"证据挖掘 → 规划 → 分段起草 → 评审 → 收敛修订 → 定稿 → 跨章交接"的迭代。
 
 这是 `survey/` 框架的实验型分支。核心区别:**内容源从文献笔记库换成"创新点文档 + 实验结果库"**,并加入了防幻觉门禁、数字一致性校验、引用闭合校验、证据挖掘和 outline 驱动的分章生成。
 
@@ -133,9 +133,9 @@ cp outline.example.md outline.md   # `##` 是章(带 type:),`###` 是小节(带 
 # 5. 放实验数据(见 data/README.md 的格式契约)
 #    data/<experiment>/final_info.json, results.csv, logs, plots/
 
-# 6. 生成各章工作区(顺带让 Manager 读 data/ 生成 data-index.md)
+# 6. 生成各章工作区(顺带让规划者读 data/ 生成 data-index.md)
 python run.py --init          # → workspace/<NN-章名>/brief.md + 跨章状态 + data/data-index.md
-#    input.md 由 Stage 0 时 Manager 从你的 bibliography.md 自动生成
+#    input.md 由 Stage 0a 时规划者从你的 bibliography.md 自动生成
 
 # 7. 确认路由,然后跑
 python run.py --list          # 每章的路由 + 类型 + 状态
@@ -160,25 +160,26 @@ python tests/test_expand.py            # --expand 的越权改结构校验
 
 ```
     Python  → 路由解析                              章节位置 + brief 门禁 + type: → family/gate
-0a  Manager → input.md                          从 bibliography 挑选本章文献素材(--init 不再生成 input.md)
-0b  Draft   → evidence-pack.md                      多视角挖证据,视角随类型切换(idea.md 全文 + data-index.md)
-1a  Manager → draft-v1.plan.md + Notation Table     规划 + 术语/符号表冻结
-1b~ Draft ×N→ draft-v1.part-N.md                    分段起草(段数 = min(小节数,3)),每段按自己的小节类型路由
+0a  规划者   → input.md                          从 bibliography 挑选本章文献素材(--init 不再生成 input.md)
+0b  起草者   → evidence-pack.md                      多视角挖证据,视角随类型切换(idea.md 全文 + data-index.md)
+1a  规划者   → draft-v1.plan.md + Notation Table     规划 + 术语/符号表冻结
+1b~ 起草者×N → draft-v1.part-N.md                    分段起草(段数 = min(小节数,3)),每段按自己的小节类型路由
     Python  → draft-v1.md                           按本次实际段数拼接
     Python  → number-check.md                       数字门禁(blocking/advisory/off 按类型,直读 data/)
-2   Review  → review-v1.md + review-v1.json         评审(判据随类型+随模式)+ 打分 + needs_citation
+2   评审者   → review-v1.md + review-v1.json         评审(判据随类型+随模式)+ 打分 + needs_citation
     Python  → citation-insertions.md                引用补全(插 \cite,选不到的交人工)
-3   收敛循环 → draft-v2.md                           冻结首轮 MUST FIX,≤4 轮修到清
-4   Review  → final.md + final.zh.md + decision.md  定稿
+3   收敛循环 → draft-v2.md                           冻结首轮 MUST FIX,≤4 轮修到清(起草者改↔评审者验)
+4   评审者   → final.md + final.zh.md + decision.md  定稿
     Python  → number-check.md(覆盖)                定稿复核数字门禁,两次只留一个文件
-5   Review  → cross-chapter-state.md                跨章交接 + Python 校验
+5   评审者   → cross-chapter-state.md                跨章交接 + Python 校验
 ```
 
 > `idea.md` 是每个阶段提示词第一行直接指向的全局文件,Agent 用 read_file 读全文;
 > 不再有任何聚合资料文件。data 类章节写数字时读 `--init` 生成的 `data/data-index.md` 导航。
 
-**编排由 Python 做,不由 Manager 做。** Manager 只承担 Stage 0a 备料 + Stage 1a 的规划;
-阶段推进、门禁、断点续跑、重试全是确定性代码。
+**编排由 Python 做,不由任何 Agent 做。** 规划者(Manager)只承担 Stage 0a 备料 + Stage 1a
+的规划;阶段推进、门禁、断点续跑、重试全是确定性代码。三个 Agent——规划者 / 起草者(Draft)/
+评审者(Review)——彼此只通过读写文件协作,不直接对话。
 
 **两个维度贯穿全流程**:
 - **类型路由**(取材)— 证据挖掘视角、起草主输入、审稿判据、数字门禁严格度
@@ -203,9 +204,9 @@ python tests/test_expand.py            # --expand 的越权改结构校验
 2. **`outline.md`** — 整篇章节结构(模板 `outline.example.md`)
 3. `.env` 里的 API key
 4. `data/` 里的实验结果(格式见 `data/README.md`;`--init` 会据此生成 `data/data-index.md`)
-5. `references/bibliography.md` — 你的参考文献清单(Stage 0 据此生成各章 `input.md`)
+5. `references/bibliography.md` — 你的参考文献清单(Stage 0a 据此生成各章 `input.md`)
 
-> `input.md` 不再由你手写,也不由 `--init` 生成:跑某章的 Stage 0 时 Manager 会从
+> `input.md` 不再由你手写,也不由 `--init` 生成:跑某章的 Stage 0a 时规划者会从
 > 你的 `bibliography.md` 自动组织它。
 
 `idea.md`、`outline.md`、`data/` 都不进 git(`.gitignore` 挡掉),模板和契约文档进。

@@ -17,12 +17,12 @@
 章标题中英文都行(决定文件夹名)。type 必须从下面词表取值。
 
 填完跑:
-  python run.py --expand    # Manager 读 idea.md,补每章的小节与要点 → outline.expanded.md
+  python run.py --expand    # 规划者读 idea.md,补每章的小节与要点 → outline.expanded.md
                             #   审阅它,补上 (~N words) 定篇幅,改名成 outline.md
   python run.py --init      # 生成各章工作区
 
 只填这张表就直接 --init 会被拒绝:没有小节的章,起草时拿不到任何要点,
-Draft 只能照章标题硬编。必须先 --expand(或自己写 ### 小节)。
+起草者只能照章标题硬编。必须先 --expand(或自己写 ### 小节)。
 -->
 
 ## type 词表

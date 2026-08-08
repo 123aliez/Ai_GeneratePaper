@@ -13,7 +13,7 @@
 | 2 | **写 `outline.md`** | 根目录(`cp outline.example.md outline.md`) | `--init` 没有输入,跑不起来 |
 | 3 | **放实验结果** | `data/results/<run>/final_info.json` | data 类章节(Results/Experiments/Ablation)pre-flight 直接拒绝 |
 | 4 | **填参考文献** | `references/bibliography.md` | 目前只有 1 行示例。引用补全无 key 可匹配,全部标 `needs_human` |
-| 5 | **填参考文献清单** | `references/bibliography.md` | 各章 `input.md` 由 Stage 0 时 Manager 从它生成;清单空则 input 内容空洞 |
+| 5 | **填参考文献清单** | `references/bibliography.md` | 各章 `input.md` 由 Stage 0a 时规划者从它生成;清单空则 input 内容空洞 |
 | 6 | **填 API key** | `.env`(已存在但值为空) | 无法调模型。三组 Agent 各自独立配 |
 
 第 1 项最关键:`idea.md` 的第 3 节(核心洞察)和第 4 节(方法设计)是框架**唯一不能替你补**的部分。
