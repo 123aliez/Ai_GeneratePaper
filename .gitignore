@@ -20,7 +20,12 @@ venv/
 *.fdb_latexmk
 *.synctex.gz
 main.pdf
-workspace/**/latex/main.pdf
+
+# workspace 是本地工作产物(brief/input/draft/final/跨章状态…)。
+# 文件夹本身用 .gitkeep 保留,但里面跑出来的东西不进版本库——它们是 --init / 流水线
+# 的产物,不是源代码。.gitkeep 例外,它让空目录能被 git 跟踪。
+workspace/**
+!workspace/.gitkeep
 
 # User experiment data is local and often large — keep the contract, not the payload.
 # Comment the next lines out if you want results committed.
