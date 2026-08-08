@@ -21,12 +21,11 @@ from .chapter_type import (
     resolve_run_route, route_banner,
     IDEA, DATA, MIXED, BLOCKING, ADVISORY, OFF,
 )
-# 写作路由的常量与函数改为模块级导入。原先是函数体内懒加载 + 宽泛 except:
-# 一旦 outline.md 读取或解析出错,write_mode 虽预设成 SINGLE,mode_clause 却还是
-# 空串——实际效果是"没有任何写作契约",而不是安全地按自包含模式跑。现在解析失败
+# 写作路由的常量与函数模块级导入。原先是函数体内懒加载 + 宽泛 except:outline.md
+# 一旦读取或解析出错,mode_clause 仍是空串——等于"没有任何写作契约"。现在解析失败
 # 直接硬停(见 run_4stage_with_progress 里的 OutlineRouteError 分支)。
 from .outline import (
-    FULL, SINGLE, CROSS_CHAPTER_STATE, XCHAP_HEADINGS,
+    FULL, CROSS_CHAPTER_STATE, XCHAP_HEADINGS,
     OutlineRouteError,
     build_outline_excerpt, build_mode_clause, build_mode_review_clause,
     resolve_write_mode, read_brief_fingerprint, chapter_fingerprint,
@@ -80,22 +79,21 @@ _PACK_FINGERPRINT_PREFIX = "<!-- route-fingerprint: "
 _PACK_FINGERPRINT_RE = re.compile(r"^<!--\s*route-fingerprint:\s*(.*?)\s*-->\s*$")
 
 
-def pack_fingerprint(route: dict, write_mode: str = "") -> str:
+def pack_fingerprint(route: dict) -> str:
     """把决定 pack 内容的 route 字段压成一行可比对的指纹。
 
     只取真正影响 pack 排序与标注的三个字段:type / family / gate。小节级类型也
-    纳入,因为整篇 brief 改了某一节的 `- type:` 同样会改变 family 的并集结果。
+    纳入,因为 brief 改了某一节的 `- type:` 同样会改变 family 的并集结果。
 
-    write_mode(FULL/SINGLE)也必须纳入:手建的单章后来被补进 outline.md,证据
-    路由一个字都没变,但写作契约从"自包含"翻成"整篇第 N 章"——已经落盘的 plan、
-    各 part、review 全是按自包含写的,断点续跑会把它们原样复用。
+    写作路由不再进指纹:所有章节都从 outline 整篇生成,只剩一种路由,不存在"路由
+    翻转后旧草稿被静默复用"的场景。证据路由(type/family/gate)仍在,改 type 后
+    旧 pack 会被正确判为过期。
     """
     section_types = route.get("section_types") or {}
     sections = ",".join(f"{n}:{t}" for n, t in sorted(section_types.items()))
     return (f"type={route.get('type', 'unknown')} "
             f"family={route.get('family', MIXED)} "
             f"gate={route.get('gate', ADVISORY)}"
-            + (f" write_mode={write_mode}" if write_mode else "")
             + (f" sections={sections}" if sections else ""))
 
 
@@ -126,10 +124,9 @@ def read_pack_fingerprint(pack_path: str):
     return match.group(1) if match else ""
 
 
-def stamp_pack_fingerprint(pack_text: str, route: dict,
-                           write_mode: str = "") -> str:
+def stamp_pack_fingerprint(pack_text: str, route: dict) -> str:
     """在 pack 正文前加一行 HTML 注释指纹(Markdown 渲染时不可见)。"""
-    fingerprint = pack_fingerprint(route, write_mode)
+    fingerprint = pack_fingerprint(route)
     return f"{_PACK_FINGERPRINT_PREFIX}{fingerprint} -->\n{pack_text}"
 
 
@@ -292,7 +289,7 @@ def build_stage1_parts(sections: list[dict]) -> list[dict]:
     Alignment 章特例(含 "rlvr" + "constitutional" 小节时改用异常分组),对实验型
     论文没有意义,只会在小节命名恰好命中时把边界打乱,已删除。
 
-    段数不再固定为三:逐章模式下 Abstract 这类章只有 1-2 个小节,硬凑三段会生出
+    段数不再固定为三:Abstract 这类章只有 1-2 个小节,硬凑三段会生出
     "Chapter part 2/3" 这种没有来源的空段,并给它们 700 词的目标——150 词的摘要
     因此被要求写成两千词。段数 = min(小节数, 3),没有小节时退回单段。
     """
@@ -350,8 +347,8 @@ def format_stage1_parts(parts: list[dict]) -> str:
     """把段边界渲染成规划提示词里的一段说明。
 
     字数区间按比例放宽,不用固定的 ±词数。原先是 `max(300, target-100)` 到
-    `target+150`:那个 300 下限是照 survey 章节(每段 700+ 词)定的,用在逐章模式下
-    一个 150 词的摘要上会被抬成 "300-300 words" —— 目标翻倍,区间还塌成一个点。
+    `target+150`:那个 300 下限是照 survey 章节(每段 700+ 词)定的,用在一个 150
+    词的摘要上会被抬成 "300-300 words" —— 目标翻倍,区间还塌成一个点。
     """
     blocks = []
     for part in parts:
@@ -507,9 +504,8 @@ def run_convergence_loop(draft_agent, review_agent, folder_path, folder_rel,
     carry that call's closure state). Every round's artifacts are round-numbered so
     a crashed run resumes instead of restarting. Returns the last draft result.
 
-    mode_clause 是 FULL/SINGLE 写作契约。修订轮同样要带上它:收敛循环会重写整篇
-    草稿,不带这段的话,自包含单章在第 2 轮就可能被补上"承接上一章"的过渡句——
-    而那正是首轮已经按 SINGLE 规则清掉的东西。"""
+    mode_clause 是整篇写作契约。修订轮同样要带上它:收敛循环会重写整篇草稿,
+    不带这段的话,某一段在第 2 轮可能被改得不遵守跨章约定。"""
     review = read_json_artifact(folder_path, "review-v1.json")
     frozen = review.get("must_fix", []) if isinstance(review, dict) else None
 
@@ -1115,74 +1111,58 @@ def run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manage
             except Exception as exc:
                 print(f"[Manager  ] notice     | pre-flight results check skipped: "
                       f"{str(exc)[:160]}", flush=True)
-        # ── 两条写作路由 ────────────────────────────────────────────
-        # FULL(整篇):文件夹来自 outline.md,有邻章、有跨章状态,符号沿用前章。
-        # SINGLE(逐章):手建文件夹,outline 里没有它,本章必须自包含、禁止跨章过渡。
-        # 判据是"这个文件夹在不在 outline.md 里",而不是命令行怎么写的:同一个
-        # 文件夹用 --all 还是单章命令跑,写作契约都该一样。
+        # ── 写作路由 ────────────────────────────────────────────────
+        # 所有章节文件夹都来自 outline.md,每一章都是整篇里的第 N 章:有邻章、有跨章
+        # 状态、符号沿用前章。
         #
-        # 必须在 context-pack 之前解析:write_mode 进指纹,而 pack 与其下游产物都
-        # 带"存在即跳过"。解析失败不能退回"空的 mode_clause"——那等于两种模式都
-        # 不下指令,是比任何一种模式都糟的第三种行为,所以这里直接停。
+        # 必须在 context-pack 之前解析:解析失败不能退回"空的 mode_clause"——那等于
+        # 没下任何写作指令,是比任何一种指令都糟的行为,所以这里直接停。
         xchap = os.path.join(str(Path(folder_path).parent), CROSS_CHAPTER_STATE)
         try:
             info = resolve_write_mode(chapter)
         except (OutlineRouteError, OSError) as exc:
             print(f"[Manager  ] FAIL      | 无法确定写作路由: {exc}", flush=True)
-            print(f"[Manager  ] FAIL      | 修好 outline.md 再重跑;"
-                  f"不确定是整篇还是逐章时,任何一种指令都可能是错的。", flush=True)
+            print(f"[Manager  ] FAIL      | 所有章节都从 outline.md 生成;"
+                  f"先跑 `python run.py --init`。", flush=True)
+            results["route_blocked"] = f"not in outline: {exc}"
             return results
 
-        write_mode = info["mode"]
         mode_clause = build_mode_clause(chapter, cross_chapter_path=xchap)
         mode_review_clause = build_mode_review_clause(
             chapter, cross_chapter_path=xchap)
-        # 邻章视野只在 FULL 下有意义,也只给规划者:它需要知道前后章覆盖什么
-        # 才能划清边界。有界——三章的标题与小节清单,不含要点正文,整篇 outline
-        # 不进任何 Agent 的上下文。
+        # 邻章视野只给规划者:它需要知道前后章覆盖什么才能划清边界。有界——三章的
+        # 标题与小节清单,不含要点正文,整篇 outline 不进任何 Agent 的上下文。
         outline_clause = build_outline_excerpt(chapter)
         cross_xchap_hint = ""
-        if write_mode == FULL and os.path.exists(xchap):
+        if os.path.exists(xchap):
             cross_xchap_hint = (
                 f"\nAlso read '{xchap}': it holds the terminology decisions and "
                 f"key claims of the chapters already written. Reuse those "
                 f"definitions verbatim instead of coining new ones.\n")
-        detail = (f"整篇第 {info['position']}/{info['total']} 章,可跨章引用"
-                  if write_mode == FULL else
-                  "自包含单章,术语本章自定义、禁止跨章过渡句")
-        print(f"[Manager  ] write-mode | {write_mode} — {detail}", flush=True)
-        # brief.md 的来源必须与路由一致。三种不一致全部硬停而不是报警继续:
-        # 报警继续意味着这一次就用相反的写作契约生成正文,而且下一次运行指纹已被
-        # 覆盖、警告不再出现,错误产物从此静默传递下去。硬停不删任何文件。
+        detail = f"整篇第 {info['position']}/{info['total']} 章,可跨章引用"
+        print(f"[Manager  ] write-mode | full — {detail}", flush=True)
+        # brief.md 有两道门禁:① 非生成式 brief(无 outline 指纹);② outline 改动后
+        # 已过期的 brief。两种都硬停而不是报警继续:报警继续意味着这一次就用错的
+        # 写作契约生成正文,而且下一次运行指纹已被覆盖、警告不再出现,错误产物从此
+        # 静默传递下去。硬停不删任何文件。
         brief_fp = read_brief_fingerprint(os.path.join(folder_path, "brief.md"))
-        if write_mode == FULL and not brief_fp:
-            results["route_blocked"] = "FULL chapter has a handwritten brief"
-            print(f"[Manager  ] FAIL      | '{chapter}' 在 outline.md 里(整篇第 "
-                  f"{info['position']} 章),但 brief.md 不是 --init 生成的版本", flush=True)
-            print(f"[Manager  ] FAIL      | 手写 brief 没有章序号与结构约定,"
+        if not brief_fp:
+            results["route_blocked"] = "chapter has a non-generated brief"
+            print(f"[Manager  ] FAIL      | '{chapter}' 的 brief.md 不是 --init 生成的"
+                  f"(缺少 outline 指纹)", flush=True)
+            print(f"[Manager  ] FAIL      | 非生成式 brief 没有章序号与结构约定,"
                   f"按整篇跑会写出错的衔接。先跑 `python run.py --init --force`", flush=True)
             return results
-        if write_mode == FULL and chapter_fingerprint(info["chapter"]) != brief_fp:
+        if chapter_fingerprint(info["chapter"]) != brief_fp:
             results["route_blocked"] = "brief is stale against outline"
             print(f"[Manager  ] FAIL      | outline.md 已改动,但本章 brief.md 还是旧版本",
                   flush=True)
             print(f"[Manager  ] FAIL      | 继续跑用的是旧章节规格。"
                   f"跑 `python run.py --init --force` 刷新后重试", flush=True)
             return results
-        if write_mode == SINGLE and brief_fp:
-            # 带生成指纹却不在当前 outline 里:大概率是改了章标题导致文件夹改名。
-            # 按 SINGLE 继续跑,会拿着按整篇写出来的旧草稿套自包含约束——两套要求
-            # 相反,而且这一章的产物永远进不了整篇。
-            results["route_blocked"] = "generated brief is absent from current outline"
-            print(f"[Manager  ] FAIL      | '{chapter}' 的 brief.md 是 --init 生成的,"
-                  f"但当前 outline.md 里没有这个文件夹", flush=True)
-            print(f"[Manager  ] FAIL      | 大概率是改了章标题导致文件夹改名。"
-                  f"改回标题、或把 input.md 迁到新目录后 `--init`;"
-                  f"确实要按逐章写,请删掉 brief.md 首行的 outline 指纹", flush=True)
-            return results
-        if write_mode == FULL and not os.path.isfile(xchap):
-            results["route_blocked"] = "FULL chapter has no cross-chapter state"
-            print(f"[Manager  ] FAIL      | 整篇路由但 {display_path(xchap)} 不存在;"
+        if not os.path.isfile(xchap):
+            results["route_blocked"] = "chapter has no cross-chapter state"
+            print(f"[Manager  ] FAIL      | {display_path(xchap)} 不存在;"
                   f"本章无处读取前章术语、也无处写下自己的约定", flush=True)
             print(f"[Manager  ] FAIL      | 跑 `python run.py --init` 生成它后重试", flush=True)
             return results
@@ -1190,7 +1170,7 @@ def run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manage
         try:
             from .content_source import build_context_pack, content_source_summary
             pack_path = os.path.join(folder_path, "context-pack.md")
-            want = pack_fingerprint(route, write_mode)
+            want = pack_fingerprint(route)
             have = read_pack_fingerprint(pack_path)
             # read_pack_fingerprint 返回三种值:
             #   None  — 文件不存在(首跑),无下游产物,直接重建即可
@@ -1216,7 +1196,7 @@ def run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manage
                     return results
             context_pack = build_context_pack(chapter, str(DATA_ROOT), family=family)
             Path(pack_path).write_text(
-                stamp_pack_fingerprint(context_pack, route, write_mode),
+                stamp_pack_fingerprint(context_pack, route),
                 encoding="utf-8")
             print(f"[Manager  ] content    | {content_source_summary(family)}", flush=True)
             print(f"[Manager  ] write_file | {folder_rel}/context-pack.md", flush=True)
@@ -1231,7 +1211,6 @@ def run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manage
     else:
         cross = "paper/00 Background & Example/cross-chapter-state.md"
         structure = "paper/01 Structure/final.md"
-        write_mode = FULL   # survey 引擎本来就是整篇模式
         xchap = ""
         cross_xchap_hint = ""
         routing_clause = ""
@@ -1597,14 +1576,11 @@ def run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manage
         except Exception as exc:
             print(f"[Manager  ] notice     | final number gate skipped: {str(exc)[:160]}", flush=True)
 
-    # ── Stage 5: 更新跨章状态(仅 FULL 路由) ──────────────────────────
-    # 整篇模式下 cross-chapter-state.md 是章节间传递术语与结论的唯一载体:下一章
-    # 的 Agent 靠它拿到"上一章把这个符号定成了什么""哪些结论已经建立"。原先只打印
-    # 一行"记得手动更新"——而漏一次,后面章节的术语就开始漂。
-    #
-    # SINGLE 路由(手建文件夹、outline 里没有这一章)明确跳过:那一章按自包含写的,
-    # 把它的术语写进跨章状态会让后来 --init 的整篇运行继承一份不属于该结构的约定。
-    if PAPER_MODE == "experiment" and all_ok and write_mode == FULL:
+    # ── Stage 5: 更新跨章状态 ─────────────────────────────────────────
+    # cross-chapter-state.md 是章节间传递术语与结论的唯一载体:下一章的 Agent 靠它
+    # 拿到"上一章把这个符号定成了什么""哪些结论已经建立"。原先只打印一行"记得手动
+    # 更新"——而漏一次,后面章节的术语就开始漂。
+    if PAPER_MODE == "experiment" and all_ok:
         xchap_path = os.path.join(str(Path(folder_path).parent), CROSS_CHAPTER_STATE)
         results["stage5_xchap_ok"] = False
         if os.path.exists(xchap_path):
@@ -1644,7 +1620,7 @@ def run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manage
                 f"Write the complete updated file to '{candidate_path}' with write_file."
             ))
             set_agent_context("Manager")
-            # 验证候选文件,通过了才原子替换。Stage 5 是整篇模式下章节间的唯一交接点:
+            # 验证候选文件,通过了才原子替换。Stage 5 是章节间的唯一交接点:
             # 它静默失败,后面每一章都会各自另立一套术语,而流水线全程显示 DONE。
             # 让它写候选文件而不是直接写目标,是因为"它删掉了前几章的条目"这种失败
             # 只能在写完之后才发现——那时目标文件已经被覆盖,前章的约定找不回来了。
@@ -1678,9 +1654,9 @@ def run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manage
                           f"(final.md 已在,只会重跑 Stage 5)", flush=True)
                     all_ok = False
         else:
-            # 不能只是提示。FULL 路由却没有跨章状态文件 = 这一章的术语约定无处落盘,
-            # 后面每一章都会各自另立一套,而流水线会打印 DONE。
-            print(f"[Manager  ] FAIL      | FULL 路由但 {display_path(xchap_path)} 不存在;"
+            # 不能只是提示。没有跨章状态文件 = 这一章的术语约定无处落盘,后面每一章
+            # 都会各自另立一套,而流水线会打印 DONE。
+            print(f"[Manager  ] FAIL      | {display_path(xchap_path)} 不存在;"
                   f"本章的术语约定无处落盘", flush=True)
             print(f"[Manager  ] FAIL      | 跑 `python run.py --init` 生成它后重跑本章"
                   f"(只会重跑 Stage 5)", flush=True)

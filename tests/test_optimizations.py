@@ -115,33 +115,31 @@ def test_survey_paths_refuse_in_experiment_mode():
 
 # ── 优化 3:context-pack 路由指纹 ─────────────────────────────────────
 def test_pack_fingerprint():
+    import inspect
     method = {"type": "method", "family": IDEA, "gate": ADVISORY, "section_types": {1: "method"}}
     results = {"type": "results", "family": DATA, "gate": BLOCKING, "section_types": {1: "results"}}
+
+    # 写作模式已删,pack_fingerprint 只接收证据路由这一个参数。
+    check("pack_fingerprint 只接收证据路由",
+          len(inspect.signature(orch.pack_fingerprint).parameters) == 1)
+    check("stamp_pack_fingerprint 只接收正文与证据路由",
+          len(inspect.signature(orch.stamp_pack_fingerprint).parameters) == 2)
 
     fp_method, fp_results = orch.pack_fingerprint(method), orch.pack_fingerprint(results)
     check("不同路由产生不同指纹", fp_method != fp_results, f"{fp_method} == {fp_results}")
     check("同一路由指纹稳定", orch.pack_fingerprint(dict(method)) == fp_method)
+    check("指纹格式只含证据路由字段",
+          fp_method == "type=method family=idea gate=advisory sections=1:method", fp_method)
     check("指纹含 family 与 gate",
           "family=idea" in fp_method and "gate=advisory" in fp_method, fp_method)
 
-    # 只改一个小节的 type 也必须换指纹(整篇 brief 的分段路由靠它)。
+    # 只改一个小节的 type 也必须换指纹(brief 的分段路由靠它)。
     a = {"type": "method", "family": MIXED, "gate": ADVISORY,
          "section_types": {1: "method", 2: "results"}}
     b = {"type": "method", "family": MIXED, "gate": ADVISORY,
          "section_types": {1: "method", 2: "discussion"}}
     check("小节级 type 变化会改变指纹",
           orch.pack_fingerprint(a) != orch.pack_fingerprint(b))
-
-    # 写作路由也必须进指纹:手建单章后来补进 outline.md,证据路由一个字没变,但
-    # 写作契约从"自包含"翻成"整篇第 N 章",而 plan / 各 part / review 全是按自
-    # 包含写的,断点续跑会原样复用它们。
-    check("FULL 与 SINGLE 产生不同的断点续跑指纹",
-          orch.pack_fingerprint(method, orch.FULL)
-          != orch.pack_fingerprint(method, orch.SINGLE))
-    check("不传 write_mode 时指纹与旧版一致(向后兼容)",
-          orch.pack_fingerprint(method) == fp_method)
-    check("write_mode 出现在指纹串里",
-          "write_mode=full" in orch.pack_fingerprint(method, orch.FULL))
 
     # 盖章 → 读回,能往返。
     folder = tempfile.mkdtemp()

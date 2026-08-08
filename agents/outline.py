@@ -8,7 +8,7 @@
 
 * 上下文分层。Agent 只该看到自己这一章的规格,不该把整篇目录塞进每次调用。
   这与项目既有的"机制文档只喂给它的消费方"是同一条原则。
-* 自包含工作区。`workspace/04-method/` 带着一份 brief,能看出这次运行依据的
+* 工作区自带规格。`workspace/04-method/` 带着一份 brief,能看出这次运行依据的
   到底是什么规格,不必回溯 outline 的历史版本。
 * 既有流水线(orchestrator / chapter_type / prompts)全部读 brief.md,
   换掉它是无收益的大改。
@@ -52,20 +52,12 @@ DEFAULT_SECTION_WORDS = 250
 BRIEF_FINGERPRINT_PREFIX = "<!-- outline-fingerprint:"
 _BRIEF_FINGERPRINT_RE = re.compile(r"^<!--\s*outline-fingerprint:\s*(.*?)\s*-->\s*$")
 
-# ── 两条写作路由 ─────────────────────────────────────────────────────
-# 同一套流水线,但对 Agent 的要求完全不同,不能共用一份指令:
-#
-# FULL(整篇)   — 文件夹由 outline.md 经 `--init` 生成。这一章是整篇里的第 N 章,
-#                前后有邻章,术语由 cross-chapter-state.md 跨章传递,开头要接上文、
-#                结尾要引下文,已经在前章定义过的符号不能重新定义。
-# SINGLE(逐章) — 使用者手建的文件夹,outline 里没有它。这一章要**自包含**:所有
-#                术语与符号首次出现就得在本章定义,而且严禁写 "as shown in
-#                Section 3" 这类指向不存在章节的过渡句——那是悬空引用。
-#
-# 用同一份指令跑两种模式的后果是双向的:整篇模式下每章都自我重复定义一遍符号;
-# 逐章模式下每章都写着"承接上一章"而上一章并不存在。
+# ── 写作路由 ─────────────────────────────────────────────────────────
+# 章节文件夹一律由 outline.md 经 `--init` 生成,每一章都是整篇里的第 N 章:前后有
+# 邻章,术语由 cross-chapter-state.md 跨章传递,开头要接上文、结尾要引下文,已经
+# 在前章定义过的符号不能重新定义。不在 outline 里的文件夹不算合法章节(resolve
+# 抛 OutlineRouteError,让调用方引导去 --init)。
 FULL = "full"
-SINGLE = "single"
 
 CROSS_CHAPTER_STATE = "cross-chapter-state.md"
 
@@ -434,9 +426,9 @@ def init_chapter_workspaces(outline_path=None, workspace_root=None,
     if not chapters:
         return result
 
-    # cross-chapter-state.md 只在整篇模式下存在,它就是 FULL 路由的开关:
-    # Stage 5 见到它才写跨章状态,起草提示词见到它才允许复用前章的术语定义。
-    # 逐章模式(手建文件夹)不跑 --init,所以这个文件不会出现,自包含约束自然生效。
+    # cross-chapter-state.md 由 --init 创建,是跨章术语与结论的载体:Stage 5 往里
+    # 追加本章约定,起草提示词读它复用前章定义。所有章节都由 --init 生成,所以这个
+    # 文件始终存在。
     root.mkdir(parents=True, exist_ok=True)
     xchap = root / CROSS_CHAPTER_STATE
     if not xchap.exists():
@@ -466,9 +458,9 @@ def init_chapter_workspaces(outline_path=None, workspace_root=None,
                 brief_path.write_text(render_brief(chapter), encoding="utf-8")
                 result["updated"].append(chapter["folder"])
             elif not have:
-                # 手写 brief 却出现在 outline 里:这个目录原来走 SINGLE(自包含),
-                # 现在被纳入整篇。必须显式 --force 换成生成式 brief,否则整篇运行
-                # 会拿着一份没有章序号约定的手写规格跑 FULL 路由。
+                # brief.md 没有 outline 指纹:它不是 --init 生成的(被手改过、或
+                # 被人手写后塞进了 outline)。必须显式 --force 换成生成式 brief,
+                # 否则会拿着一份没有章序号约定的规格跑整篇路由。
                 result["stale"].append(chapter["folder"])
             elif have != want:
                 result["stale"].append(chapter["folder"])
@@ -497,35 +489,38 @@ def chapters_without_sections(chapters: list[dict]) -> list[dict]:
 
 
 def resolve_write_mode(folder_name: str, outline_path=None) -> dict:
-    """判断这一章走 FULL 还是 SINGLE 路由。
+    """解析这一章在 outline 里的位置(整篇路由信息)。
 
-    判据只有一条:**该文件夹是否出现在 outline.md 里**。这比看命令行参数可靠——
-    `--all` 与单章命令都可能跑同一个文件夹,决定"这章有没有邻章"的是结构文件,
-    不是这次怎么启动的。
+    所有章节文件夹都由 outline.md 经 `--init` 生成,所以一个合法章节**必须**在
+    outline 里。三种情况都说明结构文件出问题了,抛 OutlineRouteError 让调用方
+    引导去 `--init`,而不是静默退回成另一种写法。
 
     返回::
 
-        {"mode": "full"|"single",
-         "position": 4, "total": 7,          # SINGLE 时都是 0
+        {"mode": "full",
+         "position": 4, "total": 7,
          "prev": {...} | None, "next": {...} | None,
-         "chapter": {...} | None}            # outline 里的该章(SINGLE 时 None)
+         "chapter": {...}}
     """
     path = Path(outline_path) if outline_path is not None else OUTLINE_PATH
     if not path.exists():
-        # outline 不存在:纯逐章用户从没写过 outline.md,一律 SINGLE。
-        return {"mode": SINGLE, "position": 0, "total": 0,
-                "prev": None, "next": None, "chapter": None}
+        raise OutlineRouteError(
+            f"找不到 {path}。所有章节都从它生成,先跑 --init:  python run.py --init"
+        )
     chapters = parse_outline(outline_path)
     if not chapters:
         raise OutlineRouteError(
-            f"{path} 存在但没有解析出任何章节；"
-            "拒绝把所有目录静默判成 SINGLE。"
+            f"{path} 存在但没有解析出任何章节。"
+            "每章需要一个 `## N. 标题` 标题行 + 一行 `type: <类型>`。"
+            "修好 outline 后跑:  python run.py --init"
         )
     index = next((i for i, c in enumerate(chapters)
                   if c["folder"] == folder_name), None)
     if index is None:
-        return {"mode": SINGLE, "position": 0, "total": 0,
-                "prev": None, "next": None, "chapter": None}
+        raise OutlineRouteError(
+            f"'{folder_name}' 不在 {path} 里。所有章节都从 outline 生成,"
+            "请先跑:  python run.py --init"
+        )
     return {"mode": FULL,
             "position": index + 1, "total": len(chapters),
             "prev": chapters[index - 1] if index > 0 else None,
@@ -545,13 +540,8 @@ def build_outline_excerpt(folder_name: str, outline_path=None) -> str:
     给规划者邻章视野,它才能划清边界:不把 baseline 对比写进方法章,不把机制解释
     留到结果章。只给标题与小节清单,不给要点正文——这是"有界"的意思:整篇 outline
     不进任何 Agent 的上下文,规划者也只看三章的骨架。
-
-    找不到该章(SINGLE 路由:手建的文件夹不在 outline 里)返回 ""——这时改由
-    build_mode_clause 给出自包含写作的指令。
     """
     info = resolve_write_mode(folder_name, outline_path)
-    if info["mode"] != FULL:
-        return ""
 
     lines = ["PAPER STRUCTURE (bounded excerpt — for boundary awareness only; "
              "do not draft content for the neighbouring chapters):"]
@@ -571,9 +561,9 @@ def build_outline_excerpt(folder_name: str, outline_path=None) -> str:
     return "\n".join(lines) + "\n\n"
 
 
-# ── 两条路由各自的写作契约 ───────────────────────────────────────────
-# 这两段是唯一区分两种模式的指令。区别集中在三件事:符号在哪定义、过渡句能不能
-# 指向别的章、术语跟谁对齐。
+# ── 整篇写作契约 ─────────────────────────────────────────────────────
+# 这一节定的是「符号在哪定义、过渡句怎么写、术语跟谁对齐」。所有章节都是整篇里
+# 的一章,所以只有一套指令。
 _FULL_CLAUSE = (
     "WRITING MODE: FULL-PAPER (this is chapter {position} of {total} in "
     "`outline.md`). The chapter is one part of a whole:\n"
@@ -587,36 +577,16 @@ _FULL_CLAUSE = (
     "- Anything that belongs to a neighbouring chapter must be left out, even if "
     "you have the material for it — duplication across chapters is a defect here.\n\n"
 )
-_SINGLE_CLAUSE = (
-    "WRITING MODE: STANDALONE CHAPTER (this folder is not part of any "
-    "`outline.md`; it was created by the author to be drafted on its own).\n"
-    "- Do NOT read or write any `cross-chapter-state.md`, neighbouring chapter "
-    "`final.md`, or paper-structure file. Their presence elsewhere in the "
-    "workspace does not make them context for this standalone chapter.\n"
-    "- The chapter must be SELF-CONTAINED. Every term, abbreviation and symbol "
-    "you use must be defined on first use INSIDE this chapter — there is no "
-    "earlier chapter to inherit definitions from.\n"
-    "- Do NOT write transitions that point at other chapters (\"as shown in "
-    "Section 3\", \"we introduced X earlier\", \"the next chapter evaluates\"). "
-    "Those targets do not exist and become dangling references.\n"
-    "- Do NOT assume what a previous or following chapter covers. If a piece of "
-    "context is needed to make this chapter readable, state it here in one or two "
-    "sentences rather than deferring it.\n"
-    "- Open and close the chapter on its own: a short framing sentence at the "
-    "start and a short takeaway at the end, with no hand-off to another chapter.\n\n"
-)
 
 
 def build_mode_clause(folder_name: str, outline_path=None,
                       cross_chapter_path: str = "") -> str:
-    """写作路由子句。FULL 与 SINGLE 的要求相反,必须分开下指令。
+    """写作路由子句:决定符号要不要重定义、过渡句怎么写。
 
-    这个子句进 Stage 1a 规划者与 Stage 1b/1c 起草者的提示词:决定要不要重复定义
-    符号、能不能写跨章过渡句的,是这一章有没有邻章,而这件事只有这里知道。
+    进 Stage 1a 规划者与 Stage 1b/1c 起草者的提示词。这一章有没有邻章、是首章还是
+    末章,只有 outline 解析结果知道。
     """
     info = resolve_write_mode(folder_name, outline_path)
-    if info["mode"] != FULL:
-        return _SINGLE_CLAUSE
     opening = ("This is the FIRST chapter, so open the paper rather than "
                "continuing from anything."
                if not info["prev"] else
@@ -641,27 +611,12 @@ _FULL_REVIEW_CLAUSE = (
     "chapter, or when the opening/closing transition is missing. Do NOT ask it to "
     "restate background that an earlier chapter established.\n\n"
 )
-_SINGLE_REVIEW_CLAUSE = (
-    "WRITING MODE: STANDALONE CHAPTER (no `outline.md` entry; it is read on its "
-    "own). Judge it as self-contained: raise MUST FIX for any term, abbreviation "
-    "or symbol used without a definition in THIS chapter, and for any reference to "
-    "another chapter or section number (\"as shown in Section 3\", \"the next "
-    "chapter\") — those targets do not exist. Do NOT ask for a transition into a "
-    "following chapter, and do not treat repeated context as redundancy: it has "
-    "to stand alone.\n\n"
-)
 
 
 def build_mode_review_clause(folder_name: str, outline_path=None,
                              cross_chapter_path: str = "") -> str:
-    """审稿人视角的路由子句。
-
-    与起草侧对称:不给这个,审稿人会在自包含单章里要求"补上与前一章的衔接",而
-    收敛循环把首轮 must_fix 冻结成验收清单,于是接下来几轮都在造悬空引用。
-    """
+    """审稿人视角的路由子句。与起草侧对称。"""
     info = resolve_write_mode(folder_name, outline_path)
-    if info["mode"] != FULL:
-        return _SINGLE_REVIEW_CLAUSE
     return _FULL_REVIEW_CLAUSE.format(
         position=info["position"], total=info["total"],
         xchap=cross_chapter_path or CROSS_CHAPTER_STATE)
@@ -670,9 +625,8 @@ def build_mode_review_clause(folder_name: str, outline_path=None,
 def render_cross_chapter_state(chapters: list[dict]) -> str:
     """`--init` 生成的 cross-chapter-state.md 骨架。
 
-    它的存在本身就是"整篇模式"的开关:Stage 5 只在这个文件存在时才更新跨章状态,
-    逐章模式(手建文件夹、无 outline)下它不存在,于是不会凭空生成跨章约定。
-    三个小节的标题被 Stage 5 的提示词按名字追加,改名会让追加失败。
+    它是跨章术语与结论的载体:Stage 5 往里追加本章约定,起草提示词读它复用前章
+    定义。三个小节的标题被 Stage 5 的提示词按名字追加,改名会让追加失败。
     """
     lines = [
         "# Cross-chapter state",
@@ -709,7 +663,7 @@ def outline_banner(result: dict) -> list[str]:
     state = result.get("cross_chapter")
     if state:
         lines.append(f"  [{state:<7}] {CROSS_CHAPTER_STATE:<24} "
-                     f"整篇模式的跨章状态载体(逐章模式下不需要它)")
+                     "跨章术语与结论的载体(Stage 5 追加)")
     for chapter in result["chapters"]:
         state = ("created" if chapter["folder"] in result["created"] else
                  "updated" if chapter["folder"] in result["updated"] else

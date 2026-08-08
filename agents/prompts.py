@@ -134,12 +134,8 @@ Before drafting or revising, read all available context in the current folder:
 - Latest decision.md, if present
 - references/bibliography.md (the citable reference list; REF-IDs come from here)
 
-Cross-chapter context is conditional on the task's WRITING MODE:
-- FULL-PAPER: read only the cross-chapter-state / structure paths the task hands you
-  explicitly, and reuse their terminology verbatim.
-- STANDALONE CHAPTER: do not search for or read cross-chapter-state.md, a neighbouring
-  chapter's final.md, or any paper-structure file, even if they exist elsewhere in the
-  workspace. The chapter is drafted on its own and must define everything it uses.
+Cross-chapter context: read only the cross-chapter-state / structure paths the task
+hands you explicitly, and reuse their terminology verbatim.
 
 If any expected input is missing, state the gap in "## Limitations of This Draft".
 
@@ -163,8 +159,7 @@ If any expected input is missing, state the gap in "## Limitations of This Draft
 ## Output Rules
 - Output filename: draft-v1.md (first draft) or draft-v2.md (revision after review)
 - End every draft with a "## Limitations of This Draft" section listing known gaps
-- In FULL-PAPER mode, maintain continuity with adjacent sections (terminology, scope,
-  tone). In STANDALONE mode, make no assumptions about adjacent sections at all.
+- Maintain continuity with adjacent sections (terminology, scope, tone).
 - Do not include meta-commentary about the writing process in the output
 """
 
@@ -183,12 +178,8 @@ Before reviewing or finalizing, read all available context:
 - Latest decision.md, if present
 - references/bibliography.md (the citable reference list; REF-IDs come from here)
 
-Cross-chapter context is conditional on the task's WRITING MODE:
-- FULL-PAPER: read only the cross-chapter-state / structure paths the task hands you
-  explicitly.
-- STANDALONE CHAPTER: do not search for or read cross-chapter-state.md, a neighbouring
-  chapter's final.md, or any paper-structure file. Judging the chapter against context
-  it was told not to use produces MUST FIX items that cannot be satisfied.
+Cross-chapter context: read only the cross-chapter-state / structure paths the task
+hands you explicitly.
 
 If any expected input is missing, note it in the review.
 
@@ -347,12 +338,9 @@ execute part by part without re-deriving anything:
    ([MISSING DATA] / [DESIGN DETAIL NEEDED]), never to quietly write around.
    Fold the per-part evidence INTO the plan — the drafter reads your plan, not the
    whole pack.
-4. Cross-chapter context depends on the task's WRITING MODE. In FULL-PAPER mode,
-   read the cross-chapter-state.md path the task gives you: it holds terminology and
-   symbol decisions earlier chapters already fixed, and you must reuse them rather
-   than redefine them. In STANDALONE mode, do not search for or read any
-   cross-chapter state, neighbouring chapter, or paper-structure file — the chapter
-   is planned to stand on its own.
+4. Cross-chapter context: read the cross-chapter-state.md path the task gives you.
+   It holds terminology and symbol decisions earlier chapters already fixed, and you
+   must reuse them rather than redefine them.
 
 ## What the plan must contain
 - A '## Notation and Terminology Table' FIRST, fixing for the whole chapter: one

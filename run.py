@@ -4,30 +4,19 @@ Experiment-Paper Multi-Agent Writing Framework — Main Entry Point
 Content source is data/ (experiment results) when PAPER_MODE=experiment, or
 references/ notes when PAPER_MODE=survey. Chapter workspaces live under workspace/.
 
-两种写作模式,是两条不同的路由,对 Agent 下的指令也不同:
+写一整篇论文。章节文件夹全部由 outline.md 经 `--init` 生成:
 
-  【整篇模式 FULL】  写一整篇论文。章节文件夹由 outline.md 自动生成。
-      python run.py --expand               # 章节骨架 → Manager 补小节与要点 → outline.expanded.md
+  python run.py --expand               # 章节骨架 → Manager 补小节与要点 → outline.expanded.md
                                            #   审阅它,补 (~N words),改名成 outline.md
-      python run.py --init                 # outline.md → workspace/<NN-type>/ + 跨章状态
-      python run.py --init --force         #   outline 改过之后刷新已存在的 brief.md
-      python run.py --all --progress       # 按章号顺序跑全部,失败即停
-      python run.py 04-method --progress   #   也可以只跑其中一章
-    这条路由下每章知道自己是第几章、前后是什么,符号沿用前章的定义(跨章状态文件
-    workspace/cross-chapter-state.md 由每章跑完后自动追加),开头接上文、结尾引下文。
+  python run.py --init                 # outline.md → workspace/<NN-type>/ + 跨章状态
+  python run.py --init --force         #   outline 改过之后刷新已存在的 brief.md
+  python run.py --all --progress       # 按章号顺序跑全部,失败即停
+  python run.py 04-method --progress   #   也可以只跑其中一章(必须在 outline 里)
 
-  【逐章模式 SINGLE】写单独一章。文件夹由你自己建,不写进 outline.md。
-      mkdir -p workspace/my-chapter        # 自己建文件夹
-      # 放一份 brief.md(格式见 workspace/<任意 --init 生成的章>/brief.md)
-      python run.py my-chapter --progress
-    这条路由下本章按**自包含**写:所有术语符号在本章首次出现处定义,严禁出现
-    "as shown in Section 3" 这类指向不存在章节的过渡句。跨章状态不读也不写。
+每章都是整篇里的第 N 章,知道前后是什么,符号沿用前章的定义(跨章状态文件
+workspace/cross-chapter-state.md 由每章跑完后自动追加),开头接上文、结尾引下文。
 
-路由判据只有一条:**该文件夹是否出现在 outline.md 里**。所以同一个文件夹无论用
---all 还是单章命令跑,写作契约都一致;把手建的章补进 outline.md 再 --init,它就
-自动转成整篇模式的一章。
-
-    python run.py --list                 # 列出所有章节文件夹及其路由与状态
+  python run.py --list                 # 列出所有章节文件夹及其状态
 
 outline.md 的分工:**你定结构**(分几章、每章什么 `type:`、什么顺序),`--expand`
 让 Manager 读 idea.md 补**施工细节**(每章拆哪几节、每节写什么、边界在哪)。
@@ -50,37 +39,29 @@ from agents import create_agents, run_4stage_via_manager, run_4stage_via_manager
 
 
 def list_paper_folders():
-    """列出所有章节文件夹,并标出它走哪条路由。
-
-    路由必须在这里就显示出来:两种模式对 Agent 的指令是相反的(能否跨章引用、
-    符号在哪定义),使用者得能一眼看出某个文件夹会按哪种方式写,而不是等跑完
-    才发现整篇里的一章被当成自包含单章写了。
-    """
-    from agents.outline import resolve_write_mode, OutlineRouteError, FULL
+    """列出所有章节文件夹及其状态(整篇第几章)。"""
+    from agents.outline import resolve_write_mode, OutlineRouteError
     print(f"Paper root: {PAPER_ROOT}\n")
     for name in sorted(os.listdir(PAPER_ROOT)):
         folder = os.path.join(PAPER_ROOT, name)
         if not os.path.isdir(folder) or name.startswith("_"):
-            continue      # `_TEMPLATE` 等脚手架目录不是章节
+            continue      # `_EXAMPLE-whole-paper` 等脚手架目录不是章节
         has_brief = os.path.exists(os.path.join(folder, "brief.md"))
         done = os.path.exists(os.path.join(folder, "final.md"))
         status = "done" if done else "ready" if has_brief else "no brief.md"
         try:
             info = resolve_write_mode(name)
-            route = (f"整篇 {info['position']}/{info['total']}" if info["mode"] == FULL
-                     else "逐章(自包含)")
+            route = f"整篇 {info['position']}/{info['total']}"
         except OutlineRouteError as exc:
-            # 不能猜:outline 坏了就说坏了,而不是把每个文件夹标成"逐章"。
-            route = f"路由未知({exc})"
+            # 不在 outline 里的文件夹不是合法章节:outline 坏了或没 --init。
+            route = "不在 outline(先 --init)"
         print(f"  [{status:12s}] {name:<26} {route}")
 
 
 def is_chapter_folder(name: str) -> bool:
     """这个目录是不是一个可跑的章节工作区。
 
-    `_` 前缀的是脚手架而非章节(`_TEMPLATE` 就是给逐章模式抄的模板)。不排掉的话
-    它会出现在 `--list` 里、被 `--all` 报成"跳过的逐章文件夹",甚至被误跑一次——
-    模板里的 `<小节1标题>` 占位符会被当成真的章节规格。
+    `_` 前缀的是脚手架而非章节。不排掉的话它会出现在 `--list` 里,甚至被误跑。
     """
     return (not name.startswith("_")
             and os.path.isdir(os.path.join(PAPER_ROOT, name))
@@ -94,28 +75,34 @@ def chapter_folders_in_order():
 
 
 def outline_chapters_in_order():
-    """`--all` 的运行清单:**只含 outline.md 里的章**,按 outline 顺序。
+    """`--all` 的运行清单:workspace 必须与 outline.md 完全一致,按 outline 顺序。
 
-    不用 chapter_folders_in_order 是因为两条路由不能混跑:手建的文件夹按自包含
-    写(术语本章定义、禁止跨章过渡),把它塞进整篇序列会让它的术语被 Stage 5 写进
-    跨章状态,污染后面真正属于这篇的章节。要让它进整篇,就把它补进 outline.md。
-
-    返回 (整篇章节列表, 被排除的手建文件夹列表)。outline 解析失败时抛
-    OutlineRouteError——整篇模式的运行顺序**就是** outline,读不出来不能继续。
+    缺 outline 里的章 = 还没 `--init`;多出磁盘目录 = 改标题后改名遗留。两种都拒绝
+    开始,避免 `--all` 只跑一个子集却报告"全部完成"。outline 解析失败同样抛错。
     """
-    from agents.outline import parse_outline
+    from agents.outline import parse_outline, OutlineRouteError
     outline_folders = [c["folder"] for c in parse_outline()]
     on_disk = set(chapter_folders_in_order())
-    ordered = [name for name in outline_folders if name in on_disk]
+    missing = [name for name in outline_folders if name not in on_disk]
     extra = sorted(on_disk - set(outline_folders))
-    return ordered, extra
+    if missing or extra:
+        details = []
+        if missing:
+            details.append("缺少目录: " + ", ".join(missing))
+        if extra:
+            details.append("不在 outline 的目录: " + ", ".join(extra))
+        raise OutlineRouteError(
+            "workspace 与 outline.md 不一致(" + "; ".join(details) + ")。"
+            "先跑 `python run.py --init`;遗留目录把 input.md 迁出后清理。"
+        )
+    return outline_folders, []
 
 
 def init_workspaces(force: bool) -> int:
-    """整篇模式的入口:读 outline.md 生成各章工作区 + 跨章状态。返回退出码。
+    """读 outline.md 生成各章工作区 + 跨章状态。返回退出码。
 
-    只有这条路会创建 cross-chapter-state.md——那个文件的存在就是整篇模式的标志。
-    逐章模式不跑 --init,所以自包含约束自然生效。
+    这条路会创建 cross-chapter-state.md——跨章术语与结论的载体,每章跑完由 Stage 5
+    追加。
     """
     from agents.outline import (chapters_without_sections,
                                 init_chapter_workspaces, outline_banner,
@@ -172,13 +159,11 @@ def init_workspaces(force: bool) -> int:
     print(counts)
 
     if result["stale"]:
-        print("\n以下章节的 brief.md 与当前 outline.md 不一致,或原本是手写的:")
+        print("\n以下章节的 brief.md 与当前 outline.md 不一致,或不是 --init 生成的:")
         for name in result["stale"]:
             print(f"  {name}")
         print("确认要用 outline 的新结构覆盖它们,就跑: python run.py --init --force")
         print("(input.md 里你填的素材不会被覆盖)")
-        print("注意:手写 brief 的文件夹一旦进了 outline,就从【逐章】转为【整篇第 N 章】,")
-        print("      写作契约随之改变——必须 --force 换成生成式 brief 才能按整篇跑。")
 
     on_disk = set(chapter_folders_in_order())
     ready = [chapter["folder"] for chapter in skeleton
@@ -342,30 +327,19 @@ def run_all_chapters(draft_agent, review_agent, manager_agent) -> int:
     """
     from agents.outline import OutlineRouteError
     try:
-        folders, extra = outline_chapters_in_order()
+        folders, _ = outline_chapters_in_order()
     except OutlineRouteError as exc:
         print(f"Error: 无法从 outline.md 得出章节顺序: {exc}")
-        print("整篇模式的运行顺序就是 outline.md,读不出来不能继续。")
         return 1
     if not folders:
         print(f"Error: outline.md 里的章节在 {PAPER_ROOT} 下一个都不存在。")
         print("先跑 python run.py --init 从 outline.md 生成章节文件夹。")
-        if extra:
-            print(f"\n检测到 {len(extra)} 个手建文件夹(不在 outline.md 里),它们属于逐章模式:")
-            for name in extra:
-                print(f"  python run.py \"{name}\" --progress")
         return 1
 
-    print(f"整篇模式 — 章节顺序来自 outline.md({len(folders)} 章):")
+    print(f"章节顺序来自 outline.md({len(folders)} 章):")
     for position, name in enumerate(folders, start=1):
         done = chapter_is_complete(name)
         print(f"  {'[done] ' if done else '       '}{position}/{len(folders)}  {name}")
-    if extra:
-        # 不静默跳过:使用者可能以为 --all 会跑所有文件夹。
-        print(f"\n跳过 {len(extra)} 个不在 outline.md 里的文件夹(逐章模式,需单独跑):")
-        for name in extra:
-            print(f"  {name}")
-        print("要把它们纳入整篇,请在 outline.md 里补上对应的 `## N. 标题` 后重新 --init。")
 
     completed, skipped = [], []
     for position, name in enumerate(folders, start=1):
@@ -453,13 +427,10 @@ def main():
     if not run_all:
         folder_path = os.path.join(PAPER_ROOT, folder_name)
 
-        # `_` 前缀是脚手架而非章节。--list 与 --all 已经排掉它们,但显式点名仍会跑——
-        # `_TEMPLATE/brief.md` 里的 `<小节1标题>` 占位符会被当成真的章节规格起草。
+        # `_` 前缀是脚手架而非章节。--list 与 --all 已经排掉它们,但显式点名仍会跑。
         if folder_name.startswith("_"):
             print(f"Error: '{folder_name}' 是脚手架目录(`_` 前缀),不是可跑的章节。")
-            print("逐章模式请自己建目录并抄模板:")
-            print(f"  mkdir -p {PAPER_ROOT}/my-chapter")
-            print(f"  cp {PAPER_ROOT}/_TEMPLATE/brief.md {PAPER_ROOT}/my-chapter/brief.md")
+            print("章节文件夹由 outline.md 经 --init 生成:  python run.py --init")
             sys.exit(1)
 
         if not os.path.isdir(folder_path):
@@ -469,31 +440,24 @@ def main():
             print("\n从 outline.md 生成章节文件夹: python run.py --init")
             sys.exit(1)
 
+        # 先确认这一章在 outline 里。不在 outline 的文件夹不是合法章节——即使它
+        # 也缺 brief.md,首要错误仍是路由非法,不该报成"缺 brief"。
+        from agents.outline import resolve_write_mode, OutlineRouteError
+        try:
+            info = resolve_write_mode(folder_name)
+        except OutlineRouteError as exc:
+            print(f"\nError: '{folder_name}' 不是合法章节: {exc}")
+            sys.exit(1)
+
         brief_path = os.path.join(folder_path, "brief.md")
         if not os.path.exists(brief_path):
             print(f"Error: {brief_path} not found. Create brief.md first.")
             print("从 outline.md 生成: python run.py --init")
             sys.exit(1)
 
-        # 开跑前把路由说清楚。两种模式的写作契约是相反的,使用者必须在花钱之前
-        # 就知道这一章会按哪种方式写,而不是拿到 final.md 才发现整篇里的一章被
-        # 当成自包含单章写了(或者反过来,单章里塞满了指向不存在章节的过渡句)。
-        from agents.outline import resolve_write_mode, OutlineRouteError, FULL
-        try:
-            info = resolve_write_mode(folder_name)
-        except OutlineRouteError as exc:
-            # 路由决定了两套相反的指令,猜错任何一种都产出错的正文,所以不猜。
-            print(f"\nError: 无法确定 '{folder_name}' 的写作路由: {exc}")
-            print("修好 outline.md 后重跑;想按逐章模式写这一章,把它从 outline.md 里去掉。")
-            sys.exit(1)
-        if info["mode"] == FULL:
-            print(f"\n路由:【整篇模式】outline.md 的第 {info['position']}/{info['total']} 章")
-            print(f"  · 可跨章引用,符号沿用前章(见 {PAPER_ROOT}/cross-chapter-state.md)")
-            print(f"  · 跑完会把本章的术语与结论追加进跨章状态,供后续章节对齐")
-        else:
-            print(f"\n路由:【逐章模式】{folder_name} 不在 outline.md 里,按自包含单章写")
-            print(f"  · 术语与符号必须在本章定义,禁止 \"as shown in Section 3\" 这类跨章引用")
-            print(f"  · 不读也不写跨章状态。要让它成为整篇的一章,请补进 outline.md 后 --init")
+        print(f"\n路由:outline.md 的第 {info['position']}/{info['total']} 章")
+        print(f"  · 可跨章引用,符号沿用前章(见 {PAPER_ROOT}/cross-chapter-state.md)")
+        print(f"  · 跑完会把本章的术语与结论追加进跨章状态,供后续章节对齐")
 
     print(f"Initializing models...")
     model_draft = get_draft_model()

@@ -2,7 +2,7 @@
 
 从**你的创新点**(`idea.md`)、**论文结构**(`outline.md`)和**实验结果**(`data/`)生成实验型论文的多 Agent 框架。三个异构 Agent(Draft = Claude Opus / Review = GPT-5.5 / Manager = GPT-5.5)在文件系统上协作,对每个章节执行"证据挖掘 → 规划 → 分段起草 → 评审 → 收敛修订 → 定稿 → 跨章交接"的迭代。
 
-这是 `survey/` 框架的实验型分支。核心区别:**内容源从文献笔记库换成"创新点文档 + 实验结果库"**,并加入了防幻觉门禁、数字一致性校验、引用闭合校验、证据挖掘和 outline 驱动的逐章生成。
+这是 `survey/` 框架的实验型分支。核心区别:**内容源从文献笔记库换成"创新点文档 + 实验结果库"**,并加入了防幻觉门禁、数字一致性校验、引用闭合校验、证据挖掘和 outline 驱动的分章生成。
 
 ---
 
@@ -11,7 +11,7 @@
 | 文件 | 管什么 | 缺了会怎样 |
 |---|---|---|
 | `idea.md` | **贡献是什么** — 一句话贡献、核心洞察、方法设计 | idea 类章节拒绝起草 |
-| `outline.md` | **结构是什么** — 有哪几章、每章哪几节、各节多少字 | 只能用逐章模式 |
+| `outline.md` | **结构是什么** — 有哪几章、每章哪几节、各节多少字 | `--init` 没有输入,跑不起来 |
 | `data/` | **数字是什么** — 实验结果(CSV/JSON/日志/图) | data 类章节拒绝起草 |
 
 各自都是唯一事实来源。框架不替你编任何一项——缺了就明确报错或标记,不"合理地"补一个。
@@ -20,43 +20,19 @@
 
 ---
 
-## 两种写作模式
-
-同一套流水线,但对 Agent 的要求相反,所以是两条独立路由、两套指令。
-
-### 整篇模式 — 写一整篇论文
+## 写一整篇论文
 
 ```bash
 python run.py --init                 # outline.md → 各章工作区 + 跨章状态
 python run.py --all --progress       # 按 outline 顺序跑全部,失败即停
-python run.py 04-method --progress   # 也可以只跑其中一章
+python run.py 04-method --progress   # 也可以只跑其中一章(必须在 outline 里)
 ```
 
-每章知道自己是第几章、前后是什么;符号沿用前章的定义(跨章状态由每章跑完后的 Stage 5
-自动追加);开头接上文、结尾引下文;属于邻章的内容必须留给邻章。
+每章都是整篇里的第 N 章,知道前后是什么;符号沿用前章的定义(跨章状态由每章跑完后的
+Stage 5 自动追加);开头接上文、结尾引下文;属于邻章的内容必须留给邻章。
 
-### 逐章模式 — 只写单独一章
-
-```bash
-mkdir -p workspace/my-chapter
-cp workspace/_TEMPLATE/brief.md workspace/my-chapter/brief.md
-python run.py my-chapter --progress
-```
-
-这一章按**自包含**写:所有术语符号在本章首次出现处定义;**严禁** `as shown in Section 3`
-这类指向不存在章节的过渡句;不读也不写跨章状态。
-
-### 路由判据
-
-**只有一条:该文件夹在不在 `outline.md` 里。** 不看命令行参数——所以同一个文件夹无论用
-`--all` 还是单章命令跑,写作契约都一致;把手建的章补进 `outline.md` 再 `--init`,
-它就转成整篇模式的一章。
-
-`python run.py --list` 标出每个文件夹的路由;单章运行开跑前也会先打印,让你在花 token
-之前确认。
-
-**为什么必须分开**:用同一份指令跑两种模式的后果是双向的——整篇模式下每章都自我重复
-定义一遍符号;逐章模式下每章都写着"承接上一章"而上一章并不存在。
+`python run.py --list` 列出各章状态。`--all` 要求 workspace 与 outline 完全一致——
+缺章(还没 `--init`)或多出磁盘残留(改标题后改名遗留)都会拒绝开始。
 
 ---
 
@@ -107,8 +83,8 @@ Ai_GeneratePaper/
 ├── agents/
 │   ├── agents.py              # Agent 组装(三 Agent,五个共享工具)
 │   ├── prompts.py             # 三份系统指令(跨章上下文按写作模式条件读取)
-│   ├── orchestrator.py        # 六阶段流水线 + 收敛循环 + 双路由 + 路由指纹
-│   ├── outline.py             # outline 解析 + 双写作路由(FULL/SINGLE)+ 跨章状态
+│   ├── orchestrator.py        # 六阶段流水线 + 收敛循环 + 路由门禁
+│   ├── outline.py             # outline 解析 + 章节工作区生成 + 跨章状态
 │   ├── tools.py               # read/write/list/search_references/search_literature
 │   ├── chapter_type.py        # 章节类型路由(type: → 取材源 + 门禁级别)
 │   ├── content_source.py      # 内容源抽象(idea.md ↔ data/ ↔ survey 笔记)
@@ -118,11 +94,12 @@ Ai_GeneratePaper/
 │   ├── retrieval.py           # 两层检索:本地 bib(可引)+ 网页 LLM(仅线索)
 │   └── citation_supplement.py # 缺引用自动补(带 URL 验证)
 ├── data/                      # ← 你提供:实验结果(见 data/README.md)
-├── tests/                     # 四套离线测试,共 352 项检查(不调 API)
-│   ├── test_routing.py            # 类型路由单元(50)
-│   ├── test_outline.py            # outline 与双路由(141)
-│   ├── test_pipeline_routing.py   # 流水线级接线(100)
-│   └── test_optimizations.py      # 分段/指纹/工具链(61)
+├── tests/                     # 离线测试,不调 API
+│   ├── test_routing.py            # 类型路由单元
+│   ├── test_outline.py            # outline 解析、brief 往返、写作契约
+│   ├── test_pipeline_routing.py   # 流水线级接线(假 Agent 驱动)
+│   ├── test_optimizations.py      # 分段/指纹/工具链
+│   └── test_expand.py             # --expand 越权校验
 ├── references/                # 参考文献 bib + 阅读笔记
 ├── skills/                    # 写作/图表/公式/审稿规范(Agent 按需读取)
 │   ├── writing-style.md
@@ -131,9 +108,8 @@ Ai_GeneratePaper/
 │   ├── review-rubric.md
 │   └── experiment-writing.md
 ├── workspace/                 # 章节工作区
-│   ├── cross-chapter-state.md # (--init 生成 + Stage 5 追加)整篇模式专用
-│   ├── <NN-章名>/             # (--init 生成)brief.md + input.md + 产物
-│   └── _TEMPLATE/brief.md     # 逐章模式手建文件夹时照它写
+│   ├── cross-chapter-state.md # (--init 生成 + Stage 5 追加)跨章术语与结论载体
+│   └── <NN-章名>/             # (--init 生成)brief.md + input.md + 产物
 └── latex/                     # LaTeX 编译(build.py 带引用闭合校验)
 ```
 
@@ -170,11 +146,12 @@ python run.py --all --progress
 数字会标 UNVERIFIED。反过来,`type: results` 在 `data/` 为空时会在**调模型之前**拒绝起草。
 
 ```bash
-# 改完 outline/brief/idea 后先跑这四套离线测试确认接线,不花 token
-python tests/test_routing.py           # 50 项:type 解析、别名、分段路由、判据切换
-python tests/test_outline.py           # 141 项:outline 解析、brief 往返、双路由判定
-python tests/test_pipeline_routing.py  # 100 项:假 Agent 驱动完整流水线,验证门禁接线
-python tests/test_optimizations.py     # 61 项:分段自适应、路由指纹、工具链
+# 改完 outline/brief/idea 后先跑这五套离线测试确认接线,不花 token
+python tests/test_routing.py           # 类型解析、别名、分段路由、判据切换
+python tests/test_outline.py           # outline 解析、brief 往返、写作契约
+python tests/test_pipeline_routing.py  # 假 Agent 驱动完整流水线,验证门禁接线
+python tests/test_optimizations.py     # 分段自适应、指纹、工具链
+python tests/test_expand.py            # --expand 的越权改结构校验
 ```
 
 ---
@@ -182,8 +159,8 @@ python tests/test_optimizations.py     # 61 项:分段自适应、路由指纹�
 ## 流水线
 
 ```
-    Python  → 路由解析                              FULL/SINGLE + 四道 brief 门禁 + type: → family/gate
-    Python  → context-pack.md                       按类型排序证据(idea 优先 / data 优先)+ 路由指纹
+    Python  → 路由解析                              章节位置 + brief 门禁 + type: → family/gate
+    Python  → context-pack.md                       按类型排序证据(idea 优先 / data 优先)
 0   Draft   → evidence-pack.md                      多视角挖证据,视角随类型切换
 1a  Manager → draft-v1.plan.md + Notation Table     规划 + 术语/符号表冻结
 1b~ Draft ×N→ draft-v1.part-N.md                    分段起草(段数 = min(小节数,3)),每段按自己的小节类型路由
@@ -194,23 +171,22 @@ python tests/test_optimizations.py     # 61 项:分段自适应、路由指纹�
 3   收敛循环 → draft-v2.md                           冻结首轮 MUST FIX,≤4 轮修到清
 4   Review  → final.md + final.zh.md + decision.md  定稿
     Python  → final 数字门禁                         定稿复核
-5   Review  → cross-chapter-state.md                跨章交接(**仅整篇模式**)+ Python 校验
+5   Review  → cross-chapter-state.md                跨章交接 + Python 校验
 ```
 
 **编排由 Python 做,不由 Manager 做。** Manager 只承担 Stage 1a 的规划;阶段推进、门禁、
 断点续跑、重试全是确定性代码。
 
-**两条路由贯穿全流程**:
+**两个维度贯穿全流程**:
 - **类型路由**(取材)— 证据挖掘视角、起草主输入、审稿判据、数字门禁严格度
-- **写作路由**(结构)— 起草契约、审稿判据、跨章状态读写、Stage 5 是否执行
+- **写作契约**(结构)— 起草/审稿按整篇对齐、跨章状态读写
 
 写作契约注入**每一个**会改写正文的阶段(1a / 1b~1c / Stage 3 每一轮 / Stage 4)。
-漏掉任何一个,那一步就会把前面按契约写好的部分改回去,而流水线全程显示成功。
 
 **收敛循环**是本框架相对 STORM / AI-Scientist 的增强:冻结首轮 MUST FIX 当验收单,
 循环修订直到全部解决或到 4 轮上限(未清项升级到 todo/decision,不空转)。
 
-**断点续跑**:每个产物"存在即跳过"。所以路由(类型 + 写作模式)写进 `context-pack.md`
+**断点续跑**:每个产物"存在即跳过"。所以证据路由(类型/小节类型)写进 `context-pack.md`
 首行指纹;路由变了而旧产物还在,流水线**硬停**——一个文件都不删,但也绝不用旧路由的产物继续。
 
 ---
@@ -220,7 +196,7 @@ python tests/test_optimizations.py     # 61 项:分段自适应、路由指纹�
 完整清单见 `文档说明.md`。最核心的五样:
 
 1. **`idea.md`** — 你的贡献/原理/方法设计(模板 `idea.example.md`)。**最重要的一份**
-2. **`outline.md`** — 整篇章节结构(模板 `outline.example.md`)。只写单章可以不要它
+2. **`outline.md`** — 整篇章节结构(模板 `outline.example.md`)
 3. `.env` 里的 API key
 4. `data/` 里的实验结果(格式见 `data/README.md`)
 5. 各章的 `input.md` 素材(`--init` 生成骨架,你往里填;永不被覆盖)

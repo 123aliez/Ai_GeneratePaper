@@ -129,7 +129,7 @@ _TYPE_LINE_RE = re.compile(
 #   `3. **Method** (~300 words)`
 _SECTION_RE = re.compile(r"^\s*(\d+)\.\s+\*\*(.+?)\*\*", re.IGNORECASE)
 # A fenced-code fence; `type:` inside a code block is illustrative, not a
-# declaration (the _TEMPLATE shows the syntax in a snippet).
+# declaration (outline.example.md shows the syntax in a snippet).
 _FENCE_RE = re.compile(r"^\s*(```|~~~)")
 
 

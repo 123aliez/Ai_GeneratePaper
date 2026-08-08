@@ -60,12 +60,39 @@ def set_idea(text: str):
     return path
 
 
-def make_ws(brief: str, name: str = "chapter") -> str:
-    folder = Path(tempfile.mkdtemp()) / name
-    folder.mkdir(parents=True)
-    (folder / "brief.md").write_text(brief, encoding="utf-8")
+def make_ws_in_outline(brief: str, chapter_folder: str = "chapter") -> str:
+    """单章用的工作区:从 brief 推导出 outline,再走真正的 --init 生成它。
+
+    删掉逐章模式后,所有章节都必须在 outline 里,且 brief 必须带 outline 指纹(否则
+    门禁 ① 拦下)。这里从 brief 解析 type 与各小节(含小节级 `- type:` 与要点),镜像
+    进一份单章 outline,调 init_chapter_workspaces 生成带指纹的 brief——这样路由解析、
+    brief 指纹门禁、跨章状态门禁全部成立。返回 (章节目录, outline 路径, workspace 根)。
+    """
+    import agents.outline as ol
+    import re as _re
+    m = _re.search(r"type:\s*([^\n]+)", brief)
+    chap_type = (m.group(1).strip() if m else "method")
+    # brief 里的小节:`N. **标题** (~字数 words)` 后跟若干 `- 要点`/`- type: X` 行。
+    # 把它们镜像进 outline:`### N. 标题` + 原样的 bullet 行。
+    sections = _re.findall(
+        r"^\s*(\d+)\.\s+\*\*(.+?)\*\*\s*\(~?(\d+)\s*words\)([^\n]*(?:\n[ \t]*-[^\n]*)*)",
+        brief, _re.M)
+    root = Path(tempfile.mkdtemp())
+    outline = root / "outline.md"
+    body = f"## 1. Chapter\n\ntype: {chap_type}\n\n"
+    if sections:
+        for num, title, words, tail in sections:
+            body += f"### {num}. {title} (~{words} words){tail}\n\n"
+    else:
+        body += "### 1.1 Section (~200 words)\n- point\n\n"
+    outline.write_text(body, encoding="utf-8")
+    ws = root / "workspace"
+    ol.init_chapter_workspaces(str(outline), str(ws))
+    chapter_dirs = [p for p in ws.iterdir()
+                    if p.is_dir() and not p.name.startswith("_")]
+    folder = chapter_dirs[0]
     (folder / "input.md").write_text("source material\n", encoding="utf-8")
-    return str(folder)
+    return str(folder), str(outline), str(ws)
 
 
 def make_data(metrics: dict = None) -> str:
@@ -90,18 +117,26 @@ IDEA_TEXT = (
     "then transformed back to the spatial domain and multiplied into the feature map.\n")
 
 
-def run_pipeline(folder: str, data_root: str):
-    agent = RecordingAgent(folder)
-    orch.DATA_ROOT = data_root
-    results = orch.run_4stage_with_progress(agent, agent, folder, None)
-    return agent, results
+def run_pipeline_in_outline(folder: str, data_root: str, outline_path: str):
+    """run_pipeline 的版本,但先把 OUTLINE_PATH 指到 outline,让该章在 outline 里。"""
+    import agents.outline as ol
+    original = ol.OUTLINE_PATH
+    ol.OUTLINE_PATH = Path(outline_path)
+    try:
+        agent = RecordingAgent(folder)
+        orch.DATA_ROOT = data_root
+        results = orch.run_4stage_with_progress(agent, agent, folder, None)
+        return agent, results
+    finally:
+        ol.OUTLINE_PATH = original
 
 
 # ── 1. an idea chapter runs with an empty results store ─────────────────
 def test_method_chapter_runs_without_data():
     set_idea(IDEA_TEXT)
-    folder = make_ws("type: method\n\n1. **Method** (~300 words)\n- design\n")
-    agent, _ = run_pipeline(folder, make_data(None))
+    folder, outline, _ = make_ws_in_outline(
+        "type: method\n\n1. **Method** (~300 words)\n- design\n", "01-method")
+    agent, _ = run_pipeline_in_outline(folder, make_data(None), outline)
     text = agent.text()
     check("method chapter is not blocked by an empty results store",
           len(agent.prompts) > 0, "no model call was made")
@@ -122,10 +157,9 @@ def test_method_chapter_runs_without_data():
 # ── 2. a results chapter with no data blocks before any model call ───────
 def test_results_chapter_blocks_without_data():
     set_idea(IDEA_TEXT)
-    folder = make_ws("type: results\n\n1. **Results** (~300 words)\n- numbers\n")
-    agent = RecordingAgent(folder)
-    orch.DATA_ROOT = make_data(None)
-    results = orch.run_4stage_with_progress(agent, agent, folder, None)
+    folder, outline, _ = make_ws_in_outline(
+        "type: results\n\n1. **Results** (~300 words)\n- numbers\n", "01-results")
+    agent, results = run_pipeline_in_outline(folder, make_data(None), outline)
     check("results chapter with no data makes no model call",
           not agent.prompts, f"{len(agent.prompts)} prompt(s) were sent")
     check("results chapter with no data returns empty results", not results, str(results))
@@ -136,10 +170,9 @@ def test_results_chapter_blocks_without_data():
 # ── 3. an idea chapter with no idea document blocks before any model call ─
 def test_method_chapter_blocks_without_idea():
     set_idea(None)  # path exists in name only
-    folder = make_ws("type: method\n\n1. **Method** (~300 words)\n- design\n")
-    agent = RecordingAgent(folder)
-    orch.DATA_ROOT = make_data({"accuracy": 0.817})
-    results = orch.run_4stage_with_progress(agent, agent, folder, None)
+    folder, outline, _ = make_ws_in_outline(
+        "type: method\n\n1. **Method** (~300 words)\n- design\n", "01-method")
+    agent, results = run_pipeline_in_outline(folder, make_data({"accuracy": 0.817}), outline)
     check("method chapter with no idea document makes no model call",
           not agent.prompts, f"{len(agent.prompts)} prompt(s) were sent")
     check("method chapter with no idea document returns empty results",
@@ -155,10 +188,9 @@ def test_method_chapter_blocks_on_unfilled_skeleton():
              "## 1. 一句话贡献\n\n> 整篇论文的贡献压缩成一句。\n\n"
              "## 3. 核心洞察\n\n> 论文的啊哈点。\n\n"
              "## 6. 贡献清单\n\n1.\n2.\n3.\n")
-    folder = make_ws("type: method\n\n1. **Method** (~300 words)\n- design\n")
-    agent = RecordingAgent(folder)
-    orch.DATA_ROOT = make_data({"accuracy": 0.817})
-    results = orch.run_4stage_with_progress(agent, agent, folder, None)
+    folder, outline, _ = make_ws_in_outline(
+        "type: method\n\n1. **Method** (~300 words)\n- design\n", "01-method")
+    agent, results = run_pipeline_in_outline(folder, make_data({"accuracy": 0.817}), outline)
     check("unfilled idea skeleton makes no model call",
           not agent.prompts, f"{len(agent.prompts)} prompt(s) were sent")
     check("unfilled idea skeleton returns empty results", not results, str(results))
@@ -172,8 +204,9 @@ def test_method_chapter_runs_on_filled_idea():
              "细粒度类别的判别信息集中在中高频带,在频域做通道重标定可以直接放大这部分信号。\n\n"
              "## 4. 方法设计\n"
              "输入特征图做 FFT,按通道算频带能量,过两层 MLP 得门控系数,再逆变换回空间域。\n")
-    folder = make_ws("type: method\n\n1. **Method** (~300 words)\n- design\n")
-    agent, _ = run_pipeline(folder, make_data(None))
+    folder, outline, _ = make_ws_in_outline(
+        "type: method\n\n1. **Method** (~300 words)\n- design\n", "01-method")
+    agent, _ = run_pipeline_in_outline(folder, make_data(None), outline)
     check("a filled idea document passes the pre-flight gate", len(agent.prompts) > 0)
     pack = Path(folder, "context-pack.md").read_text(encoding="utf-8")
     check("filled idea document is not flagged as a template",
@@ -184,8 +217,9 @@ def test_method_chapter_runs_on_filled_idea():
 # ── 4. a results chapter WITH data runs and is told numbers are primary ──
 def test_results_chapter_runs_with_data():
     set_idea(IDEA_TEXT)
-    folder = make_ws("type: results\n\n1. **Results** (~300 words)\n- numbers\n")
-    agent, _ = run_pipeline(folder, make_data({"test_accuracy": 0.817}))
+    folder, outline, _ = make_ws_in_outline(
+        "type: results\n\n1. **Results** (~300 words)\n- numbers\n", "01-results")
+    agent, _ = run_pipeline_in_outline(folder, make_data({"test_accuracy": 0.817}), outline)
     text = agent.text()
     check("results chapter with data reaches the model", len(agent.prompts) > 0)
     check("data perspectives are used for evidence mining",
@@ -202,8 +236,10 @@ def test_results_chapter_runs_with_data():
 # ── 5. a related-work chapter skips the number gate entirely ─────────────
 def test_related_work_skips_number_gate():
     set_idea(IDEA_TEXT)
-    folder = make_ws("type: related work\n\n1. **Related Work** (~200 words)\n- prior art\n")
-    agent, _ = run_pipeline(folder, make_data(None))
+    folder, outline, _ = make_ws_in_outline(
+        "type: related work\n\n1. **Related Work** (~200 words)\n- prior art\n",
+        "01-related")
+    agent, _ = run_pipeline_in_outline(folder, make_data(None), outline)
     check("related-work chapter runs", len(agent.prompts) > 0)
     check("related-work chapter writes no number-check.md",
           not os.path.exists(os.path.join(folder, "number-check.md")))
@@ -214,15 +250,15 @@ def test_related_work_skips_number_gate():
 # ── 6. a whole-paper brief routes each draft part separately ─────────────
 def test_whole_paper_parts_get_different_rules():
     set_idea(IDEA_TEXT)
-    folder = make_ws(
+    folder, outline, _ = make_ws_in_outline(
         "type: method\n\n"
         "1. **Abstract** (~150 words)\n- headline\n\n"
         "2. **Introduction** (~250 words)\n- motivation\n\n"
         "3. **Related Work** (~200 words)\n- prior art\n\n"
         "4. **Method** (~300 words)\n- design\n\n"
         "5. **Results** (~300 words)\n- numbers\n\n"
-        "6. **Conclusion** (~150 words)\n- takeaway\n")
-    agent, _ = run_pipeline(folder, make_data({"test_accuracy": 0.817}))
+        "6. **Conclusion** (~150 words)\n- takeaway\n", "01-whole")
+    agent, _ = run_pipeline_in_outline(folder, make_data({"test_accuracy": 0.817}), outline)
     part_prompts = [p for p in agent.prompts if "Write only Part" in p]
     check("three part prompts were issued", len(part_prompts) == 3, str(len(part_prompts)))
     check("part 1 (abstract+intro) is routed as an idea chapter",
@@ -235,7 +271,7 @@ def test_whole_paper_parts_get_different_rules():
           "results/conclusion" in part_prompts[2])
 
 
-# ── 7. 两条写作路由端到端:整篇 vs 逐章 ──────────────────────────────
+# ── 7. 整篇路由端到端:写作契约到达每个阶段 ──────────────────────────
 OUTLINE_TEXT = """\
 ## 1. Introduction
 
@@ -313,8 +349,8 @@ class FullRunAgent(RecordingAgent):
             }, ensure_ascii=False), encoding="utf-8")
 
         # 只有真正的 Stage 5 才能改跨章状态。Stage 1a 的规划提示词里也带着这个
-        # 路径(FULL 路由要读它),只按路径匹配的话 Stage 1 就会提前伪造出成功
-        # 标记,真实 Stage 5 完全失效测试也照样通过——那就是自欺。
+        # 路径(规划者要读它),只按路径匹配的话 Stage 1 就会提前伪造出成功标记,
+        # 真实 Stage 5 完全失效测试也照样通过——那就是自欺。
         if "so the NEXT chapter can stay consistent" in prompt:
             final_match = _re.search(r"Read '([^']+)/final\.md'", prompt)
             chapter = (Path(final_match.group(1)).name if final_match
@@ -356,10 +392,18 @@ def _is_rewrite_prompt(prompt: str) -> bool:
     ))
 
 
-def run_pipeline_to_end(folder: str, data_root: str):
-    agent = FullRunAgent(folder)
-    orch.DATA_ROOT = data_root
-    return agent, orch.run_4stage_with_progress(agent, agent, folder, None)
+def run_pipeline_to_end(folder: str, data_root: str, outline_path: str = None):
+    """跑完整流水线。若给定 outline_path,把 OUTLINE_PATH 指过去(让该章在 outline 里)。"""
+    import agents.outline as ol
+    original = ol.OUTLINE_PATH
+    if outline_path is not None:
+        ol.OUTLINE_PATH = Path(outline_path)
+    try:
+        agent = FullRunAgent(folder)
+        orch.DATA_ROOT = data_root
+        return agent, orch.run_4stage_with_progress(agent, agent, folder, None)
+    finally:
+        ol.OUTLINE_PATH = original
 
 
 def make_full_paper_ws(chapter_folder: str = "02-method"):
@@ -375,23 +419,11 @@ def make_full_paper_ws(chapter_folder: str = "02-method"):
     return str(folder), str(outline), str(ws)
 
 
-def with_outline(outline_path: str):
-    """把 agents.outline 的默认 OUTLINE_PATH 指到临时 outline;返回还原用的原值。"""
-    import agents.outline as ol
-    original = ol.OUTLINE_PATH
-    ol.OUTLINE_PATH = Path(outline_path)
-    return ol, original
-
-
 def test_full_paper_route_reaches_prompts():
     """outline 里的章:提示词必须说明它是第几章、允许跨章引用、复用前章术语。"""
     set_idea(IDEA_TEXT)
     folder, outline_path, ws = make_full_paper_ws("02-method")
-    ol, original = with_outline(outline_path)
-    try:
-        agent, result = run_pipeline_to_end(folder, make_data(None))
-    finally:
-        ol.OUTLINE_PATH = original
+    agent, result = run_pipeline_to_end(folder, make_data(None), outline_path)
     text = agent.text()
 
     check("整篇路由声明了章序号", "chapter 2 of 3" in text, text[:600])
@@ -401,11 +433,10 @@ def test_full_paper_route_reaches_prompts():
     check("整篇路由要求接上文", "preceding chapter" in text and "Introduction" in text)
     check("整篇路由要求引下文", "following chapter" in text and "Results" in text)
     check("整篇路由给了邻章结构摘要", "PAPER STRUCTURE (bounded excerpt" in text)
-    check("整篇路由不注入自包含约束", "SELF-CONTAINED" not in text)
     check("整篇路由让规划者读跨章状态",
           "cross-chapter-state.md" in text, text[:900])
 
-    # Stage 5 只在 FULL 下跑:跨章状态被要求更新
+    # 每个正常完成的章节都必须跑 Stage 5。
     check("整篇路由跑 Stage 5 更新跨章状态",
           any("so the NEXT chapter can stay consistent" in p for p in agent.prompts),
           str([p[:60] for p in agent.prompts]))
@@ -427,159 +458,91 @@ def test_full_paper_route_reaches_prompts():
 
     # 审稿侧同样按整篇判
     check("审稿按整篇判(查重复定义)", "re-defines a term already fixed" in text)
-    check("审稿不按自包含判", "those targets do not exist" not in text)
 
 
-def test_single_chapter_route_reaches_prompts():
-    """手建文件夹:提示词必须要求自包含、禁止跨章过渡句、不跑 Stage 5。"""
+def test_system_prompts_require_cross_chapter_context():
+    """三类 Agent 的系统指令都必须读取任务显式传入的跨章上下文。"""
+    from agents.prompts import (
+        DRAFT_INSTRUCTIONS, MANAGER_INSTRUCTIONS, REVIEW_INSTRUCTIONS,
+    )
+    for name, instructions in (("Draft", DRAFT_INSTRUCTIONS),
+                               ("Review", REVIEW_INSTRUCTIONS)):
+        check(f"{name} 系统指令要求读取跨章上下文",
+              "Cross-chapter context: read only the cross-chapter-state / structure paths"
+              in instructions, instructions[-1400:])
+    check("Manager 系统指令要求读取跨章上下文",
+          "Cross-chapter context: read the cross-chapter-state.md path"
+          in MANAGER_INSTRUCTIONS, MANAGER_INSTRUCTIONS[-1400:])
+
+
+def test_chapter_outside_outline_blocks():
+    """不在 outline 里的文件夹不再是合法章节:流水线在路由解析处硬停,不调模型。"""
     set_idea(IDEA_TEXT)
     folder, outline_path, ws = make_full_paper_ws("02-method")
-    # 手建一个不在 outline 里的文件夹,放在同一个 workspace 下——所以
-    # cross-chapter-state.md 是存在的。这正是要验的边界:文件存在也不能
-    # 让 SINGLE 章读写它,判据是"这一章在不在 outline 里"。
+    # 手建一个不在 outline 里的文件夹(同一个 workspace,cross-chapter-state.md 存在)。
     hand = Path(ws) / "my-chapter"
     hand.mkdir()
     (hand / "brief.md").write_text(
         "type: method\n\n1. **设计** (~250 words)\n- 机制\n", encoding="utf-8")
     (hand / "input.md").write_text("source material\n", encoding="utf-8")
 
-    ol, original = with_outline(outline_path)
-    try:
-        agent, _ = run_pipeline_to_end(str(hand), make_data(None))
-    finally:
-        ol.OUTLINE_PATH = original
-    text = agent.text()
+    agent, result = run_pipeline_to_end(str(hand), make_data(None), outline_path)
 
-    check("逐章路由要求自包含", "SELF-CONTAINED" in text, text[:600])
-    check("逐章路由禁止跨章过渡句",
-          "Do NOT write transitions that point at other chapters" in text)
-    check("逐章路由不声明章序号", "chapter 2 of 3" not in text and "of 3 in" not in text)
-    check("逐章路由不给邻章结构摘要", "PAPER STRUCTURE (bounded excerpt" not in text)
-    check("逐章路由不允许跨章引用",
-          "Cross-references to other chapters ARE allowed" not in text)
-    # 跨章状态文件在同一个 workspace 下**确实存在**(整篇的章建的),这正是边界:
-    # 判据是"这一章在不在 outline 里",不是"那个文件存不存在"。所以提示词里
-    # 只能出现禁止读它的指令,绝不能出现它的实际路径。
-    check("SINGLE 提示词明确禁止读写跨章状态",
-          "Do NOT read or write any `cross-chapter-state.md`" in text, text[:900])
-    check("SINGLE 提示词不给出跨章状态的实际路径",
-          str(Path(ws) / "cross-chapter-state.md") not in text, text[:900])
-    check("逐章路由不跑 Stage 5",
-          not any("so the NEXT chapter can stay consistent" in p for p in agent.prompts),
-          str([p[:60] for p in agent.prompts]))
-    check("审稿按自包含判(跨章引用算 MUST FIX)",
-          "those targets do not exist" in text)
-    check("审稿不要求补跨章过渡", "Do NOT ask for a transition" in text)
-
-    rewrite_prompts = [p for p in agent.prompts if _is_rewrite_prompt(p)]
-    check("逐章测试确实经过了所有正文改写阶段",
-          len(rewrite_prompts) >= 4, str([p[:70] for p in agent.prompts]))
-    for prompt in rewrite_prompts:
-        check("每个逐章正文改写提示词都带 SINGLE 契约",
-              "WRITING MODE: STANDALONE CHAPTER" in prompt, prompt[:400])
-
-    # task prompt 只是一半。Agent 的系统指令优先级更高,那里原本无条件写着
-    # "读 cross-chapter-state.md 和前一章的 final.md"——只改 task prompt 的话,
-    # 逐章模式下 Agent 照样会去翻它们,而这个测试看不到那个冲突。
-    from agents.prompts import (DRAFT_INSTRUCTIONS, REVIEW_INSTRUCTIONS,
-                                MANAGER_INSTRUCTIONS)
-    for name, instructions in (("Draft", DRAFT_INSTRUCTIONS),
-                               ("Review", REVIEW_INSTRUCTIONS),
-                               ("Manager", MANAGER_INSTRUCTIONS)):
-        check(f"{name} 系统指令把跨章上下文设为按模式条件读取",
-              "STANDALONE" in instructions
-              and "do not search for or read" in instructions.lower(),
-              instructions[-1200:])
-        check(f"{name} 系统指令不再无条件要求读跨章状态",
-              "- paper/00 Background & Example/cross-chapter-state.md" not in instructions,
-              instructions[:1500])
+    check("不在 outline 的章节不调用任何 Agent",
+          not agent.prompts, str([p[:60] for p in agent.prompts]))
+    check("路由解析失败被记录", result.get("route_blocked"), str(result))
 
 
-def test_mode_clause_reaches_revision_rounds():
-    """修订轮也要带写作契约,否则第 2 轮会把自包含约束改回去。"""
-    set_idea(IDEA_TEXT)
-    folder, outline_path, ws = make_full_paper_ws("02-method")
-    hand = Path(ws) / "solo-chapter"
-    hand.mkdir()
-    (hand / "brief.md").write_text(
-        "type: method\n\n1. **设计** (~250 words)\n- 机制\n", encoding="utf-8")
-    (hand / "input.md").write_text("source material\n", encoding="utf-8")
-
-    ol, original = with_outline(outline_path)
-    try:
-        agent, result = run_pipeline_to_end(str(hand), make_data(None))
-    finally:
-        ol.OUTLINE_PATH = original
-
-    check("SINGLE 不产生 Stage 5 成功标记", "stage5_xchap_ok" not in result,
-          str(sorted(result.keys())))
-
-    # 只取起草侧的修订提示词。审稿提示词里也有 "frozen acceptance checklist"
-    # (它在告诉审稿人 must_fix 会被冻结),按那个匹配会把 Stage 2 也算进来。
-    revise_prompts = [p for p in agent.prompts
-                      if "Resolve EVERY item in this frozen acceptance checklist" in p
-                      or "Address ALL 'MUST FIX' items" in p
-                      or "There are no MUST FIX items" in p]
-    check("修订阶段确实发生了", bool(revise_prompts),
-          str([p[:60] for p in agent.prompts]))
-    for prompt in revise_prompts:
-        check("修订提示词带上自包含约束", "SELF-CONTAINED" in prompt, prompt[:400])
-
-    final_prompts = [p for p in agent.prompts if "final.zh.md" in p]
-    check("定稿阶段发生了", bool(final_prompts))
-    for prompt in final_prompts:
-        check("定稿提示词带上自包含约束", "SELF-CONTAINED" in prompt, prompt[:400])
-
-
-# ── 8. 路由变化后必须硬停,不能报警一次后继续复用旧产物 ────────────────
-def test_write_mode_change_blocks_and_keeps_artifacts():
-    """手建单章后来被补进 outline:旧产物全部保留,但这一次必须停。
-
-    写作契约从"自包含"翻成"整篇第 N 章",而已落盘的 plan / part / review / final
-    全是按自包含写的。继续跑会把它们静默复用,最后 Stage 5 还把它们的术语写进整篇
-    的跨章状态。这里验的是"停了"且"什么都没删"。
-    """
+def test_run_all_rejects_workspace_outline_drift():
+    """--all 不能跳过多余目录或遗漏尚未生成的 outline 章节(否则会报告"全部完成")。"""
+    import run as runner
     import agents.outline as ol
 
-    set_idea(IDEA_TEXT)
     root = Path(tempfile.mkdtemp())
     outline = root / "outline.md"
-    # 先写一份不含 02-method 的 outline,让那个目录走 SINGLE。
-    outline.write_text("## 1. Introduction\n\ntype: intro\n\n"
-                       "### 背景 (~100 words)\n- 问题设定\n", encoding="utf-8")
+    outline.write_text(
+        "## 1. Introduction\n\ntype: intro\n\n"
+        "### 背景 (~100 words)\n- 问题\n\n"
+        "## 2. Method\n\ntype: method\n\n"
+        "### 方法 (~100 words)\n- 机制\n", encoding="utf-8")
     ws = root / "workspace"
     ol.init_chapter_workspaces(str(outline), str(ws))
+    expected = [chapter["folder"] for chapter in ol.parse_outline(outline)]
 
-    hand = ws / "02-method"
-    hand.mkdir()
-    (hand / "brief.md").write_text(
-        "type: method\n\n1. **Method** (~200 words)\n- design\n", encoding="utf-8")
-    (hand / "input.md").write_text("source material\n", encoding="utf-8")
-
-    original = ol.OUTLINE_PATH
+    old_root, old_outline = runner.PAPER_ROOT, ol.OUTLINE_PATH
+    runner.PAPER_ROOT = str(ws)
     ol.OUTLINE_PATH = outline
     try:
-        first, _ = run_pipeline_to_end(str(hand), make_data(None))
-        check("首次按 SINGLE 跑出了完整产物",
-              Path(hand, "final.md").exists() and bool(first.prompts))
-        old_fp = orch.read_pack_fingerprint(str(hand / "context-pack.md"))
-        check("旧 pack 记录的是 SINGLE 路由", "write_mode=single" in old_fp, old_fp)
+        folders, extra = runner.outline_chapters_in_order()
+        check("工作区与 outline 一致时返回完整顺序",
+              folders == expected and not extra, str((folders, extra)))
 
-        # 现在把这一章补进 outline —— 证据路由一个字没变,写作契约翻了。
-        outline.write_text(OUTLINE_TEXT, encoding="utf-8")
-        second, result = run_pipeline_to_end(str(hand), make_data(None))
+        # 多出一个磁盘残留目录 → 拒绝,不静默跳过。
+        legacy = ws / "legacy-chapter"
+        legacy.mkdir()
+        (legacy / "brief.md").write_text("type: method\n", encoding="utf-8")
+        try:
+            runner.outline_chapters_in_order()
+        except ol.OutlineRouteError as exc:
+            check("--all 拒绝不在 outline 的目录",
+                  "legacy-chapter" in str(exc), str(exc))
+        else:
+            raise AssertionError("--all 静默跳过了不在 outline 的目录")
+
+        (legacy / "brief.md").unlink()
+        legacy.rmdir()
+        # 缺一个 outline 里的目录(删掉它的 brief) → 拒绝,不静默漏跑。
+        (ws / expected[-1] / "brief.md").unlink()
+        try:
+            runner.outline_chapters_in_order()
+        except ol.OutlineRouteError as exc:
+            check("--all 拒绝遗漏 outline 章节",
+                  expected[-1] in str(exc), str(exc))
+        else:
+            raise AssertionError("--all 静默遗漏了尚未生成的 outline 章节")
     finally:
-        ol.OUTLINE_PATH = original
-
-    check("路由变化后不再调用任何 Agent",
-          not second.prompts, str([p[:60] for p in second.prompts]))
-    # 这一章现在是整篇的一章,而它的 brief 是手写的(没有 outline 指纹),
-    # 所以最先命中的是 brief 来源门禁——同样是硬停,理由更具体。
-    check("路由变化被门禁明确拦下", result.get("route_blocked"), str(result))
-    check("昂贵的旧产物一个都没删",
-          Path(hand, "final.md").exists() and Path(hand, "draft-v1.md").exists())
-    check("硬停前没有覆盖旧 pack 指纹",
-          orch.read_pack_fingerprint(str(hand / "context-pack.md")) == old_fp)
+        runner.PAPER_ROOT = old_root
+        ol.OUTLINE_PATH = old_outline
 
 
 def test_evidence_route_change_blocks_and_keeps_artifacts():
@@ -589,18 +552,24 @@ def test_evidence_route_change_blocks_and_keeps_artifacts():
     提问视角、各 part 的路由子句、review 的判据全变了,而它们都带"存在即跳过"。
     """
     set_idea(IDEA_TEXT)
-    folder = make_ws("type: method\n\n1. **设计** (~200 words)\n- 机制\n", "solo")
+    folder, outline, ws = make_ws_in_outline(
+        "type: method\n\n1. **Framework** (~200 words)\n- 机制")
     data = make_data({"test_accuracy": 0.817})
 
-    first, _ = run_pipeline_to_end(folder, data)
+    first, _ = run_pipeline_to_end(folder, data, outline)
     check("首次按 method 跑出了完整产物",
           Path(folder, "final.md").exists() and bool(first.prompts))
     old_fp = orch.read_pack_fingerprint(os.path.join(folder, "context-pack.md"))
     check("旧 pack 记录的是 method 路由", "type=method" in old_fp, old_fp)
 
-    Path(folder, "brief.md").write_text(
-        "type: results\n\n1. **主结果** (~200 words)\n- 数字\n", encoding="utf-8")
-    second, result = run_pipeline_to_end(folder, data)
+    # 给唯一小节加 `- type: results`(章标题/type 不变 → 文件夹名稳定)。这让 pack
+    # 指纹的 sections 字段变化(无 data 小节 → 有 data 小节),验证 pack 指纹触发硬停。
+    outline_content = Path(outline).read_text(encoding="utf-8")
+    Path(outline).write_text(outline_content.rstrip() + "\n- type: results\n",
+                             encoding="utf-8")
+    import agents.outline as ol
+    ol.init_chapter_workspaces(outline, str(ws), force=True)
+    second, result = run_pipeline_to_end(folder, data, outline)
 
     check("证据路由变化后不再调用任何 Agent",
           not second.prompts, str([p[:60] for p in second.prompts]))
@@ -615,8 +584,8 @@ def test_evidence_route_change_blocks_and_keeps_artifacts():
           orch.read_pack_fingerprint(os.path.join(folder, "context-pack.md")) == old_fp)
 
 
-def test_renamed_outline_folder_does_not_run_as_single():
-    """改了章标题导致文件夹改名:遗留目录不能被静默当成逐章章节继续跑。"""
+def test_renamed_outline_folder_is_not_a_chapter():
+    """改了章标题导致文件夹改名:遗留目录不在 outline 里,路由解析直接报错。"""
     set_idea(IDEA_TEXT)
     folder, outline_path, _ = make_full_paper_ws("02-method")
     # 改标题 → slug 变化 → 02-method 不再出现在 outline 里,但它带着生成指纹。
@@ -624,16 +593,11 @@ def test_renamed_outline_folder_does_not_run_as_single():
         OUTLINE_TEXT.replace("## 2. Method", "## 2. Renamed Method"),
         encoding="utf-8")
 
-    ol, original = with_outline(outline_path)
-    try:
-        agent, result = run_pipeline_to_end(folder, make_data(None))
-    finally:
-        ol.OUTLINE_PATH = original
+    agent, result = run_pipeline_to_end(folder, make_data(None), outline_path)
 
     check("改名遗留目录不调用 Agent", not agent.prompts,
           str([p[:60] for p in agent.prompts]))
-    check("改名遗留目录被路由门禁明确拦下",
-          result.get("route_blocked") == "generated brief is absent from current outline",
+    check("改名遗留目录被路由解析拦下(不在 outline)", result.get("route_blocked"),
           str(result))
 
 
@@ -646,33 +610,25 @@ def test_full_chapter_with_handwritten_brief_blocks():
         "# 手写\n\ntype: method\n\n1. **设计** (~200 words)\n- 机制\n",
         encoding="utf-8")
 
-    ol, original = with_outline(outline_path)
-    try:
-        agent, result = run_pipeline_to_end(folder, make_data(None))
-    finally:
-        ol.OUTLINE_PATH = original
+    agent, result = run_pipeline_to_end(folder, make_data(None), outline_path)
 
     check("整篇章配手写 brief 时不调用 Agent", not agent.prompts)
     check("整篇章配手写 brief 被拦下",
-          result.get("route_blocked") == "FULL chapter has a handwritten brief",
+          result.get("route_blocked") == "chapter has a non-generated brief",
           str(result))
 
 
 def test_full_chapter_without_cross_chapter_state_blocks():
-    """整篇路由但跨章状态文件不存在:本章的术语约定无处落盘,必须停。"""
+    """跨章状态文件不存在:本章的术语约定无处落盘,必须停。"""
     set_idea(IDEA_TEXT)
     folder, outline_path, ws = make_full_paper_ws("02-method")
     Path(ws, "cross-chapter-state.md").unlink()
 
-    ol, original = with_outline(outline_path)
-    try:
-        agent, result = run_pipeline_to_end(folder, make_data(None))
-    finally:
-        ol.OUTLINE_PATH = original
+    agent, result = run_pipeline_to_end(folder, make_data(None), outline_path)
 
     check("缺跨章状态时不调用 Agent", not agent.prompts)
     check("缺跨章状态被拦下",
-          result.get("route_blocked") == "FULL chapter has no cross-chapter state",
+          result.get("route_blocked") == "chapter has no cross-chapter state",
           str(result))
 
 

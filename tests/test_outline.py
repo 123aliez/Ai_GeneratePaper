@@ -343,11 +343,20 @@ def test_outline_excerpt_is_bounded():
     check("末章没有后一章", "->" not in last, last)
     check("末章有前一章", "<- 4. Method" in last, last)
 
-    # 手建的文件夹不在 outline 里 → 返回空串,不影响手写 brief 的路径
-    check("outline 里没有的文件夹返回空串",
-          ol.build_outline_excerpt("99-handmade", outline) == "")
-    check("outline 不存在时返回空串",
-          ol.build_outline_excerpt("04-method", "/nonexistent") == "")
+    # 不在 outline 里的文件夹不是合法章节,resolve 抛错(这里只验证它确实报错)。
+    try:
+        ol.build_outline_excerpt("99-handmade", outline)
+    except ol.OutlineRouteError:
+        check("outline 里没有的文件夹报错", True)
+    else:
+        raise AssertionError("不在 outline 的文件夹没报错")
+    # outline 不存在同样报错。
+    try:
+        ol.build_outline_excerpt("04-method", "/nonexistent")
+    except ol.OutlineRouteError:
+        check("outline 不存在时报错", True)
+    else:
+        raise AssertionError("outline 不存在时没报错")
 
 
 # ── 段数自适应(与 outline 配合的关键行为) ────────────────────────────
@@ -397,41 +406,50 @@ def test_concatenate_respects_part_count():
     check("三段时全部拼入", "旧第三段" in draft3, draft3)
 
 
-# ── 两条写作路由 ─────────────────────────────────────────────────────
+# ── 写作路由 ─────────────────────────────────────────────────────────
 def test_write_mode_resolution():
-    """路由判据只有一条:该文件夹是否出现在 outline.md 里。"""
+    """章节文件夹必须出现在 outline.md 里,否则不是合法章节。"""
     outline = write_outline(SAMPLE)
 
     method = ol.resolve_write_mode("04-method", outline)
-    check("outline 里的章走 FULL", method["mode"] == ol.FULL, str(method))
-    check("FULL 知道自己是第几章", (method["position"], method["total"]) == (2, 3),
+    check("outline 里的章解析为 FULL", method["mode"] == ol.FULL, str(method))
+    check("知道自己是第几章", (method["position"], method["total"]) == (2, 3),
           str((method["position"], method["total"])))
-    check("FULL 拿到前一章", method["prev"]["title"] == "Abstract", str(method["prev"]))
-    check("FULL 拿到后一章", method["next"]["title"] == "Results", str(method["next"]))
+    check("拿到前一章", method["prev"]["title"] == "Abstract", str(method["prev"]))
+    check("拿到后一章", method["next"]["title"] == "Results", str(method["next"]))
 
     first = ol.resolve_write_mode("01-abstract", outline)
     check("首章没有前一章", first["prev"] is None, str(first["prev"]))
     last = ol.resolve_write_mode("05-results", outline)
     check("末章没有后一章", last["next"] is None, str(last["next"]))
 
-    hand = ol.resolve_write_mode("my-chapter", outline)
-    check("手建文件夹走 SINGLE", hand["mode"] == ol.SINGLE, str(hand))
-    check("SINGLE 没有位置信息", (hand["position"], hand["total"]) == (0, 0), str(hand))
-    check("SINGLE 没有邻章", hand["prev"] is None and hand["next"] is None, str(hand))
+    # 不在 outline 里的文件夹不再是合法章节,直接报错(引导去 --init)。
+    try:
+        ol.resolve_write_mode("my-chapter", outline)
+    except ol.OutlineRouteError as exc:
+        check("不在 outline 的文件夹抛错", True)
+        check("错误信息引导 --init", "--init" in str(exc), str(exc))
+    else:
+        raise AssertionError("不在 outline 的文件夹被当成了合法章节")
 
-    # outline 不存在(纯逐章使用者从没建过 outline.md)→ 一律 SINGLE,不报错
-    nowhere = ol.resolve_write_mode("04-method", "/nonexistent/outline.md")
-    check("outline 缺失时退回 SINGLE", nowhere["mode"] == ol.SINGLE, str(nowhere))
+    # outline 不存在同样报错。
+    try:
+        ol.resolve_write_mode("04-method", "/nonexistent/outline.md")
+    except ol.OutlineRouteError as exc:
+        check("outline 缺失时抛错", True)
+        check("缺失错误引导 --init", "--init" in str(exc), str(exc))
+    else:
+        raise AssertionError("outline 缺失时没有报错")
 
-    # outline 存在但解析不出章节 ≠ 没有 outline。前者说明结构文件写坏了,此时把
-    # 每个文件夹都判成"逐章"是最坏的结果:整篇的章会被按自包含写,而且没人报错。
+    # outline 存在但解析不出章节 = 结构文件写坏了,报错而不是静默继续。
     broken = write_outline("# 只有说明,没有任何章节标题\n\n随便写点什么。\n")
     try:
         ol.resolve_write_mode("04-method", broken)
-    except ol.OutlineRouteError:
-        check("outline 存在但解析为空时拒绝静默退回 SINGLE", True)
+    except ol.OutlineRouteError as exc:
+        check("outline 存在但解析为空时报错", True)
+        check("空 outline 错误引导 --init", "--init" in str(exc), str(exc))
     else:
-        raise AssertionError("坏掉的 outline 被静默当成了 SINGLE")
+        raise AssertionError("坏掉的 outline 没有报错")
 
     # 两章映射到同一文件夹:邻章位置无法确定,next() 只会取到第一个匹配。
     duplicate = write_outline(
@@ -445,31 +463,19 @@ def test_write_mode_resolution():
         raise AssertionError("重复文件夹映射未被检测")
 
 
-def test_mode_clauses_are_opposites():
-    """两条路由的指令必须相反——共用一份会让整篇重复定义符号、单章写悬空引用。"""
+def test_mode_clause_is_full_paper():
+    """写作契约只此一种:整篇第 N 章,符号沿用前章。"""
     outline = write_outline(SAMPLE)
     full = ol.build_mode_clause("04-method", outline, cross_chapter_path="ws/xchap.md")
-    single = ol.build_mode_clause("my-chapter", outline)
 
-    check("FULL 声明是整篇的第几章", "chapter 2 of 3" in full, full[:200])
-    check("FULL 指向跨章状态文件", "ws/xchap.md" in full, full[:400])
-    check("FULL 禁止重复定义前章已定的符号",
+    check("声明是整篇的第几章", "chapter 2 of 3" in full, full[:200])
+    check("指向跨章状态文件", "ws/xchap.md" in full, full[:400])
+    check("禁止重复定义前章已定的符号",
           "Do NOT re-define" in full, full[:400])
-    check("FULL 允许跨章引用", "Cross-references to other chapters ARE allowed" in full,
+    check("允许跨章引用", "Cross-references to other chapters ARE allowed" in full,
           full[:600])
-    check("FULL 中间章要接上文", "preceding chapter" in full and "Abstract" in full, full)
-    check("FULL 中间章要引下文", "following chapter" in full and "Results" in full, full)
-
-    check("SINGLE 要求自包含", "SELF-CONTAINED" in single, single[:300])
-    check("SINGLE 禁止跨章过渡句",
-          "Do NOT write transitions that point at other chapters" in single, single[:600])
-    check("SINGLE 举出了具体的悬空引用例子", "as shown in Section 3" in single, single)
-    # SINGLE 会提到跨章状态文件,但只是为了**禁止**读它——Agent 的系统指令里
-    # 原本无条件写着"读 cross-chapter-state.md",不明确禁止就压不住。
-    check("SINGLE 明确禁止读写跨章状态",
-          "Do NOT read or write any `cross-chapter-state.md`" in single, single)
-    check("SINGLE 不给出跨章状态的实际路径", "ws/xchap.md" not in single, single)
-    check("两条子句内容不同", full != single)
+    check("中间章要接上文", "preceding chapter" in full and "Abstract" in full, full)
+    check("中间章要引下文", "following chapter" in full and "Results" in full, full)
 
     # 首章/末章的开合指令
     first = ol.build_mode_clause("01-abstract", outline)
@@ -477,21 +483,14 @@ def test_mode_clauses_are_opposites():
     last = ol.build_mode_clause("05-results", outline)
     check("末章不要求引下文", "LAST chapter" in last, last)
 
-    # 审稿侧同样要分开:否则审稿人在自包含单章里要求"补上与前一章的衔接",
-    # 而收敛循环把首轮 must_fix 冻结成验收清单,接下来几轮都在造悬空引用。
+    # 审稿侧同样:查重复定义与跨章重复
     r_full = ol.build_mode_review_clause("04-method", outline, cross_chapter_path="ws/x.md")
-    r_single = ol.build_mode_review_clause("my-chapter", outline)
-    check("审稿 FULL 查重复定义与跨章重复",
+    check("审稿查重复定义与跨章重复",
           "re-defines" in r_full and "duplicates material" in r_full, r_full)
-    check("审稿 SINGLE 把跨章引用判为 MUST FIX",
-          "MUST FIX" in r_single and "those targets do not exist" in r_single, r_single)
-    check("审稿 SINGLE 不要求补跨章过渡",
-          "Do NOT ask for a transition" in r_single, r_single)
-    check("两侧审稿子句不同", r_full != r_single)
 
 
 def test_init_creates_cross_chapter_state():
-    """跨章状态文件的存在本身就是整篇模式的开关,必须由 --init 建。"""
+    """跨章状态文件由 --init 建,是跨章术语与结论的载体。"""
     outline = write_outline(SAMPLE)
     ws = Path(tempfile.mkdtemp())
     result = ol.init_chapter_workspaces(outline, str(ws))
