@@ -174,7 +174,8 @@ def idea_is_skeleton(idea_text: str) -> tuple[bool, int]:
 
     预检门禁会查 idea.md 是否*存在*;没有这道检查它也会接受一个 100% 模板的文件——
     那是最坏情况,因为运行会继续,起草者把模板自己的问题当成正文内容。所有脚手架
-    都剥掉:`>` 提示块、标题、表格分隔线、空表格行、`- $$:` 占位符号。
+    都剥掉:`>` 提示块、标题、表格分隔线、空表格行、`- $$:` 占位符号,以及尖括号
+    占位符 `<...>`(模板里用来标"此处该填什么"的中文指引)。
     """
     if not idea_text:
         return True, 0
@@ -196,6 +197,17 @@ def idea_is_skeleton(idea_text: str) -> tuple[bool, int]:
             continue                                  # 空项目符号
         if re.fullmatch(r"\d+\.\s*", stripped):
             continue                                  # 空编号项
+        # 去掉行首列表符 / 加粗标签,露出主体再判断占位符
+        body = re.sub(r"^[-*+]\s*", "", stripped)
+        body = re.sub(r"^\*\*[^*]+\*\*\s*[:：]?\s*", "", body)
+        body = body.strip()
+        # 整行被单个 <...> 包住 → 占位符,跳过
+        if re.fullmatch(r"<[^<>]*>", body):
+            continue
+        # 行内 <...> 片段(如 - **xx**:<填这里>)抠掉再判断是否全空
+        body = re.sub(r"<[^<>]*>", "", body).strip(" -|:")
+        if not body:
+            continue                                  # 抠掉占位符后整行空
         authored.append(stripped)
     words = len(" ".join(authored).split())
     # 中文几乎没有空格,把 CJK 字符也算作词。

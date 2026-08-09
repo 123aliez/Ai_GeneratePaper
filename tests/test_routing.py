@@ -271,6 +271,51 @@ def test_unfilled_skeleton_counts_as_missing():
     check("an empty idea document is a skeleton",
           idea_is_skeleton("")[0])
 
+    # 尖括号占位符 <...>(模板里"此处该填什么"的中文指引)不计入实写词数。
+    # 否则用户把模板原样 rename 成 idea.md 一个字不填,也会因模板指引词够多而绕过门禁。
+    # 这正是 idea.example.md 的形态:开头带"状态:未填写"标记,正文全是 <...> 占位与
+    # 教填写的说明句。带状态标记时由状态行短路判骨架;去掉标记后,实写词数也应低于阈值。
+    template_marked = (
+        "# Idea — <你的方法名>\n\n"
+        "> **状态:未填写**(填完请删掉这一行)\n\n"
+        "## 1. 一句话贡献\n<把整篇论文的贡献压缩成一句话。这句会被反复用到。>\n\n"
+        "## 4. 方法设计\n写清楚**可复现级别**的细节。Method 章直接从这节展开。\n\n"
+        "### 4.2 关键组件\n"
+        "| 组件 | 输入 | 输出 | 作用 |\n|---|---|---|---|\n| <组件A> | <> | <> | <> |\n"
+    )
+    is_skel_marked, _ = idea_is_skeleton(template_marked)
+    check("a marked-unfilled template is detected as a skeleton", is_skel_marked)
+
+    template_unmarked = template_marked.replace(
+        "> **状态:未填写**(填完请删掉这一行)\n\n", "")
+    is_skel, words = idea_is_skeleton(template_unmarked)
+    check("a template left in <...> placeholders is detected as a skeleton",
+          is_skel, f"words={words}")
+
+    # 行内合法尖括号(如 <pad>/<eos> token)不误杀:用户实写内容仍在,不计为骨架。
+    real_with_tokens = (
+        "# Idea — Realign\n\n## 方法\n"
+        "我们提出一种基于 <pad> token 重组的方法,显著降低序列噪声。核心是把 <eos> 后的\n"
+        "片段重新对齐再做注意力,在三个基准上验证有效。\n"
+    )
+    is_skel2, words2 = idea_is_skeleton(real_with_tokens)
+    check("genuine idea with inline <token> brackets is not a skeleton",
+          not is_skel2, f"words={words2}")
+
+    # 三个边界(防 codex 审查点出的误伤):
+    _, placeholder_words = idea_is_skeleton("<a> | <b>")
+    check("multiple angle placeholders contain no authored words",
+          placeholder_words == 0, f"words={placeholder_words}")
+
+    _, first_cell_words = idea_is_skeleton("| Encoder | <> | <> | <> |")
+    check("a filled first table cell is retained as authored content",
+          first_cell_words > 0, f"words={first_cell_words}")
+
+    _, tag_words = idea_is_skeleton(
+        '<widget data-comparison="score > baseline">')
+    check("an angle-bracket code construct with an inner > is not a placeholder",
+          tag_words > 0, f"words={tag_words}")
+
 
 def _write_temp_idea(text: str) -> Path:
     path = Path(tempfile.mkdtemp()) / "idea.md"
