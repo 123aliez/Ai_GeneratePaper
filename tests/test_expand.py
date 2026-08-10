@@ -79,10 +79,14 @@ def test_prompt_states_the_hard_constraints():
     """提示词里的约束是这个功能唯一的护栏,逐条断言它们在场。"""
     print("\n[展开提示词]")
     chapters = parse_outline(write_outline(SKELETON))
-    prompt = build_expand_prompt(chapters, "/tmp/out.md", "/tmp/idea.md", 4)
+    prompt = build_expand_prompt(chapters, "/tmp/out.md", "/tmp/out.zh.md",
+                                 "/tmp/idea.md", 4)
 
     check("要求先读 idea.md", "/tmp/idea.md" in prompt)
-    check("写明产物路径", "/tmp/out.md" in prompt)
+    check("写明英文产物路径", "/tmp/out.md" in prompt)
+    check("写明中文产物路径", "/tmp/out.zh.md" in prompt)
+    check("要求写两份", "TWO files" in prompt or "two files" in prompt)
+    check("要求英文版给 Agent", "ENGLISH version" in prompt or "out_en_path" in prompt)
     check("禁止改章节结构",
           "Do NOT add, remove, merge, split, reorder or rename a chapter" in prompt)
     check("禁止改 type", "Do NOT change any chapter's `type:` line" in prompt)
@@ -105,7 +109,8 @@ def test_prompt_preserves_authors_existing_sections():
     print("\n[已有小节的章]")
     chapters = parse_outline(write_outline(
         SKELETON + "\n### 4.1 主结果 (~300 words)\n- 只用结果库的真实数字\n"))
-    prompt = build_expand_prompt(chapters, "/tmp/out.md", "/tmp/idea.md", 4)
+    prompt = build_expand_prompt(chapters, "/tmp/out.md", "/tmp/out.zh.md",
+                                 "/tmp/idea.md", 4)
     check("提示里出现作者写的小节标题", "主结果" in prompt)
     check("提示里出现作者写的要点", "只用结果库的真实数字" in prompt)
     check("要求逐字保留作者的小节",

@@ -28,6 +28,11 @@ from .chapter_type import normalize_type, route_for_type, DEFAULT_TYPE, DEFAULT_
 
 OUTLINE_PATH = Path(os.getenv("OUTLINE_PATH") or (PROJECT_ROOT / "outline.md"))
 
+# 用户填写的 outline 草稿(表格骨架)。--expand 读它,展开成 outline.md(定稿用)。
+# 与 OUTLINE_PATH(outline.md)分离:草稿是用户手写的骨架,定稿是展开/审查后的产物。
+OUTLINE_DRAFT_PATH = Path(os.getenv("OUTLINE_DRAFT_PATH")
+                          or (PROJECT_ROOT / "outline_draft.md"))
+
 # `## 4. Method` / `## 4 Method` / `## Method`(无号则按出现顺序编号)
 _CHAPTER_RE = re.compile(r"^##\s+(?:(\d+)[.、]?\s+)?(.+?)\s*$")
 # `### 4.1 总体框架 (~250 words)`;字数段可缺省——没标时按该小节 type 查

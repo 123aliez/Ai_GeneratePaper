@@ -22,7 +22,7 @@
 |---|---|---|
 | **贡献是什么** | `idea.md`(你写的一句话贡献、核心洞察、方法设计) | idea 类章节**拒绝起草** |
 | **数字是什么** | `data/`(你的实验结果 CSV/JSON/日志/图) | data 类章节**拒绝起草** |
-| **结构是什么** | `outline.md`(你写的分几章、每章什么类型) | 跑不起来(`--init` 没输入) |
+| **结构是什么** | `outline_draft.md`(你写的分几章、每章什么类型) | 跑不起来(`--init` 没输入) |
 
 ---
 
@@ -63,18 +63,24 @@
 pip install -r requirements.txt
 cp .env.example .env            # 填 DRAFT/REVIEW/MANAGER 三组 key
 cp idea.example.md idea.md      # 填你的贡献/核心洞察/方法设计(最重要)
-cp outline.example.md outline.md  # 填章节结构
+cp outline.example.md outline_draft.md  # 填章节骨架(表格)
 
-python run.py --expand          # 规划者读 idea.md 补每章小节 → outline.expanded.md
-                                #   审它、补字数、改名成 outline.md
-python run.py --init            # → 各章工作区 + 跨章状态(+ data-index.md)
+python run.py --expand          # 规划者读 idea.md 补每章小节
+                                #   → 生成 outline.md(英文版) + outline.zh.md(中文版)
+python run.py --init            # 检测到中文版更新 → 自动翻译成英文覆盖 outline.md
+                                #   → 各章工作区 + 跨章状态(+ data-index.md)
 python run.py --all --progress  # 按 outline 顺序跑全部,失败即停
 ```
+
+**中英双轨**:`outline_draft.md` 是骨架,`--expand` 一次生成英文版 `outline.md`(Agent 读)
+和中文版 `outline.zh.md`(你看/改)。你只改中文版,`--init` 时框架自动把中文翻译成英文
+覆盖 `outline.md`,再生成工作区——**你永远只维护中文,Agent 永远吃英文**。
 
 写方法章**不必等实验跑完**:`type: method` 的门禁是 advisory,`data/` 为空也能起草,
 数字标 UNVERIFIED;只有 `type: results` 这类章节才会在无数据时被拦。
 
-`idea.md`、`outline.md`、`data/`、`.env` 都不进 git(`.gitignore` 挡掉),模板和契约文档进。
+`idea.md`、`outline_draft.md`、`outline.md`、`data/`、`.env` 都不进 git
+(`.gitignore` 挡掉),模板和契约文档进。
 
 ---
 

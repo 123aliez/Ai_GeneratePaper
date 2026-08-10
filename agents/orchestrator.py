@@ -147,15 +147,39 @@ def print_stream_progress(content: str, seen: set[str], owner: str = "Manager", 
 
 
 class ProgressFilteringStdout(io.StringIO):
-    def __init__(self, owner: str, seen: set[str], output):
+    """拦截 Agent 的 stdout 流式输出,重打成进度行。
+
+    heartbeat=True 时(standalone 调用,如 --expand),每隔 HEARTBEAT_INTERVAL 个
+    字符打印一行"thinking 心跳"(用 \\r 覆盖),让用户看到 Agent 还在推理而不是卡住。
+    流水线内(有 Stage 表格)传 False,避免干扰。
+    """
+
+    HEARTBEAT_INTERVAL = 800   # 每接收这么多字符打一次心跳
+
+    def __init__(self, owner: str, seen: set[str], output, heartbeat: bool = False):
         super().__init__()
         self.owner = owner
         self.seen = seen
         self.output = output
         self.buffer = ""
+        self.heartbeat = heartbeat
+        self._received = 0
+        self._last_heartbeat = 0
 
     def write(self, text):
         self.buffer += str(text)
+        if self.heartbeat:
+            self._received += len(str(text))
+            if self._received - self._last_heartbeat >= self.HEARTBEAT_INTERVAL:
+                self._last_heartbeat = self._received
+                line = (f"[{self.owner:<8.8}] thinking    | "
+                        f"已接收 {self._received} 字推理内容,仍在进行...")
+                # 心跳走 self.output(测试可捕获;正式运行时 = 真实 stdout),用 \r 覆盖
+                if self.output is not None:
+                    self.output.write("\r" + line)
+                    self.output.flush()
+                else:
+                    print("\r" + line, end="", flush=True)
         print_stream_progress(str(text), self.seen, self.owner, self.output)
         return len(str(text))
 
@@ -165,6 +189,113 @@ class ProgressFilteringStdout(io.StringIO):
 
 def chapter_name_from_folder(folder_path: str) -> str:
     return Path(folder_path.replace("\\", "/")).name
+
+
+# ── 进度汇总表 ─────────────────────────────────────────────────────────
+# 把 `results` dict + 工作区实际产物汇总成一张 Stage 状态表。`--progress` 每章跑完
+# 打印一张(见 run_4stage_with_progress 末尾),`--all` 每章结束时也打印一张(见
+# run.py::run_all_chapters)。数据源是确定性的:results 里的 "skipped"/error dict +
+# 关键产物的文件存在性,不依赖 Agent 输出格式。
+#
+# 状态枚举:done(产物齐全)/ skipped(断点续跑跳过)/ running(当前执行中)/
+#           failed(路由硬停或 agent 调用失败)/ pending(未执行到)。
+# 判断失败靠外层(results 无 stageX 字段且 final 不存在 = 提前 return)。
+
+# 每个 Stage → (results 字段, 关键产物文件)。stage5 用布尔 stage5_xchap_ok。
+_STAGE_ARTIFACTS = [
+    ("0 证据挖掘",   "stage0_evidence", ["evidence-pack.md"]),
+    ("1a 规划",      "stage1_plan",     ["draft-v1.plan.md"]),
+    ("1b 起草",      "stage1_parts",    ["draft-v1.md"]),
+    ("2 评审",       "stage2",          ["review-v1.json", "review-v1.md"]),
+    ("3 收敛修订",   "stage3",          ["draft-v2.md"]),
+    ("4 定稿",       "stage4",          ["final.md", "final.zh.md"]),
+    ("5 跨章交接",   "stage5",          ["cross-chapter-state.md"]),
+]
+
+
+def render_stage_table(folder_path: str, results: dict,
+                       running_stage: int = -1) -> str:
+    """渲染一章的 Stage 进度表。running_stage 指正在执行的 Stage 序号(-1=全完成)。
+
+    results 是 run_4stage_with_progress 的返回 dict;folder_path 用于检查关键产物
+    文件是否存在(决定 done/skipped)。不抛错:任何字段缺失按 pending 处理。
+    """
+    rows = []
+    for index, (label, field, artifacts) in enumerate(_STAGE_ARTIFACTS):
+        # 状态判定
+        if running_stage == index:
+            status = "进行中"
+        elif results.get("route_blocked") and index >= _blocked_stage_index(results):
+            status = "未执行"
+        elif field == "stage5":
+            status = ("完成" if results.get("stage5_xchap_ok") is True
+                      else "未执行" if running_stage < index else "失败")
+        else:
+            val = results.get(field)
+            if isinstance(val, dict) and "error" in val:
+                status = "失败"
+            elif val == "skipped":
+                status = "跳过"
+            elif _any_artifact_exists(folder_path, artifacts):
+                status = "完成"
+            elif running_stage < index:
+                status = "未执行"
+            else:
+                status = "失败"
+
+        present = [a for a in artifacts if os.path.exists(
+            os.path.join(folder_path, a))]
+        artifact_str = ", ".join(present) if present else "-"
+        rows.append((label, status, artifact_str))
+
+    width_label = max(len(r[0]) for r in rows)
+    width_status = max(len(r[1]) for r in rows)
+    width_art = max(len(r[2]) for r in rows)
+
+    lines = [
+        f"| {'阶段':<{width_label}} | {'状态':<{width_status}} | {'产物':<{width_art}} |",
+        f"|{'-' * (width_label + 2)}|{'-' * (width_status + 2)}|{'-' * (width_art + 2)}|",
+    ]
+    for label, status, artifact in rows:
+        lines.append(f"| {label:<{width_label}} | {status:<{width_status}} | "
+                     f"{artifact:<{width_art}} |")
+    return "\n".join(lines)
+
+
+def _any_artifact_exists(folder_path: str, artifacts: list[str]) -> bool:
+    return any(os.path.exists(os.path.join(folder_path, a)) for a in artifacts)
+
+
+def _blocked_stage_index(results: dict) -> int:
+    """路由硬停时,报告从哪个 Stage 起未执行(粗略:到首个被 blocked 的阶段)。"""
+    if results.get("route_blocked"):
+        for index, (label, field, _artifacts) in enumerate(_STAGE_ARTIFACTS):
+            if field == "stage0_evidence" and "stage0" in str(results.get("route_blocked")):
+                return index
+        # 默认:阻塞发生在 Stage 0(证据挖掘前)
+        return 0
+    return len(_STAGE_ARTIFACTS)
+
+
+def _print_stage_table(folder_path: str, results: dict,
+                       running_stage: int = -1) -> None:
+    """打印一章的 Stage 进度表。表格整体打印,不覆盖流式输出。"""
+    print("\n=== 章节进度 ===", flush=True)
+    print(render_stage_table(folder_path, results, running_stage), flush=True)
+    print("=================", flush=True)
+
+
+def _finish_with_table(folder_path: str, results: dict) -> dict:
+    """run_4stage_with_progress 的统一返回出口:打印进度表后返回 results。
+
+    所有提前 return(路由硬停 / verify 失败 / agent 调用失败)都走这里,确保无论
+    成功还是失败,调用方都能看到一章的 Stage 状态表,而不是只有一列列的日志。
+    """
+    try:
+        _print_stage_table(folder_path, results)
+    except Exception as exc:
+        print(f"[Manager  ] notice     | 进度表格渲染失败(不影响结果): {str(exc)[:120]}", flush=True)
+    return results
 
 
 def build_reference_excerpt(chapter: str) -> str:
@@ -723,7 +854,10 @@ def run_agent_stage_standalone(agent, agent_name: str, prompt: str,
             seen_progress = set()
             events = []
             visible_stdout = os.sys.stdout
-            filtered = ProgressFilteringStdout(agent_name, seen_progress, visible_stdout)
+            # standalone 单次调用(如 --expand)没有 Stage 表格,加心跳让用户看到
+            # Manager 还在推理,而不是长时间无输出像卡住。
+            filtered = ProgressFilteringStdout(agent_name, seen_progress,
+                                               visible_stdout, heartbeat=True)
             with contextlib.redirect_stdout(filtered):
                 try:
                     stream = agent.run(prompt, stream=True)
@@ -735,6 +869,9 @@ def run_agent_stage_standalone(agent, agent_name: str, prompt: str,
                     if content is not None:
                         print_stream_progress(content, seen_progress, agent_name,
                                               visible_stdout)
+            # 心跳行用 \r 覆盖,结束时清掉并换行,避免残留一行"thinking"挡住后续输出
+            if filtered._last_heartbeat > 0:
+                print("\r" + " " * 72 + "\r", end="", flush=True)
             return events[-1] if events else None
         except Exception as exc:
             last_error = exc
@@ -1047,7 +1184,7 @@ def run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manage
                 action = ("write" if idea_missing else "fill in")
                 print(f"[Manager  ] FAIL      | {action} {Path(IDEA_PATH).name} "
                       f"(sections 3 and 4 matter most), then re-run.", flush=True)
-                return results
+                return _finish_with_table(folder_path, results)
         # Symmetrically: a blocking-gate chapter with no results store has nothing
         # to report. The post-draft number gate would catch this, but only after
         # paying for evidence mining, planning, and three draft parts.
@@ -1062,7 +1199,7 @@ def run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manage
                     print(f"[Manager  ] FAIL      | provide data/ results (see data/README.md), "
                           f"then re-run. To draft the idea chapters first, run those instead.",
                           flush=True)
-                    return results
+                    return _finish_with_table(folder_path, results)
             except Exception as exc:
                 print(f"[Manager  ] notice     | pre-flight results check skipped: "
                       f"{str(exc)[:160]}", flush=True)
@@ -1080,7 +1217,7 @@ def run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manage
             print(f"[Manager  ] FAIL      | 所有章节都从 outline.md 生成;"
                   f"先跑 `python run.py --init`。", flush=True)
             results["route_blocked"] = f"not in outline: {exc}"
-            return results
+            return _finish_with_table(folder_path, results)
 
         mode_clause = build_mode_clause(chapter, cross_chapter_path=xchap)
         mode_review_clause = build_mode_review_clause(
@@ -1109,7 +1246,7 @@ def run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manage
                   f"(缺少 outline 指纹)", flush=True)
             print(f"[Manager  ] FAIL      | 非生成式 brief 没有章序号与结构约定,"
                   f"按整篇跑会写出错的衔接。先跑 `python run.py --init --force`", flush=True)
-            return results
+            return _finish_with_table(folder_path, results)
         if chapter_fingerprint(info["chapter"]) != brief_fp:
             results["route_blocked"] = "brief is stale against outline"
             results["stale_route_artifacts"] = warn_stale_route_artifacts(
@@ -1119,13 +1256,13 @@ def run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manage
             print(f"[Manager  ] FAIL      | 删掉上面列出的陈旧产物(brief.md 也在内),再跑本章。", flush=True)
             print(f"[Manager  ] FAIL      | 注意:不要只跑 `--init --force`——那只会刷新 brief 指纹,", flush=True)
             print(f"[Manager  ] FAIL      | 而下游 evidence-pack/plan/review 仍是旧路由的,会被静默复用。", flush=True)
-            return results
+            return _finish_with_table(folder_path, results)
         if not os.path.isfile(xchap):
             results["route_blocked"] = "chapter has no cross-chapter state"
             print(f"[Manager  ] FAIL      | {display_path(xchap)} 不存在;"
                   f"本章无处读取前章术语、也无处写下自己的约定", flush=True)
             print(f"[Manager  ] FAIL      | 跑 `python run.py --init` 生成它后重试", flush=True)
-            return results
+            return _finish_with_table(folder_path, results)
 
         from .content_source import content_source_summary
         print(f"[Manager  ] content    | {content_source_summary(family)}", flush=True)
@@ -1162,7 +1299,9 @@ def run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manage
                 seen_progress = set()
                 events = []
                 visible_stdout = os.sys.stdout
-                filtered_stdout = ProgressFilteringStdout(agent_name, seen_progress, visible_stdout)
+                # 流水线内也开心跳:每步模型推理时显示"已接收 N 字",避免看似卡住。
+                filtered_stdout = ProgressFilteringStdout(agent_name, seen_progress,
+                                                          visible_stdout, heartbeat=True)
                 with contextlib.redirect_stdout(filtered_stdout):
                     try:
                         stream = agent.run(prompt, stream=True)
@@ -1173,6 +1312,9 @@ def run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manage
                         content = getattr(event, "content", None)
                         if content is not None:
                             print_stream_progress(content, seen_progress, agent_name, visible_stdout)
+                # 心跳行用 \r 覆盖,结束时清掉并换行,避免残留一行"thinking"挡住后续输出
+                if filtered_stdout._last_heartbeat > 0:
+                    print("\r" + " " * 72 + "\r", end="", flush=True)
                 return events[-1] if events else None
             except Exception as exc:
                 last_error = exc
@@ -1261,7 +1403,7 @@ def run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manage
         ))
         set_agent_context("Manager")
         if not verify(["draft-v1.plan.md", "todo.md"]):
-            return results
+            return _finish_with_table(folder_path, results)
 
     results["stage1_parts"] = []
     for position, part in enumerate(stage1_parts):
@@ -1307,12 +1449,12 @@ def run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manage
         results["stage1_parts"].append(result)
         set_agent_context("Manager")
         if not verify([part["output"]]):
-            return results
+            return _finish_with_table(folder_path, results)
 
     concatenate_stage1_parts(folder_path, len(stage1_parts))
     print(f"[Manager  ] write_file | {folder_rel}/draft-v1.md", flush=True)
     if not verify(["draft-v1.md", "todo.md"]):
-        return results
+        return _finish_with_table(folder_path, results)
 
     # ── Deterministic number gate (experiment mode) ─────────────────
     # Cross-check every number in draft-v1 against the results store BEFORE the
@@ -1344,7 +1486,7 @@ def run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manage
                 print(f"[Manager  ] FAIL      | number gate is BLOCKING for a {route['type']} chapter: "
                       f"no experiment results to verify against", flush=True)
                 print(f"[Manager  ] FAIL      | provide data/ results first, then re-run.", flush=True)
-                return results
+                return _finish_with_table(folder_path, results)
             if no_store and gate == ADVISORY:
                 # An idea chapter may legitimately precede the experiments. Say so
                 # once and continue — but any number it does write is unverified.
@@ -1391,7 +1533,7 @@ def run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manage
         ))
         set_agent_context("Manager")
     if not verify(["review-v1.md", "review-v1.json"]):
-        return results
+        return _finish_with_table(folder_path, results)
 
     # C3: validate review-v1.json BEFORE entering the convergence loop. A review
     # with an unparseable JSON or a missing/empty must_fix would silently degrade
@@ -1408,7 +1550,7 @@ def run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manage
         os.remove(os.path.join(folder_path, "review-v1.json"))
         if os.path.exists(os.path.join(folder_path, "review-v1.md")):
             os.remove(os.path.join(folder_path, "review-v1.md"))
-        return results  # caller will re-enter; stage2 will run because artifacts removed
+        return _finish_with_table(folder_path, results)  # caller will re-enter; stage2 will run because artifacts removed
 
     # ── C11: apply citation insertions from the review ──────────────
     # The reviewer flagged needs_citation (sentence + suggested key). A Python
@@ -1453,7 +1595,7 @@ def run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manage
             run_agent_stage, verify, mode_clause, family,
         )
     if not verify(["draft-v2.md"]):
-        return results
+        return _finish_with_table(folder_path, results)
 
     # ── Stage 4: Finalize ────────────────────────────────────────────
     print(f"\n[Manager  ] Stage 4/4  | Finalize → {folder_rel}/final.md", flush=True)
@@ -1601,4 +1743,11 @@ def run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manage
 
     if all_ok:
         print(f"\n[Manager  ] DONE       | All stages complete for {folder_rel}", flush=True)
+
+    # 章节进度汇总表:把 results + 工作区产物整理成一张表,替代"一列一列"的状态行。
+    # 放在 return 前,确保无论成功/失败/路由硬停,都能看到一章的完整状态。
+    try:
+        _print_stage_table(folder_path, results)
+    except Exception as exc:
+        print(f"[Manager  ] notice     | 进度表格渲染失败(不影响结果): {str(exc)[:120]}", flush=True)
     return results

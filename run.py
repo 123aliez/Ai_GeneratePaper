@@ -138,6 +138,37 @@ def _maybe_build_data_index() -> None:
               f"data 类章节将缺少导航,可重跑 --init 重试。")
 
 
+def _translate_zh_to_en() -> int:
+    """若作者改过 outline.zh.md(比 outline.md 新),用 Manager 把中文翻译成英文覆盖。
+
+    作者只维护中文版 outline.zh.md;英文版 outline.md 是 Agent 吃的结构。--init 前
+    检查:中文版更新则重新翻译覆盖英文版,保证 Agent 读到的英文始终反映作者最新修改。
+    返回 0=不需要翻译/成功,1=翻译失败。
+    """
+    from agents.outline import OUTLINE_PATH, OUTLINE_DRAFT_PATH
+    from agents.outline_expand import ZH_EXPANDED_PATH_NAME, build_translate_prompt
+    zh_path = Path(OUTLINE_PATH.parent) / ZH_EXPANDED_PATH_NAME
+    en_path = OUTLINE_PATH
+    if not zh_path.is_file():
+        return 0   # 没有中文版(--expand 没跑过),无需翻译
+    # 中文版比英文版新,或英文版不存在 → 需要重新翻译覆盖
+    if en_path.is_file() and en_path.stat().st_mtime >= zh_path.stat().st_mtime:
+        return 0   # 英文版不比中文旧,无需覆盖
+    print(f"\n检测到 {zh_path.name}(中文版)比 {en_path.name}(英文版)新,"
+          f"重新翻译英文版以反映你的修改...")
+    from config import get_manager_model
+    from agents import create_planner_agent
+    from agents.orchestrator import run_agent_stage_standalone
+    manager = create_planner_agent(get_manager_model())
+    prompt = build_translate_prompt(str(zh_path), str(en_path))
+    run_agent_stage_standalone(manager, "Manager", prompt)
+    if not en_path.is_file():
+        print(f"Error: Manager 没有写出英文版 {en_path.name}。")
+        return 1
+    print(f"翻译完成:{en_path.name} 已由 {zh_path.name} 覆盖。")
+    return 0
+
+
 def init_workspaces(force: bool) -> int:
     """读 outline.md 生成各章工作区 + 跨章状态。返回退出码。
 
@@ -148,6 +179,10 @@ def init_workspaces(force: bool) -> int:
                                 init_chapter_workspaces, outline_banner,
                                 parse_outline, OUTLINE_PATH, OutlineRouteError,
                                 CrossChapterStateError)
+    # 作者只改中文版 outline.zh.md;若它比 outline.md 新,--init 先翻译覆盖英文版,
+    # 再读英文版生成工作区——保证 Agent 读到的英文反映作者最新修改。
+    if _translate_zh_to_en() != 0:
+        return 1
     if not Path(OUTLINE_PATH).is_file():
         print(f"Error: 找不到总纲 {OUTLINE_PATH}")
         print("先复制模板:  cp outline.example.md outline.md")
@@ -229,29 +264,34 @@ def expand_outline() -> int:
     的,正是规划该干的活;前者是作者对自己工作的判断,Manager 手里没有投稿目标和
     篇幅预算,不该替他决定。
 
-    产物写到 outline.expanded.md 而非原地覆盖:Manager 的判断要作者过一遍再采纳。
+    输入是作者填的草稿 `outline_draft.md`(表格骨架),输出是中英双轨两份:
+    - `outline.md`(英文版)是喂给 Agent 的结构,--init 的输入。
+    - `outline.zh.md`(中文版)给作者看/改,结构与英文版逐字一致。
     """
-    from agents.outline import OUTLINE_PATH, OutlineRouteError, parse_outline
+    from agents.outline import (OUTLINE_DRAFT_PATH, OUTLINE_PATH,
+                                OutlineRouteError, parse_outline)
     from agents.outline_expand import (
-        EXPANDED_MARKER, build_expand_prompt, expanded_outline_path,
-        missing_word_counts, read_expanded, render_outline, skeleton_report,
-        validate_expansion,
+        EN_EXPANDED_MARKER, ZH_EXPANDED_MARKER,
+        EN_EXPANDED_PATH_NAME, ZH_EXPANDED_PATH_NAME,
+        build_expand_prompt, missing_word_counts, read_expanded,
+        render_outline, skeleton_report, validate_expansion,
     )
     from config import IDEA_PATH
 
-    if not Path(OUTLINE_PATH).is_file():
-        print(f"Error: 找不到 {OUTLINE_PATH}")
+    # 输入是用户填的草稿(outline_draft.md),不是定稿(outline.md)。
+    if not Path(OUTLINE_DRAFT_PATH).is_file():
+        print(f"Error: 找不到 {OUTLINE_DRAFT_PATH}")
         print("先写一份章节骨架(每章两行:`## N. 标题` + `type: <类型>`)。")
         print("类型词表见 outline.example.md。")
         return 1
 
     try:
-        chapters = parse_outline()
+        chapters = parse_outline(OUTLINE_DRAFT_PATH)
     except OutlineRouteError as exc:
         print(f"Error: {exc}")
         return 1
     if not chapters:
-        print(f"Error: {OUTLINE_PATH} 里没解析出任何章节。")
+        print(f"Error: {OUTLINE_DRAFT_PATH} 里没解析出任何章节。")
         print("每章需要一个 `## N. 标题` 标题行,下面跟一行 `type: <类型>`。")
         return 1
 
@@ -263,14 +303,16 @@ def expand_outline() -> int:
         print("第 3 节(核心洞察)与第 4 节(方法设计),再跑 --expand。")
         return 1
 
-    out_path = expanded_outline_path()
+    en_path = Path(OUTLINE_PATH.parent) / EN_EXPANDED_PATH_NAME
+    zh_path = Path(OUTLINE_PATH.parent) / ZH_EXPANDED_PATH_NAME
     # 旧产物必须先清掉。留着的话本次 Manager 写失败,下面"文件存在即成功"的判断
     # 会读到上一轮的内容并原样通过——作者拿着一份陈旧展开去 --init,而终端显示成功。
-    if out_path.exists():
-        print(f"Error: {out_path.name} 已存在(上一轮 --expand 的产物)。")
-        print(f"审阅它并改名成 {Path(OUTLINE_PATH).name},或者删掉它再重跑 --expand。")
-        print(f"不自动覆盖:那份文件可能已经被你改过。")
-        return 1
+    for p in (en_path, zh_path):
+        if p.exists():
+            print(f"Error: {p.name} 已存在(上一轮 --expand 的产物)。")
+            print(f"审阅它并改名成 {Path(OUTLINE_PATH).name},或者删掉它再重跑 --expand。")
+            print(f"不自动覆盖:那份文件可能已经被你改过。")
+            return 1
 
     print(f"Outline: {OUTLINE_PATH}")
     print(f"Idea:    {IDEA_PATH}")
@@ -279,7 +321,8 @@ def expand_outline() -> int:
         print(line)
     print(f"\nManager 将为每章补:小节拆分 + 每节的起草要点(含边界约束)。")
     print(f"字数不由它定 —— 展开后由你在小节标题后补 `(~N words)`。")
-    print(f"产物写到 {out_path.name},不动你的 {Path(OUTLINE_PATH).name}。\n")
+    print(f"产物中英双轨:英文版 {en_path.name}(喂 Agent)+ 中文版 {zh_path.name}(给你审阅)。")
+    print(f"不动你的 {Path(OUTLINE_PATH).name}。\n")
 
     from config import get_manager_model
     from agents import create_planner_agent
@@ -288,53 +331,72 @@ def expand_outline() -> int:
     print("Initializing manager model...")
     manager = create_planner_agent(get_manager_model())
 
-    prompt = build_expand_prompt(chapters, str(out_path), str(IDEA_PATH),
-                                 len(chapters))
+    prompt = build_expand_prompt(chapters, str(en_path), str(zh_path),
+                                 str(IDEA_PATH), len(chapters))
     run_agent_stage_standalone(manager, "Manager", prompt)
 
-    if not out_path.is_file():
-        print(f"\nError: Manager 没有写出 {out_path.name}。")
+    missing_files = [p.name for p in (en_path, zh_path) if not p.is_file()]
+    if missing_files:
+        print(f"\nError: Manager 没有写出 {', '.join(missing_files)}。")
         print("重跑 --expand;或者自己往 outline.md 里补小节。")
         return 1
 
+    # 英文版是喂给 Agent 的结构,以它为准做结构校验。中文版是给作者的对照,
+    # 结构与英文版必须一致——Manager 被要求逐字一致,这里也校验一遍。
     try:
-        expanded = read_expanded(out_path)
+        expanded_en = read_expanded(en_path)
+        expanded_zh = read_expanded(zh_path)
     except OutlineRouteError as exc:
-        print(f"\nError: {out_path.name} 解析不出章节: {exc}")
+        print(f"\nError: 展开产物解析不出章节: {exc}")
         print(f"文件保留在原地,你可以自己修,或删掉它重跑 --expand。")
         return 1
 
-    problems = validate_expansion(chapters, expanded)
+    problems = validate_expansion(chapters, expanded_en)
     if problems:
         # 越权改结构必须拦。Manager 悄悄合并两章或改掉一个 type,--init 照样会
         # 生成工作区,作者要到看见文件夹名不对才发现——那时 token 已经花了。
-        print(f"\nError: {out_path.name} 改动了你的章节结构,拒绝采纳:")
+        print(f"\nError: {en_path.name} 改动了你的章节结构,拒绝采纳:")
         for problem in problems:
             print(f"  · {problem}")
-        print(f"\n文件保留在 {out_path.name} 供你查看。要么手改它,"
+        print(f"\n文件保留在 {en_path.name} 供你查看。要么手改它,"
+              f"要么删掉重跑 --expand。")
+        return 1
+
+    # 中文版的结构校验:章数、顺序、type 必须与英文版一致(只比对结构,不比对
+    # 语言内容)。Manager 被要求逐字一致,这里做兜底——若中文版漏章/改了 type,
+    # 作者改它时会把英文版的结构也带偏。
+    zh_problems = validate_expansion(chapters, expanded_zh)
+    if zh_problems:
+        print(f"\nError: {zh_path.name} 结构与骨架不一致,拒绝采纳:")
+        for problem in zh_problems:
+            print(f"  · {problem}")
+        print(f"\n文件保留在 {zh_path.name} 供你查看。要么手改它,"
               f"要么删掉重跑 --expand。")
         return 1
 
     # 重新序列化一遍再落盘:Manager 的原始输出可能夹带说明文字或代码围栏,
     # 而这份文件下一步要被作者改名成 outline.md,必须是干净的语法。
     title = f"Paper outline — {Path(OUTLINE_PATH).stem}"
-    out_path.write_text(render_outline(expanded, title, EXPANDED_MARKER),
-                        encoding="utf-8")
+    en_path.write_text(render_outline(expanded_en, title, EN_EXPANDED_MARKER),
+                       encoding="utf-8")
+    zh_title = f"论文大纲 — {Path(OUTLINE_PATH).stem}"
+    zh_path.write_text(render_outline(expanded_zh, zh_title, ZH_EXPANDED_MARKER),
+                       encoding="utf-8")
 
-    total_sections = sum(len(c["sections"]) for c in expanded)
-    print(f"\n展开完成:{len(expanded)} 章,{total_sections} 个小节 → {out_path.name}")
-    for chapter in expanded:
+    total_sections = sum(len(c["sections"]) for c in expanded_en)
+    print(f"\n展开完成:{len(expanded_en)} 章,{total_sections} 个小节 → "
+          f"{en_path.name} + {zh_path.name}")
+    for chapter in expanded_en:
         titles = " / ".join(s["title"] for s in chapter["sections"])
         print(f"  {chapter['number']:>2}. {chapter['title']}: {titles}")
 
-    pending = missing_word_counts(expanded)
+    pending = missing_word_counts(expanded_en)
     if pending:
         print(f"\n{pending} 个小节还没有字数标注,当前按默认 250 词处理。")
         print(f"在小节标题后加 `(~N words)` 定篇幅,例如 `### 4.1 总体框架 (~350 words)`。")
     print(f"\n下一步:")
-    print(f"  1. 读 {out_path.name},改掉不认同的小节与要点,补上字数")
-    print(f"  2. mv {out_path.name} {Path(OUTLINE_PATH).name}")
-    print(f"  3. python run.py --init")
+    print(f"  1. 读 {zh_path.name}(中文版),改掉不认同的小节与要点,补上字数")
+    print(f"  2. python run.py --init   # 检测到中文版更新,自动翻译成英文 outline.md 再生成工作区")
     return 0
 
 
@@ -363,6 +425,28 @@ def chapter_is_complete(name: str) -> bool:
             and chapter_recorded_in_cross_state(name))
 
 
+def _print_paper_table(folders: list[str], rows: list[tuple]) -> None:
+    """打印整篇章节汇总表。rows 是 (position, name, status) 列表。
+
+    `--all` 结束时(或中途失败)展示各章状态,让用户一眼看清哪些章完成/失败。
+    """
+    if not rows:
+        return
+    width_pos = max(len(str(r[0])) for r in rows)
+    width_name = max(len(r[1]) for r in rows)
+    width_status = max(len(r[2]) for r in rows)
+    lines = [
+        f"\n=== 整篇章节进度 ===",
+        f"| {'#':<{width_pos}} | {'章节':<{width_name}} | {'状态':<{width_status}} |",
+        f"|{'-' * (width_pos + 2)}|{'-' * (width_name + 2)}|{'-' * (width_status + 2)}|",
+    ]
+    for position, name, status in rows:
+        lines.append(f"| {position:<{width_pos}} | {name:<{width_name}} | "
+                     f"{status:<{width_status}} |")
+    lines.append("======================")
+    print("\n".join(lines), flush=True)
+
+
 def run_all_chapters(draft_agent, review_agent, manager_agent) -> int:
     """整篇模式:按 outline.md 的顺序跑完全部章节。某章失败就停。
 
@@ -386,11 +470,13 @@ def run_all_chapters(draft_agent, review_agent, manager_agent) -> int:
         print(f"  {'[done] ' if done else '       '}{position}/{len(folders)}  {name}")
 
     completed, skipped = [], []
+    chapter_rows = []   # (position, name, status) 用于整篇章节汇总表
     for position, name in enumerate(folders, start=1):
         folder_path = os.path.join(PAPER_ROOT, name)
         if chapter_is_complete(name):
             print(f"\n{'=' * 60}\n[{position}/{len(folders)}] {name} — 已完成,跳过\n{'=' * 60}")
             skipped.append(name)
+            chapter_rows.append((position, name, "[完成] 跳过"))
             continue
 
         print(f"\n{'=' * 60}\n[{position}/{len(folders)}] {name}\n{'=' * 60}")
@@ -401,24 +487,30 @@ def run_all_chapters(draft_agent, review_agent, manager_agent) -> int:
             # pre-flight 拒绝(缺 idea.md / 缺 data/)或某阶段失败,都会走到这里。
             # 后面的章节大概率同因失败,而且前章的 cross-chapter-state 没写成,
             # 继续跑等于让后续章节在缺失上下文的前提下生成。
+            chapter_rows.append((position, name, "[失败] 未产出 final.md"))
             print(f"\n[run-all] 停止:{name} 未产出 final.md。")
             print(f"[run-all] 上方日志有原因(常见:idea.md 未填、data/ 为空、模型调用失败)。")
             print(f"[run-all] 已完成 {len(completed)} 章,修好后重跑 --all 会从这一章继续。")
+            _print_paper_table(folders, chapter_rows)
             return 1
         if result.get("stage5_xchap_ok") is not True:
             # final.md 有了,但跨章交接没做成。继续跑下一章 = 让它在没有本章术语
             # 约定的前提下另起一套,而 final.md 的存在会让重跑永远跳过这一章。
+            chapter_rows.append((position, name, "[失败] 跨章交接未完成"))
             print(f"\n[run-all] 停止:{name} 的 final.md 已生成,但跨章状态没交接成功。")
             print(f"[run-all] 下一章会拿不到本章的术语约定,术语从这里开始漂。")
             print(f"[run-all] 检查 {PAPER_ROOT}/cross-chapter-state.md 后重跑 --all,")
             print(f"[run-all] 本章只会重跑 Stage 5(前面的产物都在)。")
+            _print_paper_table(folders, chapter_rows)
             return 1
         completed.append(name)
+        chapter_rows.append((position, name, "[完成]"))
 
     print(f"\n{'=' * 60}")
     print(f"[run-all] 全部完成:本次生成 {len(completed)} 章,跳过 {len(skipped)} 章。")
     print(f"[run-all] 各章产物在 {PAPER_ROOT}/<章节>/final.md 与 final.zh.md")
     print(f"[run-all] 编译整篇: python latex/build.py")
+    _print_paper_table(folders, chapter_rows)
     return 0
 
 

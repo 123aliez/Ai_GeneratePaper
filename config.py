@@ -84,11 +84,13 @@ REVIEW_SCORE_THRESHOLD = float(os.getenv("REVIEW_SCORE_THRESHOLD", "4.0"))
 AUTO_CITE_WEB = os.getenv("AUTO_CITE_WEB", "false").lower() == "true"
 
 
-def _model(model_id: str, api_key: str, api_base: str, effort: str) -> LiteLLMModel:
+def _model(model_id: str, api_key: str, api_base: str, effort: str,
+           timeout: float = 300.0) -> LiteLLMModel:
     os.environ["OPENAI_API_KEY"] = api_key
     os.environ["OPENAI_API_BASE"] = api_base
+    # timeout 显式设置:中转站可能响应慢,默认超时(60s)会让小请求也读超时。
     return LiteLLMModel(model_id=model_id, api_key=api_key, api_base=api_base,
-                        reasoning_effort=effort)
+                        reasoning_effort=effort, timeout=timeout)
 
 
 def get_draft_model() -> LiteLLMModel:

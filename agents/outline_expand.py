@@ -25,9 +25,17 @@ from .chapter_type import DEFAULT_TYPE
 
 EXPANDED_PATH_NAME = "outline.expanded.md"
 
+# 中英双轨:英文版喂给 Agent,中文版给作者看/改。--expand 一次生成两份。
+# 输入是用户填的 outline_draft.md(表格骨架),输出直接是 outline.md(定稿,--init 用)
+# 与 outline.zh.md(中文对照版)。改名/保留即定稿,不需要额外 rename。
+EN_EXPANDED_PATH_NAME = "outline.md"          # 英文版:喂给 Agent(--init 的输入)
+ZH_EXPANDED_PATH_NAME = "outline.zh.md"       # 中文版:作者日常看/改
+
 # 展开产物的首行标记。用途是让 --init 能分辨"这是 --expand 的产物,作者可能还
 # 没审过",在生成工作区之前提醒一句。
 EXPANDED_MARKER = "<!-- outline-expanded: 由 --expand 生成,请审阅后改名为 outline.md -->"
+EN_EXPANDED_MARKER = "<!-- outline-expanded-en: 英文版,喂给 Agent; --init 的输入 -->"
+ZH_EXPANDED_MARKER = "<!-- outline-expanded-zh: 中文版,给作者审阅;结构与英文版逐字一致,仅语言不同 -->"
 
 
 def outline_skeleton_digest(chapters: list[dict]) -> str:
@@ -80,13 +88,17 @@ def skeleton_report(chapters: list[dict]) -> list[str]:
     return lines
 
 
-def build_expand_prompt(chapters: list[dict], out_path: str,
-                        idea_path: str, total: int) -> str:
+def build_expand_prompt(chapters: list[dict], out_en_path: str,
+                        out_zh_path: str, idea_path: str, total: int) -> str:
     """Manager 的展开任务。
 
     刻意收紧到两件事:拆小节、写要点。不许改章节结构 —— 那是作者的设计,而
     Manager 手里只有 `idea.md`,没有投稿目标、没有篇幅预算、也不知道作者为什么
     把某两章分开写。越权改结构会让作者以为自己的设计被采纳了,实际没有。
+
+    中英双轨:让 Manager 对**同一份章节结构**写两份文件 —— 英文版 outline.md
+    (Agent 吃的结构)与中文版 outline.zh.md(作者看/改)。英文版是初始版,作者改完
+    中文后由 --init 时翻译覆盖英文版。结构、type、小节划分两份逐字一致,仅语言不同。
     """
     skeleton = "\n".join(
         f"{c['number']}. {c['title']}  (type: {c['type']}"
@@ -178,20 +190,50 @@ def build_expand_prompt(chapters: list[dict], out_path: str,
         f"consistency. The pipeline injects the writing contract and freezes a "
         f"notation table on its own; bullets about them are noise.\n\n"
         f"## Output\n"
-        f"Write the result to '{out_path}' with write_file, in exactly this "
+        f"Write the SAME chapter structure to TWO files with write_file, in exactly this "
         f"syntax and nothing else — no preamble, no explanation, no code fences:\n\n"
+        f"1. '{out_en_path}' — ENGLISH version. Chapter titles, subsection titles, and "
+        f"bullets all in English. This is the initial structure the drafting agent reads.\n"
+        f"2. '{out_zh_path}' — CHINESE version. Chapter titles, subsection titles, and "
+        f"bullets all in Chinese (match the idea document's language). This is what the "
+        f"author reviews and edits; when the author edits it, the English version is "
+        f"re-translated to match.\n\n"
+        f"The two files must be structurally IDENTICAL: same chapters, same order, same "
+        f"`type:` values, same subsections and their boundaries. Only the language of "
+        f"titles and bullets differs. Reproduce every chapter in the author's order with "
+        f"the author's exact title and `type:` value in BOTH files. Keep author-written "
+        f"subsections (titles, order, word counts, per-section type) verbatim in BOTH "
+        f"files. Write BOTH files; report only that the files were written.\n\n"
+        f"Syntax (used identically in both files, English shown here):\n\n"
         f"## 4. Method\n\n"
         f"type: method\n\n"
         f"### 4.1 <subsection title>\n"
         f"- <bullet>\n"
         f"- <bullet>\n\n"
         f"### 4.2 <subsection title>\n"
-        f"- <bullet>\n\n"
-        f"Subsection titles may be Chinese or English — match the language the "
-        f"author used for the chapter titles. Bullets: write them in the same "
-        f"language as the chapter titles too.\n"
-        f"Reproduce every chapter, in the author's order, with the author's exact "
-        f"title and `type:` value. Report only that the file was written.\n"
+        f"- <bullet>\n"
+    )
+
+
+def build_translate_prompt(out_zh_path: str, out_en_path: str) -> str:
+    """Manager 把作者改好的中文版 outline.zh.md 翻译成英文版 outline.md。
+
+    只翻译语言,不动结构:章、type、小节划分、字数、小节级 type 全部逐字保留。
+    这是 --init 的前置步骤——作者只维护中文,Agent 吃英文,翻译由 Manager 完成。
+    """
+    return (
+        f"You are translating a paper outline from Chinese to English.\n\n"
+        f"Read '{out_zh_path}' — the author-reviewed Chinese outline.\n"
+        f"Translate it into English and write the result to '{out_en_path}'.\n\n"
+        f"Hard rules:\n"
+        f"- Keep the STRUCTURE byte-identical: same chapters, same order, same "
+        f"`type:` values, same subsections and their boundaries.\n"
+        f"- Translate chapter titles, subsection titles, and bullets to English.\n"
+        f"- Keep `(~N words)` word counts and per-section `- type: X` lines VERBATIM "
+        f"(do not translate `type` values or numbers).\n"
+        f"- Keep the first-line HTML comment marker as-is.\n"
+        f"- Write ONLY '{out_en_path}' with write_file, in exactly the outline syntax "
+        f"(## chapter / type: / ### section / - bullet). No preamble or explanation.\n"
     )
 
 

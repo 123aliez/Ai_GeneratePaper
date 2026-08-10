@@ -36,3 +36,9 @@ data/**
 # The idea document is the author's unpublished contribution — keep the template,
 # not the content. Comment this out if the repo is private and you want it tracked.
 idea.md
+
+# Outline 文件:草稿、中英双轨产物都是用户输入/运行时生成,不进版本库。
+# 模板 outline.example.md 进。
+outline_draft.md
+outline.md
+outline.zh.md
