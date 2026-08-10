@@ -119,14 +119,17 @@ def test_prompt_preserves_authors_existing_sections():
 
 
 def _expanded(replace: dict | None = None) -> list[dict]:
-    """一份合法的展开结果,replace 用来注入越权改动。"""
+    """一份合法的展开结果,replace 用来注入越权改动。
+
+    abstract 是短章：用新风格（要点挂 ## 下，合成小节），不用 ### 1.1。这样与短章
+    "单段起草"设计一致，也通过 validate_expansion 的"裸短章不得新增 ###"校验。
+    """
     text = """# expanded
 
 ## 1. Abstract
 
 type: abstract
 
-### 1.1 摘要正文
 - 一句问题一句方法一个 headline 数
 
 ## 2. Introduction
@@ -169,7 +172,9 @@ def test_valid_expansion_passes():
           str([len(c["sections"]) for c in expanded]))
     check("骨架摘要保持一致",
           outline_skeleton_digest(original) == outline_skeleton_digest(expanded))
-    check("没写字数的小节全部计入待补",
+    # abstract 现在是合成小节（words_explicit=False），计入"待标字数"；
+    # 其余 4 个小节也是 words_explicit=False。共 5 个待标。
+    check("没写字数的起草单元全部计入待补",
           missing_word_counts(expanded) == 5, str(missing_word_counts(expanded)))
 
 
@@ -202,6 +207,120 @@ def test_structural_tampering_is_caught():
         {"### 4.1 主结果\n- 只用结果库里的真实数字\n": ""}))
     check("某章没展开出小节被拦",
           any("没展开出小节" in p for p in empty), str(empty))
+
+
+# ── 短章：合成小节渲染与校验 ──────────────────────────────────────────
+def _expanded_with_short() -> list[dict]:
+    """一份含短章（要点挂章下、合成小节）的展开结果。不动共享 _expanded()，保其
+    sum(len(sections))==5 断言。"""
+    text = """# expanded
+
+## 1. Abstract
+
+type: abstract
+
+- 一句问题一句方法一个 headline 数
+
+## 2. Introduction
+
+type: intro
+
+### 2.1 背景与问题
+- 领域现状与现有方法的不足
+
+## 3. 谱域重标定
+
+type: method
+
+### 3.1 总体框架
+- 输入输出与数据流
+### 3.2 频域重标定算子
+- 从 idea.md 第 4 节展开机制
+
+## 4. Results
+
+type: results
+
+### 4.1 主结果
+- 只用结果库里的真实数字
+"""
+    return parse_outline(write_outline(text))
+
+
+def test_render_outline_short_chapter_no_h3():
+    """合成小节渲染时不写 ### 行，要点直接挂在 ## 章下；往返保住要点。"""
+    print("\n[短章渲染：无 ### 行]")
+    expanded = _expanded_with_short()
+    text = render_outline(expanded, "X")
+    # abstract 章下不应出现 ### 行
+    abstr_block = text.split("## 1. Abstract", 1)[1].split("## 2.", 1)[0]
+    check("短章渲染无 ### 行", "###" not in abstr_block, abstr_block)
+    check("短章要点直接挂在 ## 下", "- 一句问题一句方法一个 headline 数" in abstr_block)
+    # 往返：重解析后合成小节要点保留
+    reparsed = parse_outline(write_outline(text))
+    abstract = reparsed[0]
+    check("往返后 abstract 仍 1 个合成小节",
+          len(abstract["sections"]) == 1 and abstract["sections"][0].get("synthetic") is True,
+          str(abstract["sections"]))
+    check("往返后合成小节要点保留",
+          abstract["sections"][0]["bullets"] == ["一句问题一句方法一个 headline 数"],
+          str(abstract["sections"][0]["bullets"]))
+
+
+def test_render_outline_preserves_chapter_words():
+    """短章 ## 标题带字数 → render 在 ## 行保留 (~N words)，重解析 target_words 不变。"""
+    print("\n[短章章标题字数往返]")
+    chapters = parse_outline(write_outline(
+        "## 1. Abstract (~300 words)\n\ntype: abstract\n\n- 一句问题\n"))
+    check("解析章标题字数 → 合成小节 300",
+          chapters[0]["sections"][0]["target_words"] == 300)
+    text = render_outline(chapters, "X")
+    check("render 在 ## 标题行保留字数", "## 1. Abstract (~300 words)" in text, text)
+    reparsed = parse_outline(write_outline(text))
+    check("往返后 target_words=300",
+          reparsed[0]["sections"][0]["target_words"] == 300)
+
+
+def test_short_chapter_validation_passes():
+    """短章合成小节形态通过 validate_expansion。"""
+    print("\n[短章校验放行]")
+    original = parse_outline(write_outline(SKELETON))  # 4 章裸骨架，含 abstract
+    expanded = _expanded_with_short()
+    problems = validate_expansion(original, expanded)
+    check("短章形态校验无问题", problems == [], str(problems))
+
+
+def test_prompt_includes_short_chapter_bullets():
+    """作者已有短章要点必须进 expand prompt（否则 Manager 看不到却被要求保留）。"""
+    print("\n[短章要点进 prompt]")
+    chapters = parse_outline(write_outline(
+        "## 1. Abstract (~300 words)\n\ntype: abstract\n\n- 作者写的要点\n"))
+    prompt = build_expand_prompt(chapters, "/tmp/o.md", "/tmp/o.zh.md", "/tmp/idea.md", 1)
+    check("短章要点出现在 prompt", "作者写的要点" in prompt)
+    check("短章章标题字数出现在 prompt", "(~300 words)" in prompt)
+    check("骨架标注'作者已写章级要点'", "作者已写章级要点" in prompt)
+
+
+def test_short_chapter_extra_h3_rejected():
+    """原本无 ### 的短章，Manager 新增 ### 必须被校验拦下。"""
+    print("\n[短章禁止新增 ###]")
+    # 原始：abstract 裸骨架（无要点、无小节）
+    original = parse_outline(write_outline("## 1. Abstract\n\ntype: abstract\n"))
+    # Manager 错误地给短章写了 ### 小节
+    expanded = parse_outline(write_outline(
+        "## 1. Abstract\n\ntype: abstract\n\n### 1.1 摘要\n- 要点\n"))
+    problems = validate_expansion(original, expanded)
+    check("短章新增 ### 被拦",
+          any("短章" in p and "不能新增 ###" in p for p in problems), str(problems))
+
+    # 反例：作者原本就写了真实 ### 的短章仍允许（尊重作者显式结构）
+    original_with_real = parse_outline(write_outline(
+        "## 1. Abstract\n\ntype: abstract\n\n### 1.1 摘要 (~150 words)\n- 原\n"))
+    expanded_with_real = parse_outline(write_outline(
+        "## 1. Abstract\n\ntype: abstract\n\n### 1.1 摘要 (~150 words)\n- 原\n- 补\n"))
+    check("作者原本写了 ### 的短章允许补要点",
+          validate_expansion(original_with_real, expanded_with_real) == [],
+          str(validate_expansion(original_with_real, expanded_with_real)))
 
 
 def test_render_round_trip():
@@ -351,6 +470,11 @@ if __name__ == "__main__":
     test_authors_own_sections_are_protected()
     test_chapter_reordering_is_caught()
     test_bare_chapters_are_detected()
+    test_render_outline_short_chapter_no_h3()
+    test_render_outline_preserves_chapter_words()
+    test_short_chapter_validation_passes()
+    test_prompt_includes_short_chapter_bullets()
+    test_short_chapter_extra_h3_rejected()
 
     print(f"\n{'='*56}")
     if FAILURES:

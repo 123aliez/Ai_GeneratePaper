@@ -261,6 +261,32 @@ def test_related_work_skips_number_gate():
           "number gate is OFF" in agent.text())
 
 
+# ── 5b. a short chapter (synthetic single section) drafts in one pass ────
+def test_short_chapter_single_pass():
+    """短章（要点挂章下 → 合成单段小节）单段起草，目标字数取 type 默认而非 700。"""
+    set_idea(IDEA_TEXT)
+    # outline 用短章写法：要点直接挂在 ## 标题下，无 ### 小节。
+    import agents.outline as ol
+    root = Path(tempfile.mkdtemp())
+    outline = root / "outline.md"
+    outline.write_text(
+        "## 1. Abstract\n\ntype: abstract\n\n- 一句问题一句方法一句结果\n",
+        encoding="utf-8")
+    ws = root / "workspace"
+    ol.init_chapter_workspaces(str(outline), str(ws))
+    folder = str([p for p in ws.iterdir() if p.is_dir() and not p.name.startswith("_")][0])
+    Path(folder, "input.md").write_text("source material\n", encoding="utf-8")
+    agent, _ = run_pipeline_in_outline(folder, make_data(None), str(outline))
+    check("short chapter runs (not blocked)", len(agent.prompts) > 0)
+    # 起草段恰好 1 个（Write only Part 1），目标字数 ~200（0.85*200=170 ~ 1.2*200+30=270）
+    part_prompts = [p for p in agent.prompts if "Write only Part" in p]
+    check("short chapter drafts in a single part", len(part_prompts) == 1,
+          str([p[:50] for p in agent.prompts if "Part" in p]))
+    if part_prompts:
+        check("short chapter target length ≈ 200 (not 700)",
+              "170" in part_prompts[0] and "270" in part_prompts[0], part_prompts[0][:200])
+
+
 # ── 6. a whole-paper brief routes each draft part separately ─────────────
 def test_whole_paper_parts_get_different_rules():
     set_idea(IDEA_TEXT)

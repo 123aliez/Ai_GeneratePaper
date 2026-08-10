@@ -22,7 +22,19 @@
   python run.py --init      # 生成各章工作区
 
 只填这张表就直接 --init 会被拒绝:没有小节的章,起草时拿不到任何要点,
-起草者只能照章标题硬编。必须先 --expand(或自己写 ### 小节)。
+起草者只能照章标题硬编。必须先 --expand(或自己写 ### 小节 / 短章写章级要点)。
+
+两种章的写法:
+  · 普通章(method/results 等)写 ### 小节:
+      ## 4. Method
+      type: method
+      ### 4.1 总体框架 (~250 words)
+      - 从 idea.md 的方法设计展开
+  · 短章(abstract/conclusion/limitations/discussion)不拆小节,要点直接挂 ## 下:
+      ## 1. Abstract (~200 words)
+      type: abstract
+      - 一句问题、一句方法、一句 headline 结果
+    短章字数标在 ## 章标题后(默认 abstract=200/conclusion=300/limitations=200/discussion=600)。
 -->
 
 ## type 词表

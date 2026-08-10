@@ -590,6 +590,128 @@ def test_outline_banner_reports_cross_chapter():
           any(ol.CROSS_CHAPTER_STATE in line for line in lines), str(lines))
 
 
+# ── 短章：合成小节（章下要点 → 单段小节）─────────────────────────────
+SHORT_OUTLINE = """\
+# Paper outline
+
+## 1. Abstract
+
+type: abstract
+
+- 一句问题、一句方法、一句结果
+
+## 4. Method
+
+type: method
+
+### 4.1 总体框架 (~250 words)
+- 输入输出与符号约定
+"""
+
+
+def test_parse_short_chapter_synthesizes_section():
+    """短章（abstract 等）把要点直接挂在 ## 下，解析时合成一个 synthetic 小节。"""
+    chapters = ol.parse_outline(write_outline(SHORT_OUTLINE))
+    check("短章 outline 解析出 2 章", len(chapters) == 2,
+          str([c["title"] for c in chapters]))
+    abstract = chapters[0]
+    check("abstract 合成 1 个小节", len(abstract["sections"]) == 1,
+          str(len(abstract["sections"])))
+    sec = abstract["sections"][0]
+    check("合成小节标记 synthetic", sec.get("synthetic") is True)
+    check("合成小节 title = 章名", sec["title"] == "Abstract", sec["title"])
+    check("合成小节按 type 默认字数 200", sec["target_words"] == 200,
+          str(sec["target_words"]))
+    check("无章标题字数时 words_explicit=False", sec["words_explicit"] is False)
+    check("章级要点收集进合成小节",
+          sec["bullets"] == ["一句问题、一句方法、一句结果"], str(sec["bullets"]))
+    # 短章有合成小节 → 不算"空章"
+    check("有章级要点的短章不算空章",
+          ol.chapters_without_sections(chapters) == [])
+
+
+def test_parse_short_chapter_with_words():
+    """## 标题带 (~N words) 钉死合成小节字数。"""
+    chapters = ol.parse_outline(write_outline(
+        "## 1. Abstract (~300 words)\n\ntype: abstract\n\n- 一句问题\n"))
+    sec = chapters[0]["sections"][0]
+    check("章标题字数覆盖默认", sec["target_words"] == 300, str(sec["target_words"]))
+    check("章标题字数 → words_explicit=True", sec["words_explicit"] is True)
+
+
+def test_short_chapter_brief_round_trip():
+    """合成小节经 render_brief → parse_brief_sections → build_stage1_parts 单段起草。"""
+    chapters = ol.parse_outline(write_outline(SHORT_OUTLINE))
+    abstract = chapters[0]
+    folder = Path(tempfile.mkdtemp())
+    (folder / "brief.md").write_text(ol.render_brief(abstract), encoding="utf-8")
+    sections = orch.parse_brief_sections(str(folder))
+    check("brief 解析出 1 节", len(sections) == 1, str(len(sections)))
+    check("brief 节字数 = 200", sections[0]["target_words"] == 200,
+          str(sections[0]["target_words"]))
+    parts = orch.build_stage1_parts(sections)
+    check("单节 → 1 段起草", len(parts) == 1, str(len(parts)))
+    check("单段目标字数 = 200(非 700 兜底)", parts[0]["target_words"] == 200,
+          str(parts[0]["target_words"]))
+
+
+def test_stray_pre_section_bullets_dropped():
+    """有真实 ### 小节时，章级要点丢弃（作者明确的结构优先）。"""
+    chapters = ol.parse_outline(write_outline(
+        "## 1. Abstract\n\ntype: abstract\n\n"
+        "- 这条章级要点应被丢弃\n\n"
+        "### 1.1 摘要正文 (~150 words)\n- 真实小节要点\n"))
+    abstract = chapters[0]
+    check("有真实小节 → 不合成", all(not s.get("synthetic") for s in abstract["sections"]))
+    check("只有 1 个真实小节", len(abstract["sections"]) == 1)
+    check("章级要点被丢弃（不进合成也不进小节）",
+          abstract["sections"][0]["bullets"] == ["真实小节要点"],
+          str(abstract["sections"][0]["bullets"]))
+
+
+def test_instructional_header_with_bullets_still_dropped():
+    """教学性 ## 写法 + 一行说明要点，不应因合成小节被误当成真章。"""
+    chapters = ol.parse_outline(write_outline(
+        "# Paper outline\n\n"
+        "## 写法\n- 随便写点说明\n\n"
+        "## 1. Method\ntype: method\n### 设计 (~200 words)\n- x\n"))
+    check("教学性 ## 写法不被当成章",
+          [c["title"] for c in chapters] == ["Method"],
+          str([c["title"] for c in chapters]))
+
+
+def test_normal_chapter_does_not_synthesize():
+    """普通章（method/results）的章级要点不合成——强制走 ### 小节，防绕过展开校验。"""
+    chapters = ol.parse_outline(write_outline(
+        "## 1. Method\n\ntype: method\n\n- 这条章级要点不该被合成\n"))
+    check("普通章章级要点不合成小节",
+          chapters[0]["sections"] == [], str(chapters[0]["sections"]))
+
+
+def test_short_chapter_word_counts_by_type():
+    """四种短章各自的默认字数（abstract=200/conclusion=300/limitations=200/discussion=600）。"""
+    for ctype, want in [("abstract", 200), ("conclusion", 300),
+                        ("limitations", 200), ("discussion", 600)]:
+        chapters = ol.parse_outline(write_outline(
+            f"## 1. {ctype.title()}\n\ntype: {ctype}\n\n- 要点\n"))
+        check(f"{ctype} 默认字数={want}",
+              chapters[0]["sections"][0]["target_words"] == want,
+              str(chapters[0]["sections"][0]["target_words"]))
+
+
+def test_short_chapter_fingerprint_stable():
+    """合成小节经 render_outline 往返后 chapter_fingerprint 不变（纯形态迁移）。"""
+    from agents.outline_expand import render_outline
+    chapters = ol.parse_outline(write_outline(SHORT_OUTLINE))
+    abstract = chapters[0]
+    fp_before = ol.chapter_fingerprint(abstract)
+    rendered = render_outline([abstract], "X")
+    reparsed = ol.parse_outline(write_outline(rendered))
+    fp_after = ol.chapter_fingerprint(reparsed[0])
+    check("合成小节渲染往返指纹稳定", fp_before == fp_after,
+          f"{fp_before} != {fp_after}")
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items())
              if k.startswith("test_") and callable(v)]

@@ -202,15 +202,21 @@ def init_workspaces(force: bool) -> int:
         return 1
     bare = chapters_without_sections(skeleton) if skeleton else []
     if bare:
+        from agents.outline import SHORT_CHAPTER_TYPES
         print(f"Error: {OUTLINE_PATH} 里有 {len(bare)} 章没有小节,未生成工作区:")
         for chapter in bare:
             print(f"  {chapter['number']:>2}. {chapter['title']}  "
                   f"(type: {chapter['type']})")
-        print(f"\n这些章只有标题和 type,没有 `###` 小节与起草要点。照这样 --init,")
+        print(f"\n这些章只有标题和 type,没有任何起草要点。照这样 --init,")
         print(f"起草会退回单段、拿不到任何要点,写出来的只是照章标题硬编的内容。")
-        print(f"\n补小节的两条路:")
-        print(f"  python run.py --expand    # Manager 读 idea.md 自动补(推荐)")
-        print(f"  或自己往 outline.md 里写 `### N.M 小节标题` + `- 要点`")
+        short = ", ".join(sorted(SHORT_CHAPTER_TYPES))
+        print(f"\n补要点的路:")
+        print(f"  · 短章({short})直接把要点写在 `## 章标题` 下:")
+        print(f"      ## 1. Abstract")
+        print(f"      type: abstract")
+        print(f"      - 一句问题、一句方法、一句结果")
+        print(f"  · 其它章写 `### N.M 小节标题` + `- 要点`(每章 2-4 个小节)")
+        print(f"  · 或跑 python run.py --expand,让 Manager 读 idea.md 自动补(推荐)")
         return 1
 
     try:
@@ -432,8 +438,20 @@ def expand_outline() -> int:
 
     pending = missing_word_counts(expanded_en)
     if pending:
-        print(f"\n{pending} 个小节还没有字数标注,当前按默认 250 词处理。")
-        print(f"在小节标题后加 `(~N words)` 定篇幅,例如 `### 4.1 总体框架 (~350 words)`。")
+        # 区分普通章（小节级字数，写在 ### 标题）与短章（章级字数，写在 ## 标题）：
+        # 短章的合成小节 words_explicit=False 时也算"待标"，但它的字数该写在 ## 行，不该新增 ###。
+        from agents.outline import SHORT_CHAPTER_TYPES
+        short_pending = sum(
+            1 for c in expanded_en for s in c["sections"]
+            if s.get("synthetic") and not s.get("words_explicit"))
+        regular_pending = pending - short_pending
+        print(f"\n{pending} 个起草单元还没有字数标注,当前按各 type 的经验默认值处理。")
+        if regular_pending:
+            print(f"  · 普通章在小节标题后加字数,例如 `### 4.1 总体框架 (~350 words)`。")
+        if short_pending:
+            short_list = ", ".join(sorted(SHORT_CHAPTER_TYPES))
+            print(f"  · 短章({short_list})在**章标题**后加字数,"
+                  f"例如 `## 1. Abstract (~200 words)`;不要新增 `###` 小节。")
     print(f"\n下一步:")
     print(f"  1. 读 {zh_path.name}(中文版),改掉不认同的小节与要点,补上字数")
     print(f"  2. python run.py --init   # 检测到中文版更新,自动翻译成英文 outline.md 再生成工作区")

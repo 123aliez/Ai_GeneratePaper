@@ -33,8 +33,12 @@ OUTLINE_PATH = Path(os.getenv("OUTLINE_PATH") or (PROJECT_ROOT / "outline.md"))
 OUTLINE_DRAFT_PATH = Path(os.getenv("OUTLINE_DRAFT_PATH")
                           or (PROJECT_ROOT / "outline_draft.md"))
 
-# `## 4. Method` / `## 4 Method` / `## Method`(无号则按出现顺序编号)
-_CHAPTER_RE = re.compile(r"^##\s+(?:(\d+)[.、]?\s+)?(.+?)\s*$")
+# `## 4. Method` / `## 4 Method` / `## Method`(无号则按出现顺序编号)。
+# 可选尾部字数 `## 1. Abstract (~300 words)` —— 短章无 ### 小节时，作者用它钉死合成小节
+# 的 target_words（普通章有 ### 小节时字数在小节级，章标题字数忽略）。
+_CHAPTER_RE = re.compile(
+    r"^##\s+(?:(\d+)[.、]?\s+)?(.+?)\s*(?:\(~?\s*(\d+)\s*words?\s*\))?\s*$",
+    re.IGNORECASE)
 # `### 4.1 总体框架 (~250 words)`;字数段可缺省——没标时按该小节 type 查
 # DEFAULT_WORDS_BY_TYPE(小节级优先 → 章 type),都查不到才退回 DEFAULT_SECTION_WORDS
 _SECTION_RE = re.compile(
@@ -54,6 +58,12 @@ _TABLE_ROW_RE = re.compile(r"^\s*\|(.+)\|\s*$")
 _TABLE_SEP_RE = re.compile(r"^\s*\|[\s:|-]+\|\s*$")
 
 DEFAULT_SECTION_WORDS = 250
+
+# 短章类型：篇幅太小（abstract/conclusion/limitations/discussion）不值得拆 ### 小节起草。
+# 这类章在 outline 里直接把要点挂在 ## 章标题下，parse_outline 会合成一个 synthetic 小节
+# 让它走既有 section 机制（单段起草、按 type 默认字数）。家园放在 outline.py：render_brief /
+# outline_banner 要用它做文案感知，而 outline.py 不能 import outline_expand.py（循环导入）。
+SHORT_CHAPTER_TYPES = frozenset({"abstract", "conclusion", "limitations", "discussion"})
 
 BRIEF_FINGERPRINT_PREFIX = "<!-- outline-fingerprint:"
 _BRIEF_FINGERPRINT_RE = re.compile(r"^<!--\s*outline-fingerprint:\s*(.*?)\s*-->\s*$")
@@ -199,6 +209,50 @@ def _finalize_chapters(chapters: list[dict]) -> list[dict]:
     return chapters
 
 
+def _maybe_synthesize_short_section(chapter: dict | None,
+                                    chapter_bullets: list[str],
+                                    chapter_words: int | None) -> None:
+    """把章下直接挂的要点合成一个 synthetic 小节，让短章走既有 section 机制。
+
+    短章（abstract/conclusion/limitations/discussion）不拆小节起草。但下游
+    （render_brief / parse_brief_sections / build_stage1_parts / chapter_fingerprint）全部以
+    section 为单位工作。与其在每个下游都开"无小节分支"，不如在这里把章级要点合成一个
+    ``synthetic: True`` 的小节，复用全部既有机制：
+
+      sections=[{number:1, title:章名, target_words: 按 type 默认 or 章标题字数,
+                 words_explicit: 章标题是否带了字数, type:"", bullets:章级要点,
+                 synthetic:True}]
+
+    边界：
+      - chapter is None 或无章级要点 → 不合成。
+      - chapter 已有真实小节（sections 非空）→ 不合成；章级要点此时被丢弃
+        （短章才全用章级要点；有真实小节时并入 section 1 会静默重排作者内容）。
+      - **仅对 SHORT_CHAPTER_TYPES 合成**：普通章（method/results 等）必须写 ### 小节，
+        若允许章级要点合成会让普通章绕过 --expand 的"每章 2-4 小节"校验。
+      - chapter_words 来自 ## 标题的 ``(~N words)``；有则 words_explicit=True，
+        无则按 type 查 DEFAULT_WORDS_BY_TYPE（abstract=200 等），words_explicit=False。
+    """
+    if chapter is None or not chapter_bullets:
+        return
+    if chapter["sections"]:
+        return  # 作者显式写了 ### 小节——章级要点丢弃，作者的结构永远优先
+    chapter_type = chapter["type"] or normalize_type(chapter["title"])
+    if chapter_type not in SHORT_CHAPTER_TYPES:
+        return  # 普通章不合成：强制走 ### 小节，避免绕过展开校验
+    target = (chapter_words
+              if chapter_words is not None
+              else DEFAULT_WORDS_BY_TYPE.get(chapter_type, DEFAULT_SECTION_WORDS))
+    chapter["sections"].append({
+        "number": 1,
+        "title": chapter["title"],
+        "target_words": target,
+        "words_explicit": chapter_words is not None,
+        "type": "",
+        "bullets": list(chapter_bullets),
+        "synthetic": True,
+    })
+
+
 def parse_outline(outline_path=None) -> list[dict]:
     """解析 outline.md,返回章节列表。
 
@@ -244,6 +298,8 @@ def parse_outline(outline_path=None) -> list[dict]:
     chapters: list[dict] = []
     chapter = None
     section = None
+    chapter_bullets: list[str] = []     # 直接挂在 ## 章下的要点（无 ### 小节时）
+    chapter_words: int | None = None    # ## 标题的 (~N words)，供合成小节用
     in_fence = False
     auto_number = 0
 
@@ -256,12 +312,17 @@ def parse_outline(outline_path=None) -> list[dict]:
 
         chapter_match = _CHAPTER_RE.match(line)
         if chapter_match:
+            # 进入新章前，先把上一章的章级要点合成小节（若它没有 ### 小节）。
+            _maybe_synthesize_short_section(chapter, chapter_bullets, chapter_words)
             auto_number += 1
             number = int(chapter_match.group(1)) if chapter_match.group(1) else auto_number
             chapter = {"number": number, "title": chapter_match.group(2).strip(),
                        "type": "", "sections": [], "unrecognized": ""}
             chapters.append(chapter)
             section = None
+            chapter_bullets = []
+            chapter_words = (int(chapter_match.group(3))
+                             if chapter_match.group(3) else None)
             continue
 
         if chapter is None:
@@ -300,15 +361,26 @@ def parse_outline(outline_path=None) -> list[dict]:
             continue
 
         bullet_match = _BULLET_RE.match(line)
-        if bullet_match and section is not None:
-            section["bullets"].append(bullet_match.group(1))
+        if bullet_match:
+            point = bullet_match.group(1)
+            if section is not None:
+                section["bullets"].append(point)
+            elif chapter is not None:
+                # 章级要点：无 ### 小节时由 _maybe_synthesize_short_section 合成单段小节；
+                # 有 ### 小节时在合成处丢弃（作者明确的结构优先）。
+                chapter_bullets.append(point)
+
+    # EOF：合成最后一章的章级要点。
+    _maybe_synthesize_short_section(chapter, chapter_bullets, chapter_words)
 
     # 丢掉不是章节的 `##` 标题。outline.md 顶部通常有「写法」「说明」这类小标题,
     # 把它们当成章会生成一个 01-unknown 空文件夹。判据:既没声明 type、标题也推不出
-    # 类型、且没有任何 ### 小节——三者同时成立的几乎不可能是真章节。
-    # 反过来,`## 1. Abstract` + `type: abstract` 但暂时没写小节的,是合法的章,保留。
+    # 类型、且没有任何**非合成**小节——三者同时成立的几乎不可能是真章节。
+    # （合成小节不计入：否则教学性 `## 写法` + 一行 `- 说明` 会被合成小节误当成真章。）
+    # 反过来,`## 1. Abstract` + `type: abstract` + 章级要点的短章会被合成单段小节,合法保留。
     chapters = [c for c in chapters
-                if c["type"] or c["sections"]
+                if c["type"]
+                or any(not s.get("synthetic") for s in c["sections"])
                 or normalize_type(c["title"]) != DEFAULT_TYPE]
 
     return _finalize_chapters(chapters)
@@ -668,5 +740,8 @@ def outline_banner(result: dict) -> list[str]:
             lines.append(f"            ! outline 里的 type "
                          f"'{chapter['unrecognized']}' 无法识别,已退回 mixed/advisory")
         if not chapter["sections"]:
-            lines.append(f"            ! 这一章没有 ### 小节,将退回单段起草")
+            if chapter["type"] in SHORT_CHAPTER_TYPES:
+                lines.append(f"            ! 短章没有起草要点,直接在 ## 标题下写 `- 要点`")
+            else:
+                lines.append(f"            ! 这一章没有 ### 小节,将退回单段起草")
     return lines

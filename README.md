@@ -30,12 +30,13 @@
 
 | Agent | 角色 | 典型模型 | 职责 |
 |---|---|---|---|
-| **规划者** Manager | 规划 | GPT-5.5 | 读 idea.md 补小节、备料、起草前的段规划、统一定义术语 |
+| **规划者** Manager | 规划 | Claude Opus / GPT-5.x | 读 idea.md 补要点、备料、起草前的段规划、统一定义术语 |
 | **起草者** Draft | 写作 | Claude Opus | 挖证据、写正文、改稿 |
-| **评审者** Review | 审稿 | GPT-5.5 | 评审、验改、定稿、跨章交接 |
+| **评审者** Review | 审稿 | GPT-5.x / Claude Opus | 评审、验改、定稿、跨章交接 |
 
 > 这三个是**平级**的执行者,彼此**只通过读写文件协作,不直接对话**。
 > 推进流程、门禁、断点续跑、重试全是确定性的 Python 代码,不是某个 Agent 在编排别的 Agent。
+> 三个 Agent 的 provider/model/key 各自独立(OpenAI 或 Claude 任意混搭),见 `.env.example`。
 
 ---
 
@@ -61,20 +62,30 @@
 
 ```bash
 pip install -r requirements.txt
-cp .env.example .env            # 填 DRAFT/REVIEW/MANAGER 三组 key
+cp .env.example .env            # 填三组 provider/model/key(OpenAI 或 Claude 各自独立)
 cp idea.example.md idea.md      # 填你的贡献/核心洞察/方法设计(最重要)
 cp outline.example.md outline_draft.md  # 填章节骨架(表格)
 
-python run.py --expand          # 规划者读 idea.md 补每章小节
+python run.py --expand          # 规划者读 idea.md 补每章要点
                                 #   → 生成 outline.md(英文版) + outline.zh.md(中文版)
+                                #   普通章拆 ### 小节;短章(abstract/conclusion/...)要点挂 ## 下
 python run.py --init            # 检测到中文版更新 → 自动翻译成英文覆盖 outline.md
                                 #   → 各章工作区 + 跨章状态(+ data-index.md)
+python run.py --retrieve        # 可选:按章检索文献候选 → references/candidates.md(不进 bib)
 python run.py --all --progress  # 按 outline 顺序跑全部,失败即停
 ```
+
+**双协议模型**:OpenAI 走 smolagents 原生 `OpenAIModel`,Claude 走原生 `/v1/messages`(不经 LiteLLM)。
+三组 Agent 各自配 `*_PROVIDER`(openai/anthropic),可任意混搭。`*_REASONING_LEVEL` 统一 6 档语义,
+按模型能力映射原生参数,不支持会显式报错。
 
 **中英双轨**:`outline_draft.md` 是骨架,`--expand` 一次生成英文版 `outline.md`(Agent 读)
 和中文版 `outline.zh.md`(你看/改)。你只改中文版,`--init` 时框架自动把中文翻译成英文
 覆盖 `outline.md`,再生成工作区——**你永远只维护中文,Agent 永远吃英文**。
+
+**短章**(`abstract`/`conclusion`/`limitations`/`discussion`,200-600 词)**不拆 `###` 小节**,
+要点直接写在 `##` 章标题下,单段起草;字数标在 `##` 行(如 `## 1. Abstract (~200 words)`)。
+普通章字数粒度仍是 `###` 小节。
 
 写方法章**不必等实验跑完**:`type: method` 的门禁是 advisory,`data/` 为空也能起草,
 数字标 UNVERIFIED;只有 `type: results` 这类章节才会在无数据时被拦。

@@ -19,7 +19,8 @@ import re
 from pathlib import Path
 
 from .outline import (
-    DEFAULT_SECTION_WORDS, OUTLINE_PATH, OutlineRouteError, parse_outline,
+    DEFAULT_SECTION_WORDS, OUTLINE_PATH, OutlineRouteError, SHORT_CHAPTER_TYPES,
+    parse_outline,
 )
 from .chapter_type import DEFAULT_TYPE
 
@@ -56,11 +57,26 @@ def render_outline(chapters: list[dict], title: str = "",
     lines.append(f"# {title or 'Paper outline'}")
     lines.append("")
     for chapter in chapters:
-        lines.append(f"## {chapter['number']}. {chapter['title']}")
+        # 短章可能带章级字数（## 1. Abstract (~300 words)）：若它被合成单段小节且该小节
+        # words_explicit，把字数补回 ## 标题行，保证往返不丢作者钉的字数。
+        synth_words = None
+        if len(chapter["sections"]) == 1 and chapter["sections"][0].get("synthetic") \
+                and chapter["sections"][0].get("words_explicit"):
+            synth_words = chapter["sections"][0]["target_words"]
+        title_suffix = f" (~{synth_words} words)" if synth_words else ""
+        lines.append(f"## {chapter['number']}. {chapter['title']}{title_suffix}")
         lines.append("")
         lines.append(f"type: {chapter['type']}")
         lines.append("")
         for section in chapter["sections"]:
+            if section.get("synthetic"):
+                # 合成小节：不写 ### 行，要点直接挂在 ## 章下（保持短章形状往返）。
+                if section.get("type"):
+                    lines.append(f"- type: {section['type']}")
+                for bullet in section["bullets"]:
+                    lines.append(f"- {bullet}")
+                lines.append("")
+                continue
             # 只写作者显式标过的字数。把解析时填进去的默认值写回文件,等于
             # 让作者以为 250 是自己定的,而这份文件下一步就要变成 outline.md。
             words = (section.get("target_words")
@@ -100,22 +116,40 @@ def build_expand_prompt(chapters: list[dict], out_en_path: str,
     (Agent 吃的结构)与中文版 outline.zh.md(作者看/改)。英文版是初始版,作者改完
     中文后由 --init 时翻译覆盖英文版。结构、type、小节划分两份逐字一致,仅语言不同。
     """
-    skeleton = "\n".join(
-        f"{c['number']}. {c['title']}  (type: {c['type']}"
-        + (f", 作者已写了 {len(c['sections'])} 个小节,保留并在其基础上补要点"
-           if c["sections"] else ", 无小节")
-        + ")"
-        for c in chapters)
-
+    skeleton_lines = []
     existing = []
     for chapter in chapters:
-        if not chapter["sections"]:
+        real_sections = [s for s in chapter["sections"] if not s.get("synthetic")]
+        synthetic = next((s for s in chapter["sections"] if s.get("synthetic")), None)
+        if real_sections:
+            status = f", 作者已写了 {len(real_sections)} 个小节,保留并在其基础上补要点"
+        elif synthetic:
+            status = ", 作者已写章级要点,逐字保留并可补充"
+        else:
+            status = ", 无小节"
+        skeleton_lines.append(
+            f"{chapter['number']}. {chapter['title']}  (type: {chapter['type']}{status})")
+
+        # 短章作者已有章级要点：必须原样塞进 prompt，否则 Manager 看不到、却又被
+        # _section_problems 要求逐字保留，必然校验失败或丢内容。以"章级内容块"呈现，
+        # 明确告诉 Manager 这些要点挂在 ## 下、不要挪到 ###。
+        if synthetic:
+            words = (f" (~{synthetic['target_words']} words)"
+                     if synthetic.get("words_explicit") else "")
+            existing.append(
+                f"\n### 第 {chapter['number']} 章 作者已写的短章要点"
+                f"(逐字保留,直接挂在 ## 下,不要改成 ### 小节)")
+            existing.append(f"## {chapter['number']}. {chapter['title']}{words}")
+            existing.append(f"type: {chapter['type']}")
+            existing += [f"- {bullet}" for bullet in synthetic["bullets"]]
+            continue
+        if not real_sections:
             continue
         # 按 outline 的原始语法给,不做摘要式改写。作者写的字数和小节级 type 也是
         # 他的决定,校验会核对它们有没有被动 —— 那就必须先让 Manager 看见。
         existing.append(f"\n### 第 {chapter['number']} 章 作者已有的小节"
                         f"(标题、字数、type 必须逐字保留)")
-        for section in chapter["sections"]:
+        for section in real_sections:
             words = (f" (~{section['target_words']} words)"
                      if section.get("words_explicit") else "")
             existing.append(f"### {chapter['number']}.{section['number']} "
@@ -123,7 +157,10 @@ def build_expand_prompt(chapters: list[dict], out_en_path: str,
             if section.get("type"):
                 existing.append(f"- type: {section['type']}")
             existing += [f"- {bullet}" for bullet in section["bullets"]]
+    skeleton = "\n".join(skeleton_lines)
     existing_block = "\n".join(existing) if existing else ""
+
+    short_list = ", ".join(sorted(SHORT_CHAPTER_TYPES))
 
     return (
         f"You are planning the section-level structure of a paper outline.\n\n"
@@ -147,7 +184,16 @@ def build_expand_prompt(chapters: list[dict], out_en_path: str,
         f"verbatim; you may only add bullets to them.\n"
         f"- Give each chapter 2 to 4 subsections. A chapter with 3+ subsections is "
         f"drafted in three separate passes, so each subsection must be a coherent "
-        f"unit of writing, not an arbitrary slice.\n\n"
+        f"unit of writing, not an arbitrary slice.\n"
+        f"- EXCEPTION — short chapter types ({short_list}) are drafted as a SINGLE "
+        f"section: do NOT write any `###` subsection for them. Instead write 2 to 4 "
+        f"bullets directly under the chapter's `##` heading (the chapter's own "
+        f"bullets). The framework synthesises a single drafting section from those "
+        f"chapter-level bullets. If the author already wrote chapter-level bullets "
+        f"for a short chapter, KEEP them verbatim.\n"
+        f"- Bullets not under a `###` subsection are allowed ONLY for the short "
+        f"chapter types above. For every other chapter, place every bullet under a "
+        f"`###` subsection.\n\n"
         f"## Length & structure heuristics (how to slice chapters, venue-style)\n"
         f"- Prioritise the parts most readers actually read: Abstract + Introduction "
         f"+ the headline figure. Make those subsections crisp.\n"
@@ -351,9 +397,23 @@ def validate_expansion(original: list[dict], expanded: list[dict]) -> list[str]:
             problems.append(
                 f"第 {chapter['number']} 章 type 被改:"
                 f"{chapter['type']} → {got['type']}")
-        if not got["sections"]:
+        # 短章合法形态是"章下直接挂要点、无 ### 小节"（合成单段小节）。非短章若无小节
+        # 则是 Manager 没干活的硬错。这里只对非短章报"没展开出小节"；空短章（连章级
+        # 要点都没有 → 无合成小节）由 --init 的 chapters_without_sections 兜底拦下。
+        if not got["sections"] and got["type"] not in SHORT_CHAPTER_TYPES:
             problems.append(
                 f"第 {chapter['number']} 章 '{chapter['title']}' 没展开出小节")
+        # 原本没有真实 ### 小节的短章（作者用新风格：要点挂 ## 下），Manager 不得新增
+        # ### 小节——否则把单段短章拆开了，与短章"单段起草"的设计相悖。作者原本就写了
+        # 真实 ### 的短章仍允许（尊重作者显式结构）。
+        original_has_real = any(not s.get("synthetic") for s in chapter["sections"])
+        if (got["type"] in SHORT_CHAPTER_TYPES and not original_has_real
+                and got["sections"]
+                and not (len(got["sections"]) == 1
+                         and got["sections"][0].get("synthetic"))):
+            problems.append(
+                f"第 {chapter['number']} 章 '{chapter['title']}' 是短章,"
+                f"应把要点直接写在 ## 下,不能新增 ### 小节")
         problems += _section_problems(chapter, got)
 
     extra = sorted(set(by_number) - {c["number"] for c in original})
