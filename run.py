@@ -10,6 +10,9 @@ references/ notes when PAPER_MODE=survey. Chapter workspaces live under workspac
                                            #   审阅它,补 (~N words),改名成 outline.md
   python run.py --init                 # outline.md → workspace/<NN-type>/ + 跨章状态
   python run.py --init --force         #   outline 改过之后刷新已存在的 brief.md
+  python run.py --retrieve             # 可选:按章检索文献候选 → references/candidates.md
+                                           #   读 idea+outline+data,每章生成 query,
+                                           #   过 verify_url 去重,候选清单(不进 bib)
   python run.py --all --progress       # 按章号顺序跑全部,失败即停
   python run.py 04-method --progress   #   也可以只跑其中一章(必须在 outline 里)
 
@@ -253,6 +256,43 @@ def init_workspaces(force: bool) -> int:
         print(f"  python run.py --all --progress            # 按 outline 顺序跑全部")
         print(f"\n这些章都走【整篇模式】:知道自己是第几章,符号沿用前章,"
               f"跨章约定写在 {PAPER_ROOT}/cross-chapter-state.md。")
+    return 0
+
+
+def run_retrieve_cli() -> int:
+    """`--retrieve`:可选前置步骤,按章检索文献候选 → references/candidates.md(不进 bib)。
+
+    核心逻辑在 agents.retrieve.run_retrieve。这里只做终端 banner / 计数 / 下一步提示,
+    风格对齐 init_workspaces / _maybe_build_data_index。
+    """
+    from agents.retrieve import run_retrieve
+    from config import RETRIEVAL_MODEL, RETRIEVAL_API_BASE, IDEA_PATH, DATA_ROOT
+
+    print(f"\n{'='*60}")
+    print(f"文献检索(可选前置):读 idea + outline + data,按章生成检索候选")
+    print(f"{'='*60}")
+    print(f"  · Idea:      {IDEA_PATH}")
+    print(f"  · Outline:   (见 workspace 下已 init 的章节)")
+    print(f"  · Data:      {DATA_ROOT}")
+    print(f"  · 检索模型:  {RETRIEVAL_MODEL or '(未配置)'} @ {RETRIEVAL_API_BASE or '(未配置)'}")
+    print(f"  · 产物:      references/candidates.md(CAN- 前缀,不进 bib)")
+
+    code, stats = run_retrieve()
+    if code != 0:
+        return code
+
+    queries_path = stats.get("queries_path", "")
+    candidates_path = stats.get("candidates_path", "")
+    print(f"\n检索完成:")
+    print(f"  · {stats.get('chapters', 0)} 章 / {stats.get('queries', 0)} 个 query")
+    print(f"  · 原始命中 {stats.get('raw_hits', 0)} → 去重后 "
+          f"{stats.get('candidates', 0)} 条候选"
+          f"(无效/不可达 {stats.get('filtered', 0)}，重复 {stats.get('duplicates', 0)})")
+    print(f"  · per-章 query: {Path(queries_path).name}")
+    print(f"  · 候选清单:    {candidates_path}")
+    print(f"\n下一步:人工扫一眼 {Path(candidates_path).name},挑中的行复制到 "
+          f"references/bibliography.md(ID 改 REF-xxxx、补 Grade 与用途、删 Chapter/Query 列),")
+    print(f"再跑 python run.py --all --progress。候选不会自动进引用池；题名、作者与内容仍需人工核对。")
     return 0
 
 
@@ -515,6 +555,12 @@ def run_all_chapters(draft_agent, review_agent, manager_agent) -> int:
 
 
 def main():
+    # --retrieve 是独立命令,禁止与章名、--all、--init、--expand 等组合,避免参数被静默吞掉。
+    if "--retrieve" in sys.argv[1:] and sys.argv[1:] != ["--retrieve"]:
+        print("Error: --retrieve 是独立命令,不能与章名、--all、--init 或其它参数组合。")
+        print("Run: python run.py --retrieve")
+        sys.exit(2)
+
     if "--list" in sys.argv:
         list_paper_folders()
         return
@@ -526,6 +572,11 @@ def main():
     # --expand 只调 Manager 一次,不进章节流水线,同样提前返回。
     if "--expand" in sys.argv:
         sys.exit(expand_outline())
+
+    # --retrieve: 可选前置步骤。按章检索文献候选 → references/candidates.md(不进 bib)。
+    # 读 idea+outline+data,Manager 生成 per-章 query,Python 执行检索+验 URL+去重。
+    if "--retrieve" in sys.argv:
+        sys.exit(run_retrieve_cli())
 
     run_all = "--all" in sys.argv
 
