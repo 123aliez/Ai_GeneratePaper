@@ -1,2 +1,3 @@
-smolagents[litellm]>=1.26.0
+smolagents[openai]>=1.26.0
+anthropic>=0.121.0
 python-dotenv>=1.0.0

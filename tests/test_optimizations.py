@@ -1,7 +1,7 @@
 """本次 4 项优化的离线验证(不调 API、不装 smolagents)。
 
 smolagents 未安装时用一个最小 stub 顶掉:被测的都是纯 Python 逻辑,
-CodeAgent / LiteLLMModel / @tool 只在 import 期被引用。
+CodeAgent / Model / @tool 只在 import 期被引用。
 
 运行: python tests/test_optimizations.py
 """
@@ -30,7 +30,8 @@ except ModuleNotFoundError:
 
     stub.tool = _tool
     stub.CodeAgent = _Agent
-    stub.LiteLLMModel = object
+    stub.Model = object
+    stub.OpenAIModel = object
     sys.modules["smolagents"] = stub
 
 import agents.orchestrator as orch

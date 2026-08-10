@@ -23,7 +23,8 @@ except ModuleNotFoundError:
             self.tools = kw.get("tools", [])
 
     stub.CodeAgent = _Agent
-    stub.LiteLLMModel = object
+    stub.Model = object
+    stub.OpenAIModel = object
     sys.modules["smolagents"] = stub
 
 import agents.outline as ol

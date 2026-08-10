@@ -8,7 +8,6 @@ the framework can be copied anywhere.
 import os
 from pathlib import Path
 from dotenv import load_dotenv
-from smolagents import LiteLLMModel
 
 load_dotenv(Path(__file__).parent / ".env", override=True)
 
@@ -47,18 +46,32 @@ PAPER_ROOT = str(WORKSPACE_ROOT)
 # references/ notes (parity with the original engine, for reuse/testing).
 PAPER_MODE = os.getenv("PAPER_MODE", "experiment")
 
-# ── Per-agent model config (independent key/base per agent) ─────────────
-DRAFT_MODEL = os.getenv("DRAFT_MODEL", "openai/claude-opus-4-6-thinking")
+# ── Per-agent model config (provider + model + key + base, each independent) ─
+# 模型调用框架：OpenAI 走 smolagents OpenAIModel，Claude 走 AnthropicModel 直连 /v1/messages。
+# provider 由显式字段决定，不再靠 model_id 前缀推断；reasoning_level 统一 6 档语义，
+# 由 agents.model_capabilities 按模型能力翻译成 provider 原生参数（不支持则显式报错）。
+DRAFT_PROVIDER = os.getenv("DRAFT_PROVIDER", "anthropic")
+DRAFT_MODEL = os.getenv("DRAFT_MODEL", "claude-opus-4-6")
 DRAFT_API_KEY = os.getenv("DRAFT_API_KEY", "")
 DRAFT_API_BASE = os.getenv("DRAFT_API_BASE", "")
+DRAFT_REASONING_LEVEL = os.getenv("DRAFT_REASONING_LEVEL", "max")
 
-REVIEW_MODEL = os.getenv("REVIEW_MODEL", "openai/gpt-5.5")
+REVIEW_PROVIDER = os.getenv("REVIEW_PROVIDER", "openai")
+REVIEW_MODEL = os.getenv("REVIEW_MODEL", "gpt-5")
 REVIEW_API_KEY = os.getenv("REVIEW_API_KEY", "")
 REVIEW_API_BASE = os.getenv("REVIEW_API_BASE", "")
+REVIEW_REASONING_LEVEL = os.getenv("REVIEW_REASONING_LEVEL", "high")
 
-MANAGER_MODEL = os.getenv("MANAGER_MODEL", "openai/gpt-5.5")
+MANAGER_PROVIDER = os.getenv("MANAGER_PROVIDER", "anthropic")
+MANAGER_MODEL = os.getenv("MANAGER_MODEL", "claude-opus-4-6")
 MANAGER_API_KEY = os.getenv("MANAGER_API_KEY", "")
 MANAGER_API_BASE = os.getenv("MANAGER_API_BASE", "")
+MANAGER_REASONING_LEVEL = os.getenv("MANAGER_REASONING_LEVEL", "high")
+
+# ── 模型调用运行时策略（timeout/retry）─────────────────────────────────────
+# 排障期默认 max_retries=0，避免一次失败被串行放大成多次长等待；稳定后可调 1。
+MODEL_TIMEOUT = os.getenv("MODEL_TIMEOUT")  # 留空 → 按 provider 默认（OpenAI 300 / Claude 600）
+MODEL_MAX_RETRIES = int(os.getenv("MODEL_MAX_RETRIES", "0"))
 
 # ── Retrieval LLM (the strong web-search model, e.g. grok) ──────────────
 # Used by the two-tier retrieval: notes/bib first, this model for web lookup.
@@ -84,25 +97,41 @@ REVIEW_SCORE_THRESHOLD = float(os.getenv("REVIEW_SCORE_THRESHOLD", "4.0"))
 AUTO_CITE_WEB = os.getenv("AUTO_CITE_WEB", "false").lower() == "true"
 
 
-def _model(model_id: str, api_key: str, api_base: str, effort: str,
-           timeout: float = 300.0) -> LiteLLMModel:
-    os.environ["OPENAI_API_KEY"] = api_key
-    os.environ["OPENAI_API_BASE"] = api_base
-    # timeout 显式设置:中转站可能响应慢,默认超时(60s)会让小请求也读超时。
-    return LiteLLMModel(model_id=model_id, api_key=api_key, api_base=api_base,
-                        reasoning_effort=effort, timeout=timeout)
+def _model_timeout() -> float | None:
+    """解析 MODEL_TIMEOUT：留空返回 None（由 router 按 provider 取默认）。"""
+    if MODEL_TIMEOUT is None or MODEL_TIMEOUT == "":
+        return None
+    try:
+        return float(MODEL_TIMEOUT)
+    except (TypeError, ValueError):
+        return None
 
 
-def get_draft_model() -> LiteLLMModel:
-    """Draft Agent — drafting and revision (max reasoning effort)."""
-    return _model(DRAFT_MODEL, DRAFT_API_KEY, DRAFT_API_BASE, "max")
+def get_draft_model():
+    """Draft Agent — drafting and revision（最大推理深度）。"""
+    from agents.model_router import build_model  # 懒加载：config 顶层不引入 smolagents
+
+    return build_model(
+        DRAFT_PROVIDER, DRAFT_MODEL, DRAFT_API_KEY, DRAFT_API_BASE,
+        DRAFT_REASONING_LEVEL, timeout=_model_timeout(), max_retries=MODEL_MAX_RETRIES,
+    )
 
 
-def get_review_model() -> LiteLLMModel:
-    """Review Agent — critique, verify, finalize (high effort)."""
-    return _model(REVIEW_MODEL, REVIEW_API_KEY, REVIEW_API_BASE, "high")
+def get_review_model():
+    """Review Agent — critique, verify, finalize（高推理深度）。"""
+    from agents.model_router import build_model
+
+    return build_model(
+        REVIEW_PROVIDER, REVIEW_MODEL, REVIEW_API_KEY, REVIEW_API_BASE,
+        REVIEW_REASONING_LEVEL, timeout=_model_timeout(), max_retries=MODEL_MAX_RETRIES,
+    )
 
 
-def get_manager_model() -> LiteLLMModel:
-    """Manager Agent — Stage-1 planning and orchestration (high effort)."""
-    return _model(MANAGER_MODEL, MANAGER_API_KEY, MANAGER_API_BASE, "high")
+def get_manager_model():
+    """Manager Agent — Stage-1 planning and orchestration（高推理深度）。"""
+    from agents.model_router import build_model
+
+    return build_model(
+        MANAGER_PROVIDER, MANAGER_MODEL, MANAGER_API_KEY, MANAGER_API_BASE,
+        MANAGER_REASONING_LEVEL, timeout=_model_timeout(), max_retries=MODEL_MAX_RETRIES,
+    )

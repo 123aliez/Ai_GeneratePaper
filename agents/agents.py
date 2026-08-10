@@ -1,4 +1,4 @@
-from smolagents import CodeAgent, LiteLLMModel
+from smolagents import CodeAgent, Model
 
 from .tools import read_file, write_file, list_folder, search_references, search_literature
 from .prompts import DRAFT_INSTRUCTIONS, REVIEW_INSTRUCTIONS, MANAGER_INSTRUCTIONS
@@ -11,7 +11,7 @@ from config import MAX_STEPS_AGENT, MAX_STEPS_MANAGER
 AUTHORIZED_IMPORTS = ["os", "json", "time", "textwrap"]
 
 
-def create_planner_agent(model_manager: LiteLLMModel):
+def create_planner_agent(model_manager: Model):
     """只装一个 Manager,不带 managed_agents —— 给 `--expand` 这类纯规划步骤用。
 
     不复用 create_agents 是因为那会连带初始化 Draft/Review 两个模型:展开 outline
@@ -29,9 +29,9 @@ def create_planner_agent(model_manager: LiteLLMModel):
 
 
 def create_agents(
-    model_draft: LiteLLMModel,
-    model_review: LiteLLMModel,
-    model_manager: LiteLLMModel,
+    model_draft: Model,
+    model_review: Model,
+    model_manager: Model,
 ):
     """Create the 3-agent hierarchy: Manager -> (Draft, Review)."""
 
