@@ -154,5 +154,7 @@ if __name__ == "__main__":
         t()
     print(f"\n{len(PASSED)} 项检查通过 / {total} 个测试:")
     for label in PASSED:
-        print(f"  ✓ {label}")
+        # Windows GBK 终端打不出 ✓(U+2713),打印 ASCII 化版本避免 UnicodeEncodeError
+        safe = label.encode("ascii", "replace").decode("ascii")
+        print(f"  ok  {safe}")
     print("\nMODEL FACTORY TESTS PASSED")
