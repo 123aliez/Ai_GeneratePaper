@@ -33,9 +33,16 @@ Draft 只能照章标题硬编,而流水线全程显示成功。
 """
 import os
 import sys
+import warnings
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+
+# 压制 LLM 生成的 Python 代码里偶发的非法转义提示（如 "...\("）。
+# 这是 smolagents 的 python_executor 在 compile() 模型产物时触发，源头在模型
+# 生成的代码而非本框架（框架代码 compile 零 warning）。属于无害运行时噪音，
+# Python 仍正常执行；过滤掉只为让终端输出干净。
+warnings.filterwarnings("ignore", category=SyntaxWarning)
 
 from config import PAPER_ROOT, PAPER_MODE, get_draft_model, get_review_model, get_manager_model
 from agents import create_agents, run_4stage_via_manager, run_4stage_via_manager_stream, run_4stage_direct, run_4stage_with_progress
