@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Paper Agent Platform</title>
+  <style>
+    :root { color-scheme: light dark; --bd:#e5e7eb; --bg:#fff; --fg:#111827; --muted:#6b7280; --pri:#2563eb; --ok:#16a34a; --warn:#d97706; --err:#dc2626; }
+    @media (prefers-color-scheme: dark) { :root { --bd:#374151; --bg:#0f172a; --fg:#e5e7eb; --muted:#9ca3af; } }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif; background:var(--bg); color:var(--fg); }
+    header { display:flex; align-items:center; justify-content:space-between; padding:14px 24px; border-bottom:1px solid var(--bd); position:sticky; top:0; background:var(--bg); z-index:10; }
+    header h1 { font-size:18px; margin:0; }
+    .muted { color:var(--muted); font-size:13px; }
+    main { max-width:980px; margin:0 auto; padding:24px 16px 80px; }
+    .card { border:1px solid var(--bd); border-radius:10px; padding:18px; margin-bottom:16px; background:var(--bg); }
+    .grid { display:grid; grid-template-columns: repeat(auto-fill, minmax(160px,1fr)); gap:12px; }
+    .stat { border:1px solid var(--bd); border-radius:8px; padding:14px; }
+    .stat .n { font-size:26px; font-weight:600; }
+    .stat .l { font-size:12px; color:var(--muted); }
+    input, button, select, textarea { font:inherit; padding:8px 10px; border:1px solid var(--bd); border-radius:6px; background:var(--bg); color:var(--fg); }
+    button { cursor:pointer; background:var(--pri); color:#fff; border-color:var(--pri); }
+    button.ghost { background:transparent; color:var(--fg); }
+    button:disabled { opacity:.5; cursor:not-allowed; }
+    table { width:100%; border-collapse:collapse; }
+    th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--bd); font-size:14px; }
+    .pill { display:inline-block; padding:2px 8px; border-radius:99px; font-size:12px; font-weight:500; }
+    .pill.queued { background:#e0e7ff; color:#3730a3; }
+    .pill.dispatched { background:#fef3c7; color:#92400e; }
+    .pill.running { background:#dbeafe; color:#1e40af; }
+    .pill.completed { background:#dcfce7; color:#166534; }
+    .pill.failed { background:#fee2e2; color:#991b1b; }
+    .pill.cancelled { background:#f3f4f6; color:#4b5563; }
+    .pill.waiting_retry { background:#ffedd5; color:#9a3412; }
+    .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+    a { color:var(--pri); }
+    .timeline { display:flex; gap:4px; flex-wrap:wrap; }
+    .timeline span { padding:3px 8px; border-radius:6px; background:#f3f4f6; font-size:12px; }
+    @media (prefers-color-scheme: dark) { .timeline span { background:#1e293b; } }
+  </style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+// 最小可用前端：纯原生 JS，无构建步骤。API 调用走 fetch，3 秒轮询任务状态。
+// 生产环境可换成 React+Vite+AntD（文档 §2），但第一版这个骨架已能跑通整条用户体验。
+
+const API = "";
+let ME = null;
+
+async function api(path, opts={}) {
+  const res = await fetch(API + path, { credentials: "include", headers: {"Content-Type":"application/json"}, ...opts });
+  if (res.status === 401) { location.hash = "#/login"; throw new Error("401"); }
+  if (!res.ok) throw new Error((await res.text().catch(()=>"")) || res.statusText);
+  return res.json().catch(() => null);
+}
+
+async function login(u, p) {
+  await api("/api/auth/login", { method:"POST", body: JSON.stringify({username:u, password:p}) });
+  await refreshMe(); route();
+}
+async function logout() {
+  await api("/api/auth/logout", { method:"POST" }); ME=null; location.hash="#/login"; render();
+}
+async function refreshMe() {
+  try { ME = await api("/api/auth/me"); } catch { ME = null; }
+}
+
+function route() {
+  if (!ME) { location.hash = location.hash || "#/login"; }
+  else if (!location.hash || location.hash === "#/login") { location.hash = "#/dashboard"; }
+  render();
+}
+
+addEventListener("hashchange", render);
+
+// ── 视图 ─────────────────────────────────────────────────────────────────
+function render() {
+  const app = document.getElementById("app");
+  const h = location.hash || "#/dashboard";
+  if (!ME) { app.innerHTML = viewLogin(); bindLogin(); return; }
+  const page = h.replace("#","");
+  let body = "";
+  if (page === "/dashboard" || page === "") body = `<div id="page">加载中…</div>`;
+  else if (page.startsWith("/project/")) body = `<div id="page">加载中…</div>`;
+  else if (page.startsWith("/task/")) body = `<div id="page">加载中…</div>`;
+  else if (page === "/admin" && ME.role === "admin") body = `<div id="page">加载中…</div>`;
+  app.innerHTML = viewHeader() + `<main>${body}</main>`;
+  if (page === "/dashboard" || page === "") loadDashboard();
+  else if (page.startsWith("/project/")) loadProject(page.split("/")[2]);
+  else if (page.startsWith("/task/")) loadTask(page.split("/")[2]);
+  else if (page === "/admin") loadAdmin();
+}
+
+function viewHeader() {
+  return `<header><h1>📄 Paper Agent Platform</h1>
+    <div class="row">
+      <span class="muted">${ME.username} (${ME.role})</span>
+      <button class="ghost" onclick="location.hash='#/dashboard'">面板</button>
+      ${ME.role==="admin" ? `<button class="ghost" onclick="location.hash='#/admin'">管理</button>` : ""}
+      <button class="ghost" onclick="logout()">退出</button>
+    </div></header>`;
+}
+
+function viewLogin() {
+  return `<main style="max-width:360px;margin:80px auto">
+    <div class="card">
+      <h2 style="margin-top:0">登录</h2>
+      <p class="muted">内部平台，账号由管理员创建。</p>
+      <input id="lu" placeholder="用户名" style="width:100%;margin-bottom:8px" />
+      <input id="lp" type="password" placeholder="密码" style="width:100%;margin-bottom:12px" />
+      <button id="lb" style="width:100%">登录</button>
+    </div></main>`;
+}
+function bindLogin() {
+  document.getElementById("lb").onclick = async () => {
+    try { await login(document.getElementById("lu").value, document.getElementById("lp").value); }
+    catch(e) { alert("登录失败：" + e.message); }
+  };
+}
+
+async function loadDashboard() {
+  const [projects, tasks] = await Promise.all([api("/api/projects"), api("/api/tasks")]);
+  const running = tasks.filter(t=>["RUNNING","DISPATCHED"].includes(t.status)).length;
+  const queued = tasks.filter(t=>t.status==="QUEUED").length;
+  const done = tasks.filter(t=>t.status==="COMPLETED").length;
+  document.getElementById("page").innerHTML = `
+    <h2>你好，${ME.username}</h2>
+    <div class="grid" style="margin:16px 0">
+      <div class="stat"><div class="n">${running}</div><div class="l">运行中</div></div>
+      <div class="stat"><div class="n">${queued}</div><div class="l">排队中</div></div>
+      <div class="stat"><div class="n">${done}</div><div class="l">已完成</div></div>
+    </div>
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <h3 style="margin:0">我的项目</h3>
+        <button onclick="newProject()">+ 新建项目</button>
+      </div>
+      <table style="margin-top:12px">
+        <tr><th>名称</th><th>输入版本</th><th>操作</th></tr>
+        ${projects.map(p=>`<tr><td>${p.name}</td><td class="muted">rev ${p.input_revision}</td>
+          <td><a href="#/project/${p.id}">进入</a></td></tr>`).join("") || `<tr><td colspan="3" class="muted">还没有项目</td></tr>`}
+      </table>
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0">最近任务</h3>
+      <table>
+        <tr><th>任务</th><th>状态</th><th>阶段</th><th>进度</th></tr>
+        ${tasks.slice(0,8).map(t=>`<tr><td><a href="#/task/${t.id}">${t.id.slice(0,8)}</a></td>
+          <td><span class="pill ${t.status.toLowerCase()}">${t.status}</span></td>
+          <td class="muted">${t.current_stage||"-"}</td>
+          <td>${t.progress_percent}%</td></tr>`).join("")}
+      </table>
+    </div>`;
+}
+async function newProject() {
+  const name = prompt("项目名称："); if (!name) return;
+  await api("/api/projects", { method:"POST", body: JSON.stringify({name}) });
+  loadDashboard();
+}
+
+async function loadProject(pid) {
+  const p = await api(`/api/projects/${pid}`);
+  document.getElementById("page").innerHTML = `
+    <a href="#/dashboard" class="muted">← 返回</a>
+    <h2>${p.name}</h2>
+    <div class="card">
+      <h3 style="margin-top:0">输入文件</h3>
+      <div class="muted">当前 revision: ${p.input_revision}</div>
+      <div style="margin:12px 0" class="row">
+        <label>idea.md <input id="f-idea" type="file"></label>
+        <label>outline.md <input id="f-outline" type="file"></label>
+        <label>data/ (多选) <input id="f-data" type="file" multiple></label>
+      </div>
+      <button onclick="uploadFiles('${pid}')">上传新版本</button>
+    </div>
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <h3 style="margin:0">运行</h3>
+        <button onclick="runAll('${pid}')">▶ 运行全部流程</button>
+      </div>
+      <p class="muted">提交后进入队列，受全局并发上限约束（同时最多 3 个任务运行）。</p>
+    </div>`;
+}
+async function uploadFiles(pid) {
+  const fd = new FormData();
+  const idea = document.getElementById("f-idea").files[0];
+  const outline = document.getElementById("f-outline").files[0];
+  const data = document.getElementById("f-data").files;
+  if (idea) fd.append("idea", idea);
+  if (outline) fd.append("outline", outline);
+  for (const f of data) fd.append("data", f);
+  const res = await fetch(`/api/projects/${pid}/files`, { method:"POST", credentials:"include", body: fd });
+  if (!res.ok) { alert("上传失败"); return; }
+  alert("已上传，revision=" + (await res.json()).revision);
+  loadProject(pid);
+}
+async function runAll(pid) {
+  const r = await api(`/api/projects/${pid}/tasks`, { method:"POST", body: JSON.stringify({task_type:"run-all"}) });
+  location.hash = `#/task/${r.task_id}`;
+}
+
+let pollTimer = null;
+async function loadTask(tid) {
+  if (pollTimer) clearInterval(pollTimer);
+  const refresh = async () => {
+    try {
+      const [t, events, arts] = await Promise.all([
+        api(`/api/tasks/${tid}`), api(`/api/tasks/${tid}/events`), api(`/api/tasks/${tid}/artifacts`)
+      ]);
+      document.getElementById("page").innerHTML = viewTask(t, events, arts);
+      if (["COMPLETED","FAILED","CANCELLED"].includes(t.status)) { clearInterval(pollTimer); pollTimer=null; }
+    } catch(e) { /* 401 等由 api() 处理 */ }
+  };
+  await refresh();
+  pollTimer = setInterval(refresh, 3000);
+}
+function viewTask(t, events, arts) {
+  return `<a href="#/dashboard" class="muted">← 返回</a>
+    <h2>任务 ${t.id.slice(0,8)}</h2>
+    <div class="row" style="margin:12px 0">
+      <span class="pill ${t.status.toLowerCase()}">${t.status}</span>
+      ${t.current_stage ? `<span class="muted">当前阶段：${t.current_stage}</span>` : ""}
+      <span class="muted">进度：${t.progress_percent}%</span>
+      ${t.error_code ? `<span class="muted">错误：${t.error_code}</span>` : ""}
+      ${!["COMPLETED","FAILED","CANCELLED"].includes(t.status) ? `<button class="ghost" onclick="cancelTask('${t.id}')">取消</button>` : ""}
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0">产物</h3>
+      ${arts.length ? arts.map(a=>`<div class="row"><span>${a.artifact_type} · ${a.chapter}</span>
+        <a href="/api/tasks/${t.id}/artifacts/${a.id}/download" target="_blank">下载</a></div>`).join("")
+        : `<p class="muted">暂无产物</p>`}
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0">事件</h3>
+      <table><tr><th>时间</th><th>类型</th><th>消息</th></tr>
+      ${events.slice().reverse().map(e=>`<tr><td class="muted">${(e.created_at||"").slice(11,19)}</td>
+        <td>${e.event_type}</td><td>${e.message}</td></tr>`).join("")}
+      </table>
+    </div>`;
+}
+async function cancelTask(tid) {
+  if (!confirm("确认取消？")) return;
+  await api(`/api/tasks/${tid}/cancel`, { method:"POST" });
+}
+
+async function loadAdmin() {
+  const [users, tasks, sys] = await Promise.all([
+    api("/api/admin/users"), api("/api/admin/tasks"), api("/api/admin/system")
+  ]);
+  document.getElementById("page").innerHTML = `
+    <h2>管理后台</h2>
+    <div class="grid" style="margin:16px 0">
+      <div class="stat"><div class="n">${sys.global_running}</div><div class="l">全局运行中 (上限 ${sys.limits.global_max_running})</div></div>
+      <div class="stat"><div class="n">${users.length}</div><div class="l">用户数</div></div>
+      <div class="stat"><div class="n">${tasks.length}</div><div class="l">总任务数</div></div>
+    </div>
+    <div class="card">
+      <div class="row" style="justify-content:space-between"><h3 style="margin:0">用户</h3>
+      <button onclick="createUser()">+ 创建用户</button></div>
+      <table style="margin-top:12px"><tr><th>用户名</th><th>角色</th><th>状态</th><th>操作</th></tr>
+      ${users.map(u=>`<tr><td>${u.username}</td><td>${u.role}</td>
+        <td>${u.is_active?"启用":"禁用"}</td>
+        <td><button class="ghost" onclick="toggleUser('${u.id}', ${!u.is_active})">${u.is_active?"禁用":"启用"}</button></td></tr>`).join("")}
+      </table>
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0">全部任务</h3>
+      <table><tr><th>任务</th><th>用户</th><th>状态</th><th>操作</th></tr>
+      ${tasks.map(t=>`<tr><td><a href="#/task/${t.id}">${t.id.slice(0,8)}</a></td>
+        <td class="muted">${t.project_id.slice(0,8)}</td>
+        <td><span class="pill ${t.status.toLowerCase()}">${t.status}</span></td>
+        <td>${t.status==="FAILED"?`<button class="ghost" onclick="requeue('${t.id}')">重新排队</button>`:""}</td></tr>`).join("")}
+      </table>
+    </div>`;
+}
+async function createUser() {
+  const username = prompt("新用户名："); if (!username) return;
+  const password = prompt("初始密码："); if (!password) return;
+  await api("/api/admin/users", { method:"POST", body: JSON.stringify({username, password, role:"user"}) });
+  loadAdmin();
+}
+async function toggleUser(uid, active) { await fetch(`/api/admin/users/${uid}?is_active=${active}`, {method:"PATCH", credentials:"include"}); loadAdmin(); }
+async function requeue(tid) { await api(`/api/admin/tasks/${tid}/requeue`, { method:"POST" }); loadAdmin(); }
+
+// 启动
+(async () => { await refreshMe(); route(); })();
+</script>
+</body>
+</html>

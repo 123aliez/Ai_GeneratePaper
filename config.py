@@ -11,10 +11,23 @@ from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).parent / ".env", override=True)
 
-# ── Project layout (all relative to this file's directory) ──────────────
-PROJECT_ROOT = Path(__file__).resolve().parent
-DATA_ROOT = PROJECT_ROOT / "data"            # user-provided experiment results
-WORKSPACE_ROOT = PROJECT_ROOT / "workspace"  # section drafts / reviews / finals
+# ── 平台运行根目录注入（多用户平台用；CLI 单机模式完全不受影响）──────────
+# 现有引擎在 import 时就 ``from config import IDEA_PATH`` 冻结路径，所以多任务隔离
+# 靠「每任务一个全新子进程，在 import config 之前注入 PAPER_RUNTIME_ROOT」实现：
+# 平台把该环境变量指向任务的 work/ 目录，config 据此把 PROJECT_ROOT 重定向过去，
+# idea/data/workspace/references 全部级联到任务专属目录内。
+# 留空（CLI 模式）→ PROJECT_ROOT 仍是 config.py 所在目录，行为与改造前逐字节一致。
+_PAPER_RUNTIME_ROOT = os.environ.get("PAPER_RUNTIME_ROOT")
+if _PAPER_RUNTIME_ROOT:
+    PROJECT_ROOT = Path(_PAPER_RUNTIME_ROOT).resolve()
+else:
+    PROJECT_ROOT = Path(__file__).resolve().parent
+
+# ── Project layout ──────────────────────────────────────────────────────
+# 注意：PROJECT_ROOT 在平台子进程模式下被重定向到任务 work 目录；DATA_ROOT /
+# WORKSPACE_ROOT / REFERENCES_ROOT 都从这里派生，随之落到任务专属目录内。
+DATA_ROOT = Path(os.getenv("DATA_ROOT") or (PROJECT_ROOT / "data"))            # user-provided experiment results
+WORKSPACE_ROOT = Path(os.getenv("WORKSPACE_ROOT") or (PROJECT_ROOT / "workspace"))  # section drafts / reviews / finals
 REFERENCES_ROOT = PROJECT_ROOT / "references"  # bibliography + reading notes
 REFERENCE_INDEX_PATH = REFERENCES_ROOT / "index.md"
 BIBLIOGRAPHY_PATH = REFERENCES_ROOT / "bibliography.md"

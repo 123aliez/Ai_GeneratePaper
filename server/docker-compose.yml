@@ -1,0 +1,114 @@
+# 多用户论文写作平台 Docker Compose（生产等价）
+# 文档 §23：paper-nginx / paper-frontend / paper-api / paper-dispatcher / paper-worker /
+#           paper-postgres / paper-redis
+#
+# 启动：docker compose -f server/docker-compose.yml up -d
+# 首次：进 paper-api 跑 python -m server.scripts.init_admin 建管理员账号
+#
+# 本机无 docker daemon 权限时不跑（仅作为目标服务器部署资产）。
+
+services:
+  paper-postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: paper
+      POSTGRES_USER: paper
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-paperchange}
+    volumes:
+      - paper_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U paper -d paper"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  paper-redis:
+    image: redis:7
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - paper_redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  paper-api:
+    build:
+      context: ..
+      dockerfile: server/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      paper-postgres: { condition: service_healthy }
+      paper-redis: { condition: service_healthy }
+    environment:
+      DATABASE_URL: postgresql+psycopg://paper:${POSTGRES_PASSWORD:-paperchange}@paper-postgres:5432/paper
+      REDIS_URL: redis://paper-redis:6379/0
+      CELERY_BROKER_URL: redis://paper-redis:6379/0
+      CELERY_RESULT_BACKEND: redis://paper-redis:6379/0
+      PAPER_RUN_STORE_ROOT: /srv/paper-agent/runs
+      SESSION_SECRET_KEY: ${SESSION_SECRET_KEY:-please-change-in-production}
+      GLOBAL_MAX_RUNNING_TASKS: "3"
+      PER_USER_MAX_RUNNING_TASKS: "1"
+      PER_PROJECT_MAX_RUNNING_TASKS: "1"
+    volumes:
+      - paper_runs:/srv/paper-agent/runs
+      - paper_blobs:/app/var/blobs
+    expose: ["8000"]
+
+  paper-dispatcher:
+    build:
+      context: ..
+      dockerfile: server/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      paper-postgres: { condition: service_healthy }
+      paper-redis: { condition: service_healthy }
+    environment:
+      DATABASE_URL: postgresql+psycopg://paper:${POSTGRES_PASSWORD:-paperchange}@paper-postgres:5432/paper
+      REDIS_URL: redis://paper-redis:6379/0
+      CELERY_BROKER_URL: redis://paper-redis:6379/0
+      DISPATCHER_INTERVAL_SECONDS: "1.0"
+      REAPER_INTERVAL_SECONDS: "15.0"
+      STALE_HEARTBEAT_SECONDS: "120"
+    command: ["python", "-m", "server.dispatcher.loop"]
+
+  paper-worker:
+    build:
+      context: ..
+      dockerfile: server/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      paper-postgres: { condition: service_healthy }
+      paper-redis: { condition: service_healthy }
+    environment:
+      DATABASE_URL: postgresql+psycopg://paper:${POSTGRES_PASSWORD:-paperchange}@paper-postgres:5432/paper
+      REDIS_URL: redis://paper-redis:6379/0
+      CELERY_BROKER_URL: redis://paper-redis:6379/0
+      CELERY_RESULT_BACKEND: redis://paper-redis:6379/0
+      PAPER_RUN_STORE_ROOT: /srv/paper-agent/runs
+      CELERY_WORKER_CONCURRENCY: "4"
+      CELERY_PREFETCH_MULTIPLIER: "1"
+      CELERY_TASK_ACKS_LATE: "true"
+    volumes:
+      - paper_runs:/srv/paper-agent/runs
+      - paper_blobs:/app/var/blobs
+    command: ["celery", "-A", "server.worker.core:celery_app", "worker",
+              "--loglevel=info", "--concurrency=4", "-Q", "paper"]
+
+  paper-nginx:
+    image: nginx:alpine
+    restart: unless-stopped
+    depends_on: [paper-api]
+    ports:
+      - "${PAPER_PORT:-8080}:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+
+volumes:
+  paper_pgdata:
+  paper_redisdata:
+  paper_runs:
+  paper_blobs:
