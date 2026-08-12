@@ -46,3 +46,7 @@ outline.zh.md
 # 文献检索候选清单(--retrieve 产物):自动检索、未经核实,不进版本库。
 # 模板与正式引用库 references/bibliography.md 仍进版本库。
 references/candidates.md
+
+# 项目状态文档(PROJECT.md / PROGRESS.md):本地开发用,不进版本库。
+PROJECT.md
+PROGRESS.md

@@ -80,23 +80,29 @@ def test_unsupported_raises():
         check("未登记模型越界档位显式报错", True, str(e))
 
 
-# ── 5. provider 路由：构造出正确的 Model 子类 ─────────────────────────────────
+# ── 5. provider 路由：构造出正确的底层 Model（被 ResilientModel 包裹）────────
+# build_model 现在统一把底层 Model 包进 ResilientModel 再返回，所以 type(m) 总是
+# ResilientModel；要验底层路由正确，得看 m.base。
 def test_router_openai():
     m = build_model("openai", "gpt-5", "k", "https://x/v1", "high")
-    cls = type(m).__module__ + "." + type(m).__name__
-    check("openai → smolagents OpenAIModel", cls.endswith("OpenAIModel"), cls)
+    check("build_model 外层是 ResilientModel",
+          type(m).__name__ == "ResilientModel", type(m).__name__)
+    base = m.base
+    cls = type(base).__module__ + "." + type(base).__name__
+    check("openai 底层 → smolagents OpenAIModel", cls.endswith("OpenAIModel"), cls)
     # reasoning_effort 已注入 kwargs
-    check("openai reasoning_effort 注入", m.kwargs.get("reasoning_effort") == "high",
-          str(m.kwargs))
+    check("openai reasoning_effort 注入", base.kwargs.get("reasoning_effort") == "high",
+          str(base.kwargs))
 
 
 def test_router_anthropic():
     m = build_model("anthropic", "claude-opus-4-6", "k", "https://gw", "high")
-    cls = type(m).__module__ + "." + type(m).__name__
-    check("anthropic → AnthropicModel", cls.endswith("AnthropicModel"), cls)
+    base = m.base
+    cls = type(base).__module__ + "." + type(base).__name__
+    check("anthropic 底层 → AnthropicModel", cls.endswith("AnthropicModel"), cls)
     check("anthropic output_config 注入",
-          m.reasoning_kwargs == {"output_config": {"effort": "high"}},
-          str(m.reasoning_kwargs))
+          base.reasoning_kwargs == {"output_config": {"effort": "high"}},
+          str(base.reasoning_kwargs))
 
 
 def test_router_unknown_provider():
@@ -107,10 +113,10 @@ def test_router_unknown_provider():
         check("未知 provider 显式报错", True)
 
 
-# ── 6. timeout 默认：openai 300 / anthropic 600 ────────────────────────────────
+# ── 6. timeout 默认：openai 300 / anthropic 600（透传到底层）──────────────────
 def test_timeout_defaults():
-    om = build_model("openai", "gpt-5", "k", "https://x/v1", "high")
-    am = build_model("anthropic", "claude-opus-4-6", "k", "https://gw", "high")
+    om = build_model("openai", "gpt-5", "k", "https://x/v1", "high").base
+    am = build_model("anthropic", "claude-opus-4-6", "k", "https://gw", "high").base
     # OpenAI：timeout 落在 client_kwargs
     check("openai timeout=300", om.client_kwargs.get("timeout") == 300.0, str(om.client_kwargs))
     check("anthropic timeout=600", am.timeout == 600.0, str(am.timeout))

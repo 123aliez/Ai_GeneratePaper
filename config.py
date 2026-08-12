@@ -69,9 +69,22 @@ MANAGER_API_BASE = os.getenv("MANAGER_API_BASE", "")
 MANAGER_REASONING_LEVEL = os.getenv("MANAGER_REASONING_LEVEL", "high")
 
 # ── 模型调用运行时策略（timeout/retry）─────────────────────────────────────
-# 排障期默认 max_retries=0，避免一次失败被串行放大成多次长等待；稳定后可调 1。
+# 重试归属（midstream plan v2 §5）：瞬时网络重试只由 ResilientModel 一层负责。
+#   SDK max_retries      = MODEL_MAX_RETRIES（默认 0，底层不重试）
+#   smolagents retryer   = OFF（ApiModel retry=False）
+#   ResilientModel       = ON（唯一瞬时重试 owner，见 LLM_RETRY_*）
+#   run_agent_stage      = 最后兜底（只对 TransientModelUnavailable 重跑，4 次纯兜底）
 MODEL_TIMEOUT = os.getenv("MODEL_TIMEOUT")  # 留空 → 按 provider 默认（OpenAI 300 / Claude 600）
 MODEL_MAX_RETRIES = int(os.getenv("MODEL_MAX_RETRIES", "0"))
+
+# ResilientModel 的瞬时重试计划：网关对长流式不稳，断了就在 Model 层快速重连，
+# 而不是让整个 CodeAgent.run() 重跑几分钟。
+LLM_RETRY_ENABLED = os.getenv("LLM_RETRY_ENABLED", "true").lower() == "true"
+LLM_RETRY_MAX_ATTEMPTS = int(os.getenv("LLM_RETRY_MAX_ATTEMPTS", "3"))
+LLM_RETRY_DELAY_1 = float(os.getenv("LLM_RETRY_DELAY_1", "0.8"))   # 第 1 次失败后等待（秒）
+LLM_RETRY_DELAY_2 = float(os.getenv("LLM_RETRY_DELAY_2", "2.0"))   # 第 2 次失败后等待（秒）
+LLM_RETRY_JITTER_RATIO = float(os.getenv("LLM_RETRY_JITTER_RATIO", "0.25"))
+LLM_FAST_RETRY_AFTER_CAP = float(os.getenv("LLM_FAST_RETRY_AFTER_CAP", "15"))  # 服务端 Retry-After 上限
 
 # ── Retrieval LLM (the strong web-search model, e.g. grok) ──────────────
 # Used by the two-tier retrieval: notes/bib first, this model for web lookup.
@@ -107,6 +120,20 @@ def _model_timeout() -> float | None:
         return None
 
 
+def _retry_schedule(owner: str):
+    """构造 ResilientModel 的重试计划。``LLM_RETRY_ENABLED=false`` 时返回 None
+    （此时 build_model 不包 ResilientModel，行为退化到改造前，便于排障对照）。"""
+    if not LLM_RETRY_ENABLED:
+        return None
+    from agents.retry_policy import RetrySchedule
+    return RetrySchedule(
+        max_attempts=LLM_RETRY_MAX_ATTEMPTS,
+        delays=(LLM_RETRY_DELAY_1, LLM_RETRY_DELAY_2),
+        jitter_ratio=LLM_RETRY_JITTER_RATIO,
+        retry_after_cap=LLM_FAST_RETRY_AFTER_CAP,
+    )
+
+
 def get_draft_model():
     """Draft Agent — drafting and revision（最大推理深度）。"""
     from agents.model_router import build_model  # 懒加载：config 顶层不引入 smolagents
@@ -114,6 +141,7 @@ def get_draft_model():
     return build_model(
         DRAFT_PROVIDER, DRAFT_MODEL, DRAFT_API_KEY, DRAFT_API_BASE,
         DRAFT_REASONING_LEVEL, timeout=_model_timeout(), max_retries=MODEL_MAX_RETRIES,
+        retry_schedule=_retry_schedule("Draft"), retry_enabled=LLM_RETRY_ENABLED, owner="Draft",
     )
 
 
@@ -124,6 +152,7 @@ def get_review_model():
     return build_model(
         REVIEW_PROVIDER, REVIEW_MODEL, REVIEW_API_KEY, REVIEW_API_BASE,
         REVIEW_REASONING_LEVEL, timeout=_model_timeout(), max_retries=MODEL_MAX_RETRIES,
+        retry_schedule=_retry_schedule("Review"), retry_enabled=LLM_RETRY_ENABLED, owner="Review",
     )
 
 
@@ -134,4 +163,5 @@ def get_manager_model():
     return build_model(
         MANAGER_PROVIDER, MANAGER_MODEL, MANAGER_API_KEY, MANAGER_API_BASE,
         MANAGER_REASONING_LEVEL, timeout=_model_timeout(), max_retries=MODEL_MAX_RETRIES,
+        retry_schedule=_retry_schedule("Manager"), retry_enabled=LLM_RETRY_ENABLED, owner="Manager",
     )

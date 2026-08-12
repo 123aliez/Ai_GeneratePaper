@@ -187,6 +187,55 @@ class ProgressFilteringStdout(io.StringIO):
         return None
 
 
+def _is_permanent_failure(exc: BaseException) -> bool:
+    """异常（沿 __cause__/__context__ 链）是否源于一个永久错误。
+
+    ResilientModel 对 401/403/413/422 这类永久错误原样上抛（不重试、不包装），
+    但 CodeAgent 会把它包成 ``AgentGenerationError``，从而丢失"这是永久错误"的语义。
+    若不在这里识别，``run_agent_stage`` 会对永久错误重跑 4 次 CodeAgent.run()，每次
+    撞同一个 401，白白烧 token。沿异常链找根因的 status_code，落在永久集合就立即失败。
+    """
+    from .retry_policy import PERMANENT_STATUS
+    seen = set()
+    cur: BaseException | None = exc
+    depth = 0
+    while cur is not None and depth < 10:  # 限深，防自引用循环
+        if id(cur) in seen:
+            break
+        seen.add(id(cur))
+        status = getattr(cur, "status_code", None)
+        if isinstance(status, int) and status in PERMANENT_STATUS:
+            return True
+        cur = cur.__cause__ or cur.__context__
+        depth += 1
+    return False
+
+
+def _safe_exc_label(exc: BaseException) -> str:
+    """给终端日志/返回值用的安全异常标签：只取类名 + status_code，不取异常文本。
+
+    异常文本（str(exc)）可能含网关回显的 body、prompt 片段或 api_key——CodeAgent
+    把 SDK 异常包成 AgentGenerationError 时会带上原文。直接拼进日志/返回值有泄漏风险。
+    这里沿异常链找一个 status_code，输出 ``TransientModelUnavailable(status=503)`` 这种
+    固定结构；链里没有 status_code 就只给类名。
+    """
+    name = type(exc).__name__
+    # 沿链找 status_code（与 _is_permanent_failure 同样的遍历）
+    seen = set()
+    cur: BaseException | None = exc
+    depth = 0
+    while cur is not None and depth < 10:
+        if id(cur) in seen:
+            break
+        seen.add(id(cur))
+        status = getattr(cur, "status_code", None)
+        if isinstance(status, int):
+            return f"{name}(status={status})"
+        cur = cur.__cause__ or cur.__context__
+        depth += 1
+    return name
+
+
 def chapter_name_from_folder(folder_path: str) -> str:
     return Path(folder_path.replace("\\", "/")).name
 
@@ -845,6 +894,7 @@ def run_agent_stage_standalone(agent, agent_name: str, prompt: str,
 
     与流水线内的 run_agent_stage 同样带重试与进度过滤,但不依赖章节工作区的闭包
     变量。重试次数默认少一次:这一步没有已落盘的产物要保护,失败重跑一条命令就行。
+    永久错误（401/403/413/422）立即失败，不重跑。
     """
     last_error = None
     for attempt in range(1, attempts + 1):
@@ -875,16 +925,21 @@ def run_agent_stage_standalone(agent, agent_name: str, prompt: str,
             return events[-1] if events else None
         except Exception as exc:
             last_error = exc
-            error_text = " ".join(str(exc).split())[:260]
+            # 永久错误立即失败，不重跑（重跑只会再撞同一个永久错误）。
+            if _is_permanent_failure(exc):
+                print(f"[{agent_name:<8.8}] failed     | permanent error, no retry: "
+                      f"{_safe_exc_label(exc)}", flush=True)
+                return {"error": "permanent error", "exception_type": type(exc).__name__}
+            # 安全标签：只取类名+status_code，不拼 str(exc)（防 key/prompt 泄漏到日志）
+            label = _safe_exc_label(exc)
             if attempt >= attempts:
-                print(f"[{agent_name:<8.8}] failed     | "
-                      f"{type(exc).__name__}: {error_text}", flush=True)
-                return {"error": error_text, "exception_type": type(exc).__name__}
-            label = ("transient API/network error"
-                     if TRANSIENT_ERROR_RE.search(str(exc))
-                     else type(exc).__name__)
-            print(f"[{agent_name:<8.8}] retry      | {label}: {error_text}", flush=True)
-    return {"error": str(last_error)[:260] if last_error else "unknown error"}
+                print(f"[{agent_name:<8.8}] failed     | {label}", flush=True)
+                return {"error": label, "exception_type": type(exc).__name__}
+            kind = ("transient API/network error"
+                    if TRANSIENT_ERROR_RE.search(str(exc))
+                    else "error")
+            print(f"[{agent_name:<8.8}] retry      | {kind}: {label}", flush=True)
+    return {"error": _safe_exc_label(last_error) if last_error else "unknown error"}
 
 
 # ── idea.md 直连:每个改写正文的 stage 提示词的固定前缀 ──────────────────
@@ -1291,6 +1346,10 @@ def run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manage
         return all(os.path.exists(os.path.join(folder_path, name)) for name in expected)
 
     def run_agent_stage(agent, agent_name: str, prompt: str):
+        # 4 次纯兜底（用户锁定）。注意：ResilientModel 已在 Model 层把瞬时网络错误
+        # 吃掉（每个 logical call 最多 3 次 attempt），所以走到这里的失败几乎都是
+        # TransientModelUnavailable（重试用尽）或真正的非网络异常。这里重跑整个
+        # CodeAgent.run() 是最后手段，不是主恢复路径。
         attempts = 4
         last_error = None
         for attempt in range(1, attempts + 1):
@@ -1318,15 +1377,27 @@ def run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manage
                 return events[-1] if events else None
             except Exception as exc:
                 last_error = exc
-                error_text = " ".join(str(exc).split())[:260]
+                # 永久错误（401/403/413/422 等）不应重跑整个 CodeAgent——重跑只会
+                # 再次撞同一个永久错误，白白烧 token + 时间。沿异常链找根因：
+                # ResilientModel 用 raise ... from last_exc，永久错误的原始异常在
+                # __cause__/__context__ 里，status_code 落在永久集合就立即失败。
+                if _is_permanent_failure(exc):
+                    print(f"[{agent_name:<8.8}] failed     | permanent error, no retry: "
+                          f"{_safe_exc_label(exc)}", flush=True)
+                    return {"error": "permanent error", "exception_type": type(exc).__name__}
+                # 安全标签：只取类名+status_code，不拼 str(exc)（防 key/prompt 泄漏）
+                label = _safe_exc_label(exc)
                 if attempt >= attempts:
-                    print(f"[{agent_name:<8.8}] failed     | {type(exc).__name__}: {error_text}", flush=True)
-                    return {"error": error_text, "exception_type": type(exc).__name__}
-                if TRANSIENT_ERROR_RE.search(str(exc)):
-                    print(f"[{agent_name:<8.8}] retry      | transient API/network error: {error_text}", flush=True)
+                    print(f"[{agent_name:<8.8}] failed     | {label}", flush=True)
+                    return {"error": label, "exception_type": type(exc).__name__}
+                # TransientModelUnavailable 是 ResilientModel 重试用尽抛的——重跑整个
+                # CodeAgent 是合理的最后兜底（可能换个时间段网关恢复）。其它异常也照
+                # 常重试：CodeAgent 内部解析错/执行错本身就是 AgentError，重跑可能换条路径。
+                if TRANSIENT_ERROR_RE.search(str(exc)) or "TransientModelUnavailable" in type(exc).__name__:
+                    print(f"[{agent_name:<8.8}] retry      | transient API/network error: {label}", flush=True)
                 else:
-                    print(f"[{agent_name:<8.8}] retry      | {type(exc).__name__}: {error_text}", flush=True)
-        return {"error": str(last_error)[:260] if last_error else "unknown error"}
+                    print(f"[{agent_name:<8.8}] retry      | {label}", flush=True)
+        return {"error": _safe_exc_label(last_error) if last_error else "unknown error"}
 
     # ── Stage 0: Evidence mining (pre-draft, multi-perspective QA) ──
     # STORM's perspective-guided QA: interrogate the content source before
