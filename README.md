@@ -47,8 +47,13 @@
   严门禁,方法章因此被写成结果复述,这是架构级偏差,已按类型分流修正。
 - **`idea.md` 是全局一份**,每个阶段提示词第一行直接指向它,Agent 读全文。不复制进任何
   聚合文件——转述 upstream 正是论文创新点前后漂移的根源。
-- **三道防幻觉门禁**:数字对账(正文每个数对回 `data/`)、引用闭合(只从你给的文献补
-  `\cite`,匹配不到交人工、绝不编造)、贡献核查(idea 缺失或未填模板就硬停)。
+- **数字不经模型之手(RES 占位符)**:`data/` 里的每个数值结果有稳定 ID(`data/res-ids.md`
+  的 `RES-001…`);数据章起草时结果数字**只能逐字复制 `{{RES-xxx}}` 占位符**,定稿时由
+  程序替换成记录值——模型结构性写不了错数字,未知 ID 留显式空洞不编值。改了提示词或
+  skill 再跑,旧产物按「阶段指纹」判陈旧硬停,不会被静默复用。
+- **三道防幻觉门禁**:数字对账(正文每个数对回 `data/`,占位符替换后终稿再对一轮)、
+  引用闭合(只从你给的文献补 `\cite`,匹配不到交人工、绝不编造)、贡献核查(idea 缺失
+  或未填模板就硬停)。
 - **收敛循环**:冻结首轮评审的"必须修"清单当验收单,起草者改一轮、评审者验一轮,
   直到清空或跑满上限,不空转。
 - **跨章交接**:每章定稿后自动把术语和结论写进共享状态文件,下一章沿用——避免每章
@@ -66,6 +71,8 @@ cp .env.example .env            # 填三组 provider/model/key(OpenAI 或 Claude
 cp idea.example.md idea.md      # 填你的贡献/核心洞察/方法设计(最重要)
 cp outline.example.md outline_draft.md  # 填章节骨架(表格)
 
+python run.py --intake          # 可选:散装材料先扔 inbox/(idea 文档/code/data/文献),
+                                #   纯 Python 盘点(零模型调用)→ idea.md 转正 + 对账报告
 python run.py --expand          # 规划者读 idea.md 补每章要点
                                 #   → 生成 outline.md(英文版) + outline.zh.md(中文版)
                                 #   普通章拆 ### 小节;短章(abstract/conclusion/...)要点挂 ## 下
@@ -82,6 +89,14 @@ python run.py --all --progress  # 按 outline 顺序跑全部,失败即停
 **中英双轨**:`outline_draft.md` 是骨架,`--expand` 一次生成英文版 `outline.md`(Agent 读)
 和中文版 `outline.zh.md`(你看/改)。你只改中文版,`--init` 时框架自动把中文翻译成英文
 覆盖 `outline.md`,再生成工作区——**你永远只维护中文,Agent 永远吃英文**。
+
+**inbox 散装材料**(`--intake`,可选):材料零散时不必手工分拣,直接扔进 `inbox/`
+(目录名/文件名是角色信号,如 `reference/`、`data/`、`模型说明.md`)。`--intake`
+纯 Python 盘点(不调模型):找到 idea 文档并**逐字转正**为 `idea.md`(多候选不猜,
+`--intake --idea <path>` 绑定;你手改过的 `idea.md` 绝不覆盖)、盘点 data/ 里哪些文件
+能被结果加载器读进(`xlsx`/`mat` 会提示转存 csv/json)、统计代码与文献。
+报告与清单落 `var/intake/`;材料没变时重跑直接跳过。`data/` **不搬运**——想进正文的
+数据文件要自己挪进 `data/`(报告会提示)。
 
 **短章**(`abstract`/`conclusion`/`limitations`/`discussion`,200-600 词)**不拆 `###` 小节**,
 要点直接写在 `##` 章标题下,单段起草;字数标在 `##` 行(如 `## 1. Abstract (~200 words)`)。

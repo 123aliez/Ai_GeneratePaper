@@ -74,6 +74,8 @@ _DEFAULT_LEVELS = frozenset({LOW, MEDIUM, HIGH})
 CAPABILITIES = {
     # OpenAI：GPT-5.x 六档全支持（含 none/off）。
     ("openai", "gpt-5"): frozenset(ALL_LEVELS),
+    # OpenAI：GPT-6.x 六档全支持（网关 gpt-6-luna 实测接受 reasoning_effort=max）。
+    ("openai", "gpt-6"): frozenset(ALL_LEVELS),
     # Anthropic —— Opus
     ("anthropic", "claude-opus-4-5"): frozenset({LOW, MEDIUM, HIGH}),
     ("anthropic", "claude-opus-4-6"): frozenset({LOW, MEDIUM, HIGH, MAX}),

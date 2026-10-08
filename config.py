@@ -51,6 +51,21 @@ IDEA_PATH = Path(os.getenv("IDEA_PATH") or (PROJECT_ROOT / "idea.md"))
 # this index is only for the agents' navigation, never for verification.
 DATA_INDEX_PATH = Path(os.getenv("DATA_INDEX_PATH") or (DATA_ROOT / "data-index.md"))
 
+# ── Inbox 前处理层（--intake，可选入口）─────────────────────────────────
+# 散装材料投放区：作者把 idea 文档 / 代码 / 数据 / 文献等乱扔进 inbox/，
+# `python run.py --intake`（纯 Python、零模型调用）扫描盘点 → 产出报告与
+# manifest → 把选定的 idea 候选逐字转正为 idea.md。流水线本身只认三份事实源
+# （idea.md / outline.md / data/），inbox 不改变任何下游契约。
+# INBOX_ROOT 从 PROJECT_ROOT 派生（非硬编码）→ 平台注入 PAPER_RUNTIME_ROOT 时
+# inbox 自动落进任务 work/，server/ 将来接入只需 materialize 多复制一个 inbox/
+# 再先跑一次 `run.py --intake` 子进程。env 可覆盖，与 DATA_ROOT 同款约定。
+INBOX_ROOT = Path(os.getenv("INBOX_ROOT") or (PROJECT_ROOT / "inbox"))
+# 盘点产物必须在 inbox/ 之外：写进 inbox 会改变其内容哈希，幂等跳过永不成立。
+# var/ 已被 .gitignore 覆盖（运行时状态，不入库）。
+INTAKE_STATE_DIR = Path(os.getenv("INTAKE_STATE_DIR") or (PROJECT_ROOT / "var" / "intake"))
+INBOX_MANIFEST_PATH = INTAKE_STATE_DIR / "inbox-manifest.json"
+INBOX_REPORT_PATH = INTAKE_STATE_DIR / "inbox-report.md"
+
 # Kept as a str for parity with the survey engine's tool code.
 PAPER_ROOT = str(WORKSPACE_ROOT)
 

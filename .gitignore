@@ -47,6 +47,9 @@ outline.zh.md
 # 模板与正式引用库 references/bibliography.md 仍进版本库。
 references/candidates.md
 
+# inbox 散装材料(--intake 输入区):用户本地实验材料,与 data/ 同待遇不入库。
+inbox/**
+
 # 项目状态文档(PROJECT.md / PROGRESS.md):本地开发用,不进版本库。
 PROJECT.md
 PROGRESS.md
