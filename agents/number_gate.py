@@ -412,6 +412,11 @@ def run_number_gate(draft_path: str, data_root: str, tol: float = 0.01):
 
     Missing files are handled gracefully (no exception). Each mismatch message
     reads: ``[NUMBER-MISMATCH] 正文 '82.3%' 但 results['run0.accuracy']=0.918``.
+
+    演进点②适配:进入对账前先剥离 ``{{RES-xxx}}`` 占位符与 ``⟨未知结果 xxx⟩``
+    标记 —— 占位符编号不是实验证据,不剥会把 "001" 当成数字误报。占位符本身
+    的正确性(未知 ID、装配件替换)由 result_ids / reviewer 负责,这道门只查
+    "手打的结果数字"(残留字面值 = 起草违纪的痕迹,恰是它该抓的)。
     """
     if not os.path.isfile(draft_path):
         return False, [f"[NUMBER-GATE] draft file not found: {draft_path}; cannot verify numbers."]
@@ -421,6 +426,12 @@ def run_number_gate(draft_path: str, data_root: str, tol: float = 0.01):
             text = f.read()
     except OSError as e:
         return False, [f"[NUMBER-GATE] could not read draft {draft_path}: {e}"]
+
+    try:
+        from .result_ids import strip_placeholders
+        text = strip_placeholders(text)
+    except Exception:
+        pass  # 剥离失败退回原文:对账照常跑,不因适配层缺席而失效
 
     results = load_results_store(data_root)
     if not results:

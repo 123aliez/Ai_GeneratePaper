@@ -214,8 +214,11 @@ def test_review_criteria_follow_family():
           "Do NOT demand more experimental numbers" in idea_clause, idea_clause[:400])
     check("reviewer is told an advisory gate means an empty store is not a defect",
           "ADVISORY" in idea_clause, idea_clause)
-    check("reviewer is told to check every number against data-index for a data chapter",
-          "data-index.md" in data_clause, data_clause[:400])
+    # 演进点②:数字可溯性从"data-index.md 逐字出现"升级为"RES 占位符"——
+    # 占位符本身就是溯源凭证,评审的职责变成抓"手打字面值/未知 ID"。
+    check("reviewer is told to flag literal numbers instead of RES placeholders",
+          "res-ids.md" in data_clause and "placeholder" in data_clause,
+          data_clause[:400])
 
 
 # ── 4. idea is read whole as the primary input (no context pack) ────────

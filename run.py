@@ -6,6 +6,9 @@ references/ notes when PAPER_MODE=survey. Chapter workspaces live under workspac
 
 写一整篇论文。章节文件夹全部由 outline.md 经 `--init` 生成:
 
+  python run.py --intake              # 可选前置:散装材料放 inbox/ → 盘点报告 + idea 转正
+                                           #   纯 Python 不调模型;报告在 var/intake/
+  python run.py --intake --idea inbox/xxx.md  #   多候选时绑定选定的 idea 文档
   python run.py --expand               # 章节骨架 → Manager 补小节与要点 → outline.expanded.md
                                            #   审阅它,补 (~N words),改名成 outline.md
   python run.py --init                 # outline.md → workspace/<NN-type>/ + 跨章状态
@@ -579,12 +582,53 @@ def run_all_chapters(draft_agent, review_agent, manager_agent) -> int:
     return 0
 
 
+def run_intake_cli() -> int:
+    """`--intake`:散装材料前处理(纯 Python,零模型调用)。
+
+    核心逻辑在 agents.inbox_intake.run_intake:扫 inbox/ → 角色盘点 →
+    报告与 manifest 落 var/intake/ → 把选定的 idea 候选逐字转正为 idea.md。
+    这里只做终端 banner 与下一步指引,风格对齐 run_retrieve_cli。
+    """
+    from config import INBOX_ROOT, INTAKE_STATE_DIR
+    from agents.inbox_intake import run_intake
+
+    args = sys.argv[1:]
+    forced = None
+    if "--idea" in args:
+        i = args.index("--idea")
+        if i + 1 >= len(args):
+            print("Error: --idea 需要一个路径参数:python run.py --intake --idea inbox/xxx.md")
+            return 2
+        forced = args[i + 1]
+
+    print(f"\n{'='*60}")
+    print(f"inbox 盘点(可选前置):散装材料 → 报告 + idea 转正(不调模型)")
+    print(f"{'='*60}")
+    print(f"  · Inbox:     {INBOX_ROOT}")
+    print(f"  · 报告:      {INTAKE_STATE_DIR}/inbox-report.md")
+
+    code, _manifest = run_intake(forced_idea=forced)
+    if code == 0:
+        print(f"\n下一步:看报告 → 搬数据进 data/ → 写 outline_draft.md → --expand → --init")
+    return code
+
+
 def main():
     # --retrieve 是独立命令,禁止与章名、--all、--init、--expand 等组合,避免参数被静默吞掉。
     if "--retrieve" in sys.argv[1:] and sys.argv[1:] != ["--retrieve"]:
         print("Error: --retrieve 是独立命令,不能与章名、--all、--init 或其它参数组合。")
         print("Run: python run.py --retrieve")
         sys.exit(2)
+
+    # --intake 同为独立命令,只可与 --idea <path> 组合(多候选绑定时用)。
+    if "--intake" in sys.argv[1:]:
+        rest = [a for a in sys.argv[1:] if a != "--intake"]
+        ok = (not rest) or (len(rest) == 2 and rest[0] == "--idea")
+        if not ok:
+            print("Error: --intake 是独立命令,只可与 --idea <path> 组合。")
+            print("Run: python run.py --intake [--idea inbox/xxx.md]")
+            sys.exit(2)
+        sys.exit(run_intake_cli())
 
     if "--list" in sys.argv:
         list_paper_folders()

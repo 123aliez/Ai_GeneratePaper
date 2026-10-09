@@ -11,10 +11,23 @@ from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).parent / ".env", override=True)
 
-# ── Project layout (all relative to this file's directory) ──────────────
-PROJECT_ROOT = Path(__file__).resolve().parent
-DATA_ROOT = PROJECT_ROOT / "data"            # user-provided experiment results
-WORKSPACE_ROOT = PROJECT_ROOT / "workspace"  # section drafts / reviews / finals
+# ── 平台运行根目录注入（多用户平台用；CLI 单机模式完全不受影响）──────────
+# 现有引擎在 import 时就 ``from config import IDEA_PATH`` 冻结路径，所以多任务隔离
+# 靠「每任务一个全新子进程，在 import config 之前注入 PAPER_RUNTIME_ROOT」实现：
+# 平台把该环境变量指向任务的 work/ 目录，config 据此把 PROJECT_ROOT 重定向过去，
+# idea/data/workspace/references 全部级联到任务专属目录内。
+# 留空（CLI 模式）→ PROJECT_ROOT 仍是 config.py 所在目录，行为与改造前逐字节一致。
+_PAPER_RUNTIME_ROOT = os.environ.get("PAPER_RUNTIME_ROOT")
+if _PAPER_RUNTIME_ROOT:
+    PROJECT_ROOT = Path(_PAPER_RUNTIME_ROOT).resolve()
+else:
+    PROJECT_ROOT = Path(__file__).resolve().parent
+
+# ── Project layout ──────────────────────────────────────────────────────
+# 注意：PROJECT_ROOT 在平台子进程模式下被重定向到任务 work 目录；DATA_ROOT /
+# WORKSPACE_ROOT / REFERENCES_ROOT 都从这里派生，随之落到任务专属目录内。
+DATA_ROOT = Path(os.getenv("DATA_ROOT") or (PROJECT_ROOT / "data"))            # user-provided experiment results
+WORKSPACE_ROOT = Path(os.getenv("WORKSPACE_ROOT") or (PROJECT_ROOT / "workspace"))  # section drafts / reviews / finals
 REFERENCES_ROOT = PROJECT_ROOT / "references"  # bibliography + reading notes
 REFERENCE_INDEX_PATH = REFERENCES_ROOT / "index.md"
 BIBLIOGRAPHY_PATH = REFERENCES_ROOT / "bibliography.md"
@@ -37,6 +50,21 @@ IDEA_PATH = Path(os.getenv("IDEA_PATH") or (PROJECT_ROOT / "idea.md"))
 # have edited it). The number gate still reads the raw data/ as ground truth;
 # this index is only for the agents' navigation, never for verification.
 DATA_INDEX_PATH = Path(os.getenv("DATA_INDEX_PATH") or (DATA_ROOT / "data-index.md"))
+
+# ── Inbox 前处理层（--intake，可选入口）─────────────────────────────────
+# 散装材料投放区：作者把 idea 文档 / 代码 / 数据 / 文献等乱扔进 inbox/，
+# `python run.py --intake`（纯 Python、零模型调用）扫描盘点 → 产出报告与
+# manifest → 把选定的 idea 候选逐字转正为 idea.md。流水线本身只认三份事实源
+# （idea.md / outline.md / data/），inbox 不改变任何下游契约。
+# INBOX_ROOT 从 PROJECT_ROOT 派生（非硬编码）→ 平台注入 PAPER_RUNTIME_ROOT 时
+# inbox 自动落进任务 work/，server/ 将来接入只需 materialize 多复制一个 inbox/
+# 再先跑一次 `run.py --intake` 子进程。env 可覆盖，与 DATA_ROOT 同款约定。
+INBOX_ROOT = Path(os.getenv("INBOX_ROOT") or (PROJECT_ROOT / "inbox"))
+# 盘点产物必须在 inbox/ 之外：写进 inbox 会改变其内容哈希，幂等跳过永不成立。
+# var/ 已被 .gitignore 覆盖（运行时状态，不入库）。
+INTAKE_STATE_DIR = Path(os.getenv("INTAKE_STATE_DIR") or (PROJECT_ROOT / "var" / "intake"))
+INBOX_MANIFEST_PATH = INTAKE_STATE_DIR / "inbox-manifest.json"
+INBOX_REPORT_PATH = INTAKE_STATE_DIR / "inbox-report.md"
 
 # Kept as a str for parity with the survey engine's tool code.
 PAPER_ROOT = str(WORKSPACE_ROOT)

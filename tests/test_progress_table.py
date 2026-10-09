@@ -31,6 +31,9 @@ class FullRecordingAgent:
     """跑完整条流水线用的假 Agent:按 prompt 里出现的产物名写出对应文件,
     覆盖所有 Stage 的 verify() 检查(含 review/final)。"""
 
+    # 离线测试桩标记:跳过 Stage 2 的单轮直调真实模型路径(同 test_pipeline_routing)。
+    _offline_test_stub = True
+
     def __init__(self, folder: str):
         self.folder = folder
         self.prompts = []

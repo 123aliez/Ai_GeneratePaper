@@ -33,6 +33,11 @@ class RecordingAgent:
     """Stands in for a CodeAgent: records the prompt, writes the artifact the
     orchestrator will verify, and returns. Lets a whole run complete offline."""
 
+    # 告诉 orchestrator 这是离线测试桩:Stage 2 的 review-v1.json 单轮直调路径
+    # (structured_call → get_review_model → 真实网关)据此跳过,仍由本桩按
+    # CodeAgent 旧路径补写产物,离线套件不发任何 API 请求。
+    _offline_test_stub = True
+
     def __init__(self, folder: str):
         self.folder = folder
         self.prompts = []

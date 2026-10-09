@@ -1,0 +1,34 @@
+# 生产等价集成测试（需 docker daemon；本机无权限时仅在目标服务器跑）
+# 文档 §3：用真 PostgreSQL + Redis + Celery prefork 验证 broker/ack/锁语义。
+#
+# 用法：docker compose -f server/docker-compose.test.yml up --abort-on-container-exit --exit-code-from tester
+
+services:
+  test-postgres:
+    image: postgres:16
+    environment: { POSTGRES_DB: paper, POSTGRES_USER: paper, POSTGRES_PASSWORD: paper }
+    healthcheck: { test: ["CMD-SHELL","pg_isready -U paper"], interval: 5s, timeout: 3s, retries: 10 }
+
+  test-redis:
+    image: redis:7
+    healthcheck: { test: ["CMD","redis-cli","ping"], interval: 5s, timeout: 3s, retries: 10 }
+
+  tester:
+    build:
+      context: ..
+      dockerfile: server/Dockerfile
+    depends_on:
+      test-postgres: { condition: service_healthy }
+      test-redis: { condition: service_healthy }
+    environment:
+      DATABASE_URL: postgresql+psycopg://paper:paper@test-postgres:5432/paper
+      REDIS_URL: redis://test-redis:6379/0
+      CELERY_BROKER_URL: redis://test-redis:6379/0
+      CELERY_RESULT_BACKEND: redis://test-redis:6379/0
+      PAPER_RUN_STORE_ROOT: /tmp/runs
+      # PG 集成：跑一遍 DB 测试，验证 advisory lock / SKIP LOCKED / JSONB 在 PG 上行为一致
+    command: >
+      bash -c "python -c 'from server.db import init_db; init_db(drop_first=True); print(\"PG schema OK\")'
+      && python server/tests/test_db_repository.py
+      && python server/tests/test_dispatcher.py
+      && echo 'PG integration tests passed'"
