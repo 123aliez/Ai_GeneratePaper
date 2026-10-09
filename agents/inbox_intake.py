@@ -507,15 +507,25 @@ def run_intake(forced_idea: str | None = None,
 
     # 幂等检查：材料没变 + 报告在 + 本轮没带 --idea + 转正状态一致 → 跳过。
     # 带 --idea 时永不跳过（作者显式换绑必须生效，哪怕材料一个字节没动）。
+    # 转正状态一致分两种：① 上轮机器转正过 → promoted_sha256 须仍匹配 idea.md
+    # 现内容；② 上轮是 existing-kept（作者自有 idea.md，intake 不碰）→ idea.md
+    # 仍存在且非骨架即可——作者删掉/清空它则不跳过，恢复转正考虑。
     if (not forced_idea
             and old and old.get("snapshot_id") == snapshot_id
-            and report_path.is_file()
-            and old.get("idea", {}).get("promoted_sha256")):
-        current_sha = (_sha256_file(idea_file)
-                       if idea_file.is_file() else None)
-        if current_sha == old["idea"]["promoted_sha256"]:
-            print(f"inbox 无变化（{snapshot_id}），跳过。报告：{report_path}")
-            return 0, old
+            and report_path.is_file()):
+        old_idea = old.get("idea", {})
+        if old_idea.get("resolution") == "existing-kept":
+            from .content_source import idea_is_skeleton
+            if (idea_file.is_file()
+                    and not idea_is_skeleton(idea_file.read_text(encoding="utf-8"))[0]):
+                print(f"inbox 无变化（{snapshot_id}），跳过。报告：{report_path}")
+                return 0, old
+        elif old_idea.get("promoted_sha256"):
+            current_sha = (_sha256_file(idea_file)
+                           if idea_file.is_file() else None)
+            if current_sha == old_idea["promoted_sha256"]:
+                print(f"inbox 无变化（{snapshot_id}），跳过。报告：{report_path}")
+                return 0, old
 
     # idea 转正（唯一的写副作用）。--idea 参数允许三种形态：相对 inbox 的
     # 裸文件名、带 inbox/ 前缀、绝对路径——统一剥成相对路径再比对候选表。

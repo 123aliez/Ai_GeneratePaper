@@ -316,6 +316,47 @@ def test_artifact_contract():
     check("报告含转正结果", "已转正" in report and "模型说明.md" in report)
 
 
+def test_existing_kept_idempotent_skip_and_recovery():
+    """existing-kept 路径的幂等(真实烟测 2026-10-09 暴露的缺口)。
+
+    作者自有 idea.md(非骨架)时 intake 不碰它(promoted_sha256=None),旧幂等
+    条件要求 promoted_sha256 存在 → 每次重跑都全量重扫重写报告。修复后:
+    材料不变 + idea.md 仍非骨架 → 跳过;作者删掉 idea.md → 不跳过,恢复转正。
+    """
+    root = make_root()
+    write(root, "inbox/模型说明.md", IDEA_BODY)
+    write(root, "idea.md", "作者自有 idea 文档，内容足够长以越过骨架门禁的四十词阈值，"
+                          "代表已有的真实 idea.md，intake 不得覆盖。")
+    state = root / "var" / "intake"
+    code1, m1 = ii.run_intake(inbox_root=root / "inbox",
+                              idea_path=root / "idea.md", state_dir=state)
+    check("existing-kept 首跑退出 0",
+          code1 == 0 and m1["idea"]["resolution"] == "existing-kept"
+          and m1["idea"]["promoted_sha256"] is None)
+    check("existing-kept 不写 inbox 候选", (root / "idea.md").read_text(
+        encoding="utf-8").startswith("作者自有"))
+    mtime = (state / "inbox-manifest.json").stat().st_mtime_ns
+    code2, m2 = ii.run_intake(inbox_root=root / "inbox",
+                              idea_path=root / "idea.md", state_dir=state)
+    check("材料未变第二次跳过(manifest mtime 不变)",
+          code2 == 0 and (state / "inbox-manifest.json").stat().st_mtime_ns == mtime)
+    # 作者删掉自有 idea.md → 幂等不再成立,恢复考虑转正(auto-single)
+    (root / "idea.md").unlink()
+    code3, m3 = ii.run_intake(inbox_root=root / "inbox",
+                              idea_path=root / "idea.md", state_dir=state)
+    check("idea.md 被删后不再跳过,恢复转正",
+          code3 == 0 and (root / "idea.md").is_file()
+          and (root / "idea.md").read_bytes()
+          == (root / "inbox/模型说明.md").read_bytes())
+    # 转正后再跑 → 回到 machine-promoted 幂等分支,同样跳过
+    mtime4 = (state / "inbox-manifest.json").stat().st_mtime_ns
+    code4, _ = ii.run_intake(inbox_root=root / "inbox",
+                             idea_path=root / "idea.md", state_dir=state)
+    check("转正后幂等跳过仍然生效",
+          code4 == 0
+          and (state / "inbox-manifest.json").stat().st_mtime_ns == mtime4)
+
+
 def test_zip_flagged_in_report():
     # .zip 归 unknown;报告未知角色表不崩、给出提示(v1 不自动解压)。
     root = make_root()
