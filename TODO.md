@@ -1,7 +1,9 @@
 # TODO — 待处理清单
 
-> 框架代码已建成并离线验证(五套测试全绿),但**从未用真 API + 真数据跑过一整篇**。
-> 下面按"卡住流程 / 没验证 / 代码缺口"三类排。
+> ~~框架代码已建成并离线验证(五套测试全绿),但**从未用真 API + 真数据跑过一整篇**。~~
+> **更新(2026-10-08)**:端到端已用真网关(gpt-6-luna)+ 编造的 SpecNet 草稿完整跑通
+> 两章六阶段(见 PROJECT.md 进度记录);下面第 7~13、19 项的"从未验证"多数已有答案。
+> 离线测试现为 11 套 153 项全绿。
 
 ---
 
@@ -43,8 +45,9 @@
 | 16 | **codex 审查剩余 Important / Minor** | 多数是健壮性打磨(防 SSRF、真 web 检索等)。在"web 检索默认关"前提下触发概率低 | 延后,等真数据暴露问题再针对性修 |
 | 17 | **`PAPER_MODE=survey` 路径在本项目里是残留** | 从 survey 复制来的分支,本项目没有 `paper/00 Background` 那套目录。已加 `_assert_survey_mode` 守卫,非 survey 模式下调用会明确抛错而非静默读到不存在的文件 | 可以删,但守卫已足够;留着供对照 |
 | 18 | **`latex/main.tex` 是骨架** | 编译 PDF 时才需要,正文由 Agent 产出或你填 | 到编译阶段再处理 |
-| 19 | **端到端没跑过真模型** | 六阶段流水线、分段路由都只用假 Agent 验过接线 | 属于第 7~13 项的总和 |
+| 19 | ~~端到端没跑过真模型~~ | 已跑通(2026-10-08,网关 gpt-6-luna,SpecNet 两章六阶段:RES 占位符 0 残留/收敛一轮过/指纹记账闭环/跨章状态齐备)。剩余未知:更多章节类型(intro/related/abstract)与真实 idea 的表现 | 后续用真课题跑一篇完整论文 |
 | 20 | **指纹碰撞(备选)** | brief 指纹取 sha256 前 12 位。两章内容不同但指纹相同会让 brief 误判为"已生成"——实际只会改变章标题/type/小节/要点之一就会换指纹,碰撞概率极低 | 当前不修,等真出现再处理 |
+| 21 | **agent 偶发"响应成功但不写文件"** | 网关/模型单次行为(2026-10-08 全链路测试 Stage 3 Round 1 出现一次,重跑即过)。`run_agent_stage` 兜底只覆盖异常路径,正常返回但产物缺失走下游 MISSING 硬停 | 已确认非代码缺陷;重跑即续。若高频出现,考虑在 run_agent_stage 加"产物缺失也重试"逻辑 |
 
 ---
 
@@ -65,23 +68,35 @@
 - **`chapter_fingerprint` 改用 sha256**(原先用内置 `hash()`,受 `PYTHONHASHSEED` 影响,
   `--init` 与运行是两次进程,指纹永远对不上)
 - **删掉逐章模式**:架构简化为单一整篇路径,章节文件夹一律由 outline.md 经 --init 生成
+- **Model 层瞬时重试**(2026-08):`retry_policy` + `resilient_model`,网关抖动从"重启整个
+  CodeAgent(分钟级)"收拢到 Model 层重发(秒级),真实高峰期 4 次自然抖动 100% 秒级自愈
+- **多用户 Web 平台层**(2026-08,分支 `feat/web-platform`):`server/`(pipeline 子进程隔离 +
+  db/dispatcher/worker/web + docker-compose),不动 agents/
+- **证据硬化**(2026-10-08,分支 `feat/evidence-hardening`):RES 数字占位符范式(`result_ids.py`,
+  起草只许引 `{{RES-xxx}}`、定稿程序替换、未知 ID 留洞不编值)+ 阶段指纹记账(`skills_registry.py`,
+  提示词/skill/模型变更后旧产物硬停不静默复用)+ review JSON 单轮直调(`structured_call.py`)
+- **inbox 散装材料前处理层**(2026-10-08,同分支):`--intake` 纯 Python 盘点,idea 文档逐字转正,
+  data 对账同判据只盘点不搬运(材料归位一律作者手动,不做自动领养)
+- **端到端真网关验证**(2026-10-08):SpecNet 编造草稿两章六阶段全绿,RES 替换 0 残留、
+  收敛循环一轮通过、指纹记账闭环、resume 三类跳过全部生效
 
 ---
 
 ## 五、建议的推进顺序
 
 ```
-1. 填 idea.md(只填第 3、4 节也够起步)
-2. cp outline.example.md outline.md,写好章节结构
+1. 填 idea.md(只填第 3、4 节也够起步;材料零散可先扔 inbox/ 跑 python run.py --intake 转正)
+2. cp outline.example.md outline_draft.md,写好章节骨架
 3. 配 .env 的三组 key
-4. python run.py --init          # 生成各章工作区
-5. python run.py --list          # 确认每章的类型对不对
-6. 先跑纯 idea 类章节(不需要 data/):
+4. python run.py --expand        # 骨架 → 中英双份 outline
+5. python run.py --init          # 生成各章工作区
+6. python run.py --list          # 确认每章的类型对不对
+7. 先跑纯 idea 类章节(不需要 data/):
    python run.py "04-method" --progress
-7. 看 route / write-mode 两行输出对不对;看 evidence-pack.md 质量
-8. 实验跑完后补 data/,再跑 results 章
-9. 全篇:python run.py --all --progress
-10. python latex/build.py
+8. 看 route / write-mode 两行输出对不对;看 evidence-pack.md 质量
+9. 实验跑完后补 data/,再跑 results 章
+10. 全篇:python run.py --all --progress
+11. python latex/build.py
 ```
 
 第 6 步是最省的验证路径——方法章不需要实验数据,可以在实验还没跑完时就验证整条流水线。

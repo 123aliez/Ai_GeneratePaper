@@ -47,11 +47,14 @@ python latex/build.py --check-only # citation closure only
 python tests/test_routing.py           # type routing, aliases, per-section routing
 python tests/test_outline.py           # outline parsing, brief round-trip, chapter position, short-chapter synthesis
 python tests/test_pipeline_routing.py  # full pipeline with fake agents, gate wiring
+python tests/test_progress_table.py    # per-stage progress table rendering
 python tests/test_optimizations.py     # part sizing, route fingerprint, tool chain
 python tests/test_expand.py            # --expand constraints + validate_expansion + short chapters
 python tests/test_model_factory.py     # dual-protocol model router + reasoning_level mapping
+python tests/test_resilient_model.py   # Model-layer transient retry: error classify, backoff schedule, atomic buffer replay
 python tests/test_retrieve.py          # --retrieve query generation + URL dedupe + CAN- formatting
 python tests/test_evidence_hardening.py  # RES placeholders, skill registry + stage fingerprints, structured call
+python tests/test_intake.py            # inbox intake: role classify, snapshot idempotence, idea promotion decisions, data audit parity
 ```
 
 **In experiment mode (`PAPER_MODE=experiment`, the default), `--progress` is the only valid run path.** `--direct`, `--stream-raw`, and the default Manager-driven path are survey-only and explicitly refused. This is enforced in both `run.py` and `_assert_survey_mode()` in the orchestrator.
