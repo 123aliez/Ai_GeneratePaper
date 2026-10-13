@@ -3,11 +3,34 @@ from pathlib import Path
 from smolagents import tool
 
 _current_agent = "Agent"
+# 写入作用域:章节流水线运行时设为本章目录,write_file 只允许写进这里。
+# idea.md / data/ / outline.md / references/ 是作者的输入,Agent 物理上不可改——
+# 仅靠提示词"不要改"约束不住。None = 不限制(--expand/--init/--retrieve 需要
+# 写 outline.md / data-index.md / retrieval-queries.json)。
+_write_scope: str | None = None
 
 
 def set_agent_context(name: str) -> None:
     global _current_agent
     _current_agent = name
+
+
+def set_write_scope(root: str | None) -> None:
+    """限定 write_file 只能写 root 目录内(含子目录);None 解除限制。"""
+    global _write_scope
+    _write_scope = os.path.realpath(root) if root else None
+
+
+def _outside_write_scope(file_path: str) -> bool:
+    if _write_scope is None:
+        return False
+    # realpath 解析 .. 与符号链接,防止 "chapter/../../idea.md" 之类绕过。
+    target = os.path.realpath(file_path)
+    try:
+        return os.path.commonpath([target, _write_scope]) != _write_scope
+    except ValueError:
+        # Windows 不同盘符(C: vs D:)无公共路径 → 必然在作用域外,拒绝而不是崩溃。
+        return True
 
 
 def _rel(path: str) -> str:
@@ -80,6 +103,11 @@ def write_file(file_path: str, content: str) -> str:
         file_path: Absolute or relative path to the file to write.
         content: The text content to write to the file.
     """
+    if _outside_write_scope(file_path):
+        _log("DENIED", file_path)
+        return (f"Error: write refused — '{file_path}' is outside this chapter's folder "
+                f"'{_write_scope}'. Author inputs (idea.md, data/, outline.md, references/) "
+                f"are read-only; write only the chapter artifacts your task names.")
     _log("write_file", file_path)
     dir_name = os.path.dirname(file_path)
     if dir_name:

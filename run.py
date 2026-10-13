@@ -493,6 +493,12 @@ def chapter_is_complete(name: str) -> bool:
             and chapter_recorded_in_cross_state(name))
 
 
+def _verification_tag(folder_path: str) -> str:
+    """汇总表的核验后缀:未核验 → "·未核验";通过或无记录 → ""。"""
+    from agents.orchestrator import read_verification_status
+    return "·未核验" if read_verification_status(folder_path) == "unverified" else ""
+
+
 def _print_paper_table(folders: list[str], rows: list[tuple]) -> None:
     """打印整篇章节汇总表。rows 是 (position, name, status) 列表。
 
@@ -541,16 +547,44 @@ def run_all_chapters(draft_agent, review_agent, manager_agent) -> int:
     chapter_rows = []   # (position, name, status) 用于整篇章节汇总表
     for position, name in enumerate(folders, start=1):
         folder_path = os.path.join(PAPER_ROOT, name)
-        if chapter_is_complete(name):
+        # experiment 模式的"已完成"还要求 Stage 5 交接凭据与当前指纹相符:改了输入、
+        # 删掉陈旧产物重跑到 Stage 4 后中断时,共享状态里还留着旧 claim,只看
+        # final.md + claim 会把该章误判完成、永远跳过新的交接。凭据不符就照常跑
+        # 这一章(前面产物都在,只会重跑 Stage 5;若产物陈旧,章内门禁会硬停)。
+        # survey 模式没有阶段指纹记账,沿用原判定。
+        from agents.orchestrator import chapter_staleness, handoff_is_current
+        experiment = PAPER_MODE == "experiment"
+        if chapter_is_complete(name) and (not experiment or handoff_is_current(folder_path)):
+            # 跳过前先验陈旧:改了 idea.md / data/ / 提示词 / outline 后,"已完成"的章
+            # 是按旧输入写的。原先这里直接跳过,run_4stage 的指纹门禁根本走不到,
+            # 改完 idea 再跑 --all 什么都不会发生。
+            reasons = chapter_staleness(folder_path) if experiment else []
+            if reasons:
+                print(f"\n{'=' * 60}\n[{position}/{len(folders)}] {name} — 已完成但已陈旧\n{'=' * 60}")
+                for line in reasons:
+                    print(f"[run-all] 陈旧: {line}")
+                print(f"[run-all] 停止:备份需要保留的内容后删除上述陈旧产物,再重跑 --all"
+                      f"(不会自动删除任何文件)。")
+                chapter_rows.append((position, name, "[陈旧] 需重跑"))
+                _print_paper_table(folders, chapter_rows)
+                return 1
             print(f"\n{'=' * 60}\n[{position}/{len(folders)}] {name} — 已完成,跳过\n{'=' * 60}")
             skipped.append(name)
-            chapter_rows.append((position, name, "[完成] 跳过"))
+            chapter_rows.append((position, name, f"[完成{_verification_tag(folder_path)}] 跳过"))
             continue
 
         print(f"\n{'=' * 60}\n[{position}/{len(folders)}] {name}\n{'=' * 60}")
         result = run_4stage_with_progress(
             draft_agent, review_agent, folder_path, manager_agent)
 
+        if result.get("route_blocked"):
+            # 门禁硬停(陈旧产物/数据歧义/brief 过期等):原因已在上方日志打印。
+            # 单独处理,免得 final.md 已在时被误报成"跨章交接未完成"。
+            chapter_rows.append((position, name, "[失败] 门禁硬停"))
+            print(f"\n[run-all] 停止:{name} 被门禁拦下({result['route_blocked']})。")
+            print(f"[run-all] 按上方日志处理后重跑 --all。")
+            _print_paper_table(folders, chapter_rows)
+            return 1
         if not os.path.exists(os.path.join(folder_path, "final.md")):
             # pre-flight 拒绝(缺 idea.md / 缺 data/)或某阶段失败,都会走到这里。
             # 后面的章节大概率同因失败,而且前章的 cross-chapter-state 没写成,
@@ -572,10 +606,17 @@ def run_all_chapters(draft_agent, review_agent, manager_agent) -> int:
             _print_paper_table(folders, chapter_rows)
             return 1
         completed.append(name)
-        chapter_rows.append((position, name, "[完成]"))
+        chapter_rows.append((position, name, f"[完成{_verification_tag(folder_path)}]"))
 
     print(f"\n{'=' * 60}")
     print(f"[run-all] 全部完成:本次生成 {len(completed)} 章,跳过 {len(skipped)} 章。")
+    unverified = [name for name in folders
+                  if _verification_tag(os.path.join(PAPER_ROOT, name))]
+    if unverified:
+        print(f"[run-all] 其中 {len(unverified)} 章已生成但未通过证据核验"
+              f"(原因见各章 verification.md / todo.md):")
+        for name in unverified:
+            print(f"[run-all]   - {name}")
     print(f"[run-all] 各章产物在 {PAPER_ROOT}/<章节>/final.md 与 final.zh.md")
     print(f"[run-all] 编译整篇: python latex/build.py")
     _print_paper_table(folders, chapter_rows)
