@@ -30,6 +30,13 @@ PROMPTS_PATH = Path(__file__).resolve().parent / "prompts.py"
 
 MANIFEST_FILENAME = ".stage-manifest.json"
 
+# 阶段提示词版本。prompts.py 已按内容哈希进指纹,但各阶段的任务提示词写在
+# orchestrator.py / evidence_mining.py 里——哈希整个代码文件会让任何无关改动都
+# 作废全部产物,所以改用手动版本号:**修改阶段任务提示词时把它加 1**,旧产物
+# 随之判陈旧。
+#   1 → 2:Stage 4 定稿改为只基于 draft-v2(不再与 draft-v1 合并)。
+STAGE_PROMPT_VERSION = 2
+
 # 各角色允许装载的 Skill 白名单。不在白名单里的 skills/ 文件编排器不注入,
 # Agent 的自助 read_file 仍可用(向后兼容),但指纹只覆盖白名单文件。
 SKILL_REGISTRY: dict[str, tuple[str, ...]] = {
@@ -108,6 +115,56 @@ def build_skill_injection(role: str) -> str:
     )
 
 
+# ── 作者输入指纹:idea.md / data/ 变了,旧产物不能冒充新跑 ─────────────
+def _sha256_path(path) -> str:
+    p = Path(path)
+    return _sha256_file(p)[:16] if p.is_file() else "missing"
+
+
+def inputs_fingerprint(family: str, idea_path=None, data_root=None) -> dict:
+    """本章依赖的作者输入的内容指纹。返回 {"idea": ..., ["data": ...]}。
+
+    - 所有章节都读 idea.md(idea_clause 注入每个改写正文的阶段)→ 都含 idea;
+    - data/mixed 章节的正文引用结果 → 再含 data。idea 章(方法/引言)不因
+      实验结果变动而整章作废。
+    data 取**数值结果库**(load_results_store 压平后)的规范化哈希,而不是原始
+    文件:data/ 下的 res-ids.md / data-index.md 由程序写入,哈希原始目录会让
+    指纹自己作废自己;只改图片/日志也不应让正文作废。
+    """
+    if idea_path is None or data_root is None:
+        from config import IDEA_PATH, DATA_ROOT
+        idea_path = IDEA_PATH if idea_path is None else idea_path
+        data_root = DATA_ROOT if data_root is None else data_root
+    inputs = {"idea": _sha256_path(idea_path)}
+    if family in ("data", "mixed"):
+        from .number_gate import load_results_store
+        store = load_results_store(str(data_root))
+        canon = json.dumps(store, sort_keys=True, ensure_ascii=False)
+        inputs["data"] = _sha256_text(canon)[:16]
+    return inputs
+
+
+_INPUT_LABELS = {"idea": "idea.md", "data": "data/ 结果库"}
+
+
+def changed_inputs(folder_path: str, artifacts: list[str], inputs: dict) -> list[str]:
+    """对比 manifest 里记录的输入指纹,返回已变化的输入名(如 ["idea.md"])。
+
+    只用于给硬停信息说明原因;判陈旧本身仍由 stale_stage_artifacts 决定。
+    """
+    manifest = load_manifest(folder_path)
+    changed = set()
+    for name in artifacts:
+        entry = manifest.get(name)
+        old = entry.get("inputs") if isinstance(entry, dict) else None
+        if not isinstance(old, dict):
+            continue
+        for k, v in inputs.items():
+            if old.get(k) != v:
+                changed.add(_INPUT_LABELS.get(k, k))
+    return sorted(changed)
+
+
 # ── run manifest:产物级指纹记账 ─────────────────────────────────────────
 def _manifest_path(folder_path: str) -> Path:
     return Path(folder_path) / MANIFEST_FILENAME
@@ -133,33 +190,42 @@ def save_manifest(folder_path: str, manifest: dict) -> None:
 
 def record_stage_fingerprint(folder_path: str, artifact: str,
                              brief_fingerprint: str, stage: str,
-                             model_group: str = "") -> None:
-    """产物生成后记账。brief_fingerprint 是 brief.md 的 outline 指纹。"""
+                             model_group: str = "",
+                             inputs: dict | None = None) -> None:
+    """产物生成后记账。brief_fingerprint 是 brief.md 的 outline 指纹;
+    inputs 是 inputs_fingerprint() 的结果(同时原样存一份,供硬停时说明原因)。"""
     manifest = load_manifest(folder_path)
     manifest[artifact] = {
-        "fingerprint": stage_fingerprint(brief_fingerprint, stage, model_group),
+        "fingerprint": stage_fingerprint(brief_fingerprint, stage, model_group, inputs),
         "stage": stage,
+        "inputs": dict(inputs or {}),
     }
     save_manifest(folder_path, manifest)
 
 
 def stage_fingerprint(brief_fingerprint: str, stage: str,
-                      model_group: str = "") -> str:
-    """阶段指纹 = brief 指纹 + 阶段名 + prompt/skill 内容指纹 + 模型组。
+                      model_group: str = "", inputs: dict | None = None) -> str:
+    """阶段指纹 = brief 指纹 + 阶段名 + prompt/skill 内容指纹 + 阶段提示词版本
+    + 模型组 + 作者输入(idea.md / data/)指纹。
 
     model_group 传 provider/model 的组合串(如同 "openai/gpt-x" 与
     "anthropic/claude-y"):换模型重写是合理诉求,旧产物不该冒充新模型写的。
+    inputs 缺了它,改完 idea.md 或 data/ 再跑,旧稿会被"存在即跳过"静默复用。
     """
-    payload = "|".join([brief_fingerprint, stage, skills_fingerprint(), model_group])
+    inputs_part = json.dumps(inputs or {}, sort_keys=True)
+    payload = "|".join([brief_fingerprint, stage, skills_fingerprint(),
+                        f"pv{STAGE_PROMPT_VERSION}", model_group, inputs_part])
     return _sha256_text(payload)[:16]
 
 
 def stale_stage_artifacts(folder_path: str, artifacts: list[str],
                           brief_fingerprint: str,
-                          model_groups: dict[str, str] | None = None) -> list[str]:
+                          model_groups: dict[str, str] | None = None,
+                          inputs: dict | None = None) -> list[str]:
     """列出"存在但指纹不符/未记账"的产物。
 
     model_groups: {stage: model_group}。缺省时阶段用 "" 占位(不校验模型维)。
+    inputs: inputs_fingerprint() 的结果,必须与记账时同口径。
     返回陈旧文件名列表;不存在或指纹相符的产物不在列表里。
     """
     manifest = load_manifest(folder_path)
@@ -171,7 +237,7 @@ def stale_stage_artifacts(folder_path: str, artifacts: list[str],
             continue
         entry = manifest.get(name)
         expected = stage_fingerprint(brief_fingerprint, _stage_of(name),
-                                     model_groups.get(_stage_of(name), ""))
+                                     model_groups.get(_stage_of(name), ""), inputs)
         if not isinstance(entry, dict) or entry.get("fingerprint") != expected:
             stale.append(name)
     return stale

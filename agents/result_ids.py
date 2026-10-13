@@ -6,8 +6,10 @@
 data/ 结果库(load_results_store 压平的 {metric: float})按下述规则获得稳定 ID:
 - 首次:按 key 字典序分配 RES-001、RES-002…(排序保证同一份 data/ 分配一致);
 - 后续:与 data/res-ids.md 中已有映射合并 —— 旧 ID 永不改号(resume 不漂移),
-  新增 key 在最大编号之后追加;value 一律取当前 data/ 的读数(data/ 改值 →
+  新增 key 在历史最大编号之后追加;value 一律取当前 data/ 的读数(data/ 改值 →
   ID 不变、值更新,这是"编号是引用、值是事实"的正确语义)。
+- key 从 data/ 消失 → 其 ID 转入文件末尾的 "Retired IDs" 列表永久保留,编号
+  永不再分配给别的 key(防"同号不同义");同一 key 重新出现时恢复原 ID。
 
 工作流:
 1. orchestrator 在章节路由后调 ensure_res_ids() 生成/合并 data/res-ids.md;
@@ -25,7 +27,8 @@ import os
 import re
 from pathlib import Path
 
-from .number_gate import load_results_store, _is_number
+from .number_gate import (load_results_store_report, format_store_issues,
+                          ResultsStoreError, _is_number)
 
 RES_IDS_FILENAME = "res-ids.md"
 RES_ID_RE = re.compile(r"\{\{(RES-\d+)\}\}")
@@ -46,6 +49,10 @@ it must be consistent with the value column.
 """
 
 _ROW_RE = re.compile(r"^\|[ \t]*(RES-[0-9]+)[ \t]*\|([^|\r\n]+)\|([^|\r\n]*)\|[ \t]*$")
+# 退役 ID 列表行。故意不用表格行格式:不匹配 _ROW_RE,Agent 读目录时也不会把
+# 退役编号当成可引用的结果。
+_RETIRED_HEADING = "## Retired IDs (do not cite)"
+_RETIRED_RE = re.compile(r"^- (RES-[0-9]+) \(was: (.+)\)$")
 
 
 def _numeric_store(store: dict) -> dict:
@@ -78,39 +85,66 @@ def parse_res_ids_md(text: str) -> dict:
     return mapping
 
 
-def merge_res_ids(store: dict, existing_text: str) -> dict:
-    """把已有 res-ids.md 的映射合并进新分配。
+def parse_retired_ids(text: str) -> dict:
+    """解析退役列表,返回 {res_id: 原 key}。"""
+    mapping = {}
+    for line in text.splitlines():
+        m = _RETIRED_RE.match(line.strip())
+        if m:
+            mapping[m.group(1)] = m.group(2).strip()
+    return mapping
 
-    旧 ID 对应的 key 仍在 store 里 → 保留旧 ID;key 已消失 → 该 ID 不再分配
-    (不复用,防"同号不同义");新 key 按字典序在最大编号后追加。
-    计数基准取全部出现过的旧 ID(含已消失的),不只是存活的——否则删掉最大
-    编号的 key 后写回目录,下一次合并会把该编号发给新 key。
+
+def merge_res_ids_full(store: dict, existing_text: str) -> tuple[dict, dict]:
+    """把已有 res-ids.md(活跃表 + 退役列表)合并进新分配。返回 (活跃表, 退役表)。
+
+    历史映射 = 活跃行 ∪ 退役行(同号冲突时活跃行优先):
+    - 历史 ID 的 key 仍在 store → 保留该 ID(含退役 key 重新出现 → 恢复原 ID);
+    - key 已消失 → 该 ID 进退役表,永久保留,不再分配;
+    - 新 key 按字典序从历史最大编号之后追加。
+    计数基准是全部历史 ID 而不只是存活的:原先删掉最大编号的 key 后写回的
+    目录里不再有这一号,下一次合并就会把它发给新 key。
     """
     numeric = _numeric_store(store)
-    old = parse_res_ids_md(existing_text)
-    merged: dict = {}
+    history = parse_retired_ids(existing_text)
+    history.update(parse_res_ids_md(existing_text))
+    active: dict = {}
+    retired: dict = {}
     used_keys = set()
-    for rid in sorted(old):
-        key = old[rid]
+    for rid in sorted(history, key=lambda r: int(r.split("-")[1])):
+        key = history[rid]
         if key in numeric and key not in used_keys:
-            merged[rid] = {"key": key, "value": numeric[key]}
+            active[rid] = {"key": key, "value": numeric[key]}
             used_keys.add(key)
+        else:
+            retired[rid] = key
     next_num = 1
-    if old:
-        next_num = max(int(r.split("-")[1]) for r in old) + 1
+    if history:
+        next_num = max(int(r.split("-")[1]) for r in history) + 1
     for key in sorted(k for k in numeric if k not in used_keys):
-        merged[f"RES-{next_num:03d}"] = {"key": key, "value": numeric[key]}
+        active[f"RES-{next_num:03d}"] = {"key": key, "value": numeric[key]}
         next_num += 1
     # 按编号排序输出,表格稳定可 diff
-    return {rid: merged[rid] for rid in sorted(merged)}
+    return ({rid: active[rid] for rid in sorted(active)},
+            {rid: retired[rid] for rid in sorted(retired)})
 
 
-def render_res_ids_md(res_map: dict) -> str:
+def merge_res_ids(store: dict, existing_text: str) -> dict:
+    """merge_res_ids_full 的活跃表部分(向后兼容的旧接口)。"""
+    return merge_res_ids_full(store, existing_text)[0]
+
+
+def render_res_ids_md(res_map: dict, retired: dict | None = None) -> str:
     lines = [_HEADER.rstrip("\n")]
     for rid in sorted(res_map):
         entry = res_map[rid]
         # 值列用 repr 级转换(不经 %g 截断六位有效数字),与"never round"纪律一致。
         lines.append(f"| {rid} | {entry['key']} | {fmt_value(entry['value'])} |")
+    if retired:
+        lines += ["", _RETIRED_HEADING, "",
+                  "These IDs belonged to results no longer present in data/. They are",
+                  "kept only so the numbers are never reassigned; never cite them.", ""]
+        lines += [f"- {rid} (was: {key})" for rid, key in sorted(retired.items())]
     return "\n".join(lines) + "\n"
 
 
@@ -125,18 +159,35 @@ def ensure_res_ids(data_root: str) -> tuple[dict, Path | None]:
     """生成/合并 data/res-ids.md。返回 (res_map, 路径)。
 
     空 store → 返回 ({}, None) 不落盘(data/ 没有数字时硬造一张空表只会误导)。
+    结果库有重复 key(不同取值)或读不了的文件 → 抛 ResultsStoreError(调用方硬停)。
     内容未变化时跳过写回(mtime 不抖动)。临时文件带 pid 后缀,避免并发进程
     互踩固定 .tmp 名(os.replace 仍是最后的原子替换)。
     """
-    store = load_results_store(data_root)
-    if not _numeric_store(store):
-        return {}, None
+    store, issues = load_results_store_report(data_root)
+    if issues["duplicates"] or issues["unreadable"]:
+        # 结果库有歧义时不生成目录:RES 编号是"引用",同一 key 两个值就不知道
+        # 引用的是哪一个;读不了的文件意味着作者以为在库里的数字其实缺席。
+        raise ResultsStoreError("data/ 结果库有问题,拒绝生成 RES 目录:\n"
+                                + format_store_issues(issues))
     path = Path(data_root) / RES_IDS_FILENAME
+    if not _numeric_store(store):
+        # 数值结果全部消失但目录还在:把历史 ID 全部转入退役列表再返回"无目录",
+        # 否则旧 ID 仍以"可引用"的活跃行留在 res-ids.md 里,与 data/ 不一致。
+        if path.is_file():
+            old_text = path.read_text(encoding="utf-8", errors="replace")
+            _active, retired = merge_res_ids_full(store, old_text)
+            text = render_res_ids_md({}, retired)
+            if text != old_text:
+                tmp = path.with_suffix(f".md.{os.getpid()}.tmp")
+                tmp.write_text(text, encoding="utf-8")
+                os.replace(tmp, path)
+        return {}, None
     if path.is_file():
-        res_map = merge_res_ids(store, path.read_text(encoding="utf-8", errors="replace"))
+        res_map, retired = merge_res_ids_full(
+            store, path.read_text(encoding="utf-8", errors="replace"))
     else:
-        res_map = assign_res_ids(store)
-    text = render_res_ids_md(res_map)
+        res_map, retired = assign_res_ids(store), {}
+    text = render_res_ids_md(res_map, retired)
     if not (path.is_file() and path.read_text(encoding="utf-8", errors="replace") == text):
         tmp = path.with_suffix(f".md.{os.getpid()}.tmp")
         tmp.write_text(text, encoding="utf-8")

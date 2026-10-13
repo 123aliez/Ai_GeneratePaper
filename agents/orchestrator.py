@@ -577,7 +577,9 @@ def _unresolved_items(verdict) -> list:
     items = verdict.get("items", [])
     if not isinstance(items, list):
         return []
-    return [it for it in items if isinstance(it, dict) and not it.get("resolved")]
+    # 只认 JSON 布尔 true:"false"/"true" 字符串、1、null 一律视为未解决——
+    # 宽松判真会把模型写成字符串的 "false" 当成已解决,假收敛。
+    return [it for it in items if isinstance(it, dict) and it.get("resolved") is not True]
 
 
 def _checklist_verdict(frozen: list, verdict) -> tuple:
@@ -606,21 +608,126 @@ def _checklist_verdict(frozen: list, verdict) -> tuple:
     dupes = [rid for rid in reported_set if reported_ids.count(rid) > 1]
     # Resolved iff every frozen id is present exactly once and marked resolved.
     unresolved_reported = [it for it in items
-                           if isinstance(it, dict) and not it.get("resolved")]
+                           if isinstance(it, dict) and it.get("resolved") is not True]
     all_resolved = (not missing and not unknown and not dupes and not unresolved_reported)
     return all_resolved, missing, unknown, dupes
 
 
-def _escalate_unresolved(folder_path: str, rounds: int) -> None:
-    """At the round cap, append any unresolved checklist items to todo.md and
-    decision.md so they surface for human attention instead of looping forever."""
+def _open_checklist_items(frozen: list, verdict) -> list:
+    """冻结清单中仍未通过的条目(按冻结顺序,每条带 id/location/issue/note)。
+
+    覆盖三种情况:verdict 上报但未解决、verdict 根本没报(缺失 id)、verdict
+    文件缺失/损坏(None → 全部冻结项未通过)。原先只看"上报且未解决",后两种
+    会被静默放过。
+    """
+    frozen_items = [it for it in frozen if isinstance(it, dict)]
+    if not isinstance(verdict, dict) or not isinstance(verdict.get("items"), list):
+        return [dict(it, note="verdict missing or unparseable") for it in frozen_items]
+    reported = {}
+    for it in verdict["items"]:
+        if isinstance(it, dict):
+            reported.setdefault(it.get("id"), []).append(it)
+    open_items = []
+    for it in frozen_items:
+        hits = reported.get(it.get("id"), [])
+        if len(hits) != 1:
+            note = "not reported by verifier" if not hits else "reported more than once"
+            open_items.append(dict(it, note=note))
+        elif hits[0].get("resolved") is not True:
+            open_items.append(dict(it, note=hits[0].get("note") or ""))
+    return open_items
+
+
+def _last_verify_round(folder_path: str) -> int:
+    """已存在的最大 review-verify.round-N.json 的 N;没有则 0。"""
+    rounds = []
+    for p in Path(folder_path).glob("review-verify.round-*.json"):
+        m = re.fullmatch(r"review-verify\.round-(\d+)\.json", p.name)
+        if m:
+            rounds.append(int(m.group(1)))
+    return max(rounds, default=0)
+
+
+def checklist_status(folder_path: str) -> list[str]:
+    """从已有产物确定性地重算 MUST FIX 验收状态,返回未核验原因(空 = 通过)。
+
+    不依赖本次是否跑了收敛循环:断点续跑跳过 Stage 3 时结论一致。
+    """
+    review = read_json_artifact(folder_path, "review-v1.json")
+    frozen = review.get("must_fix") if isinstance(review, dict) else None
+    if not isinstance(frozen, list):
+        return ["review-v1.json 不可解析:MUST FIX 清单无法冻结,修订未经逐条核验"]
+    if not frozen:
+        return []
+    last = _last_verify_round(folder_path)
+    if last == 0:
+        return [f"MUST FIX 清单({len(frozen)} 项)没有任何核验记录"]
+    verdict = read_json_artifact(folder_path, f"review-verify.round-{last}.json")
+    # 验收判据与收敛循环完全一致(_checklist_verdict:缺失/未知/重复 id 都不算通过);
+    # 逐项 open 列表只用来说明原因。
+    all_resolved, _missing, unknown, dupes = _checklist_verdict(frozen, verdict)
+    if all_resolved:
+        return []
+    open_items = _open_checklist_items(frozen, verdict)
+    detail = []
+    if open_items:
+        detail.append(f"仍有 {len(open_items)} 项未通过:"
+                      + ", ".join(str(it.get("id", "?")) for it in open_items))
+    if unknown:
+        detail.append("核验结果含清单外的 id:" + ", ".join(str(x) for x in unknown))
+    if dupes:
+        detail.append("核验结果重复报告:" + ", ".join(str(x) for x in dupes))
+    return [f"MUST FIX 验收未通过(第 {last} 轮核验;{';'.join(detail) or '核验结果不合格'})"]
+
+
+VERIFICATION_FILENAME = "verification.md"
+
+
+def write_verification(folder_path: str, reasons: list[str]) -> dict:
+    """写 verification.md(Python 确定性产物),返回 {"status", "reasons"}。
+
+    "生成完成" ≠ "证据核验通过":final.md 在,不代表数字对得上、MUST FIX 清完了。
+    这份文件让 `--all` 汇总表和作者都能看到区别。
+    """
+    status = "unverified" if reasons else "verified"
+    lines = ["# Verification status (program-generated; do not edit)", "",
+             f"Status: {status.upper()}", ""]
+    if reasons:
+        lines.append("本章已生成,但以下证据核验未通过,定稿前需人工处理:")
+        lines += [f"- {r}" for r in reasons]
+    else:
+        lines.append("终稿数字门禁与 MUST FIX 验收清单均已通过。")
+    Path(os.path.join(folder_path, VERIFICATION_FILENAME)).write_text(
+        "\n".join(lines) + "\n", encoding="utf-8")
+    return {"status": status, "reasons": list(reasons)}
+
+
+def read_verification_status(folder_path: str) -> str:
+    """读 verification.md 的状态:"verified" / "unverified" / ""(不存在或无法识别)。"""
+    path = Path(os.path.join(folder_path, VERIFICATION_FILENAME))
+    if not path.is_file():
+        return ""
+    m = re.search(r"^Status: (VERIFIED|UNVERIFIED)$",
+                  path.read_text(encoding="utf-8", errors="replace"), re.MULTILINE)
+    return m.group(1).lower() if m else ""
+
+
+def _escalate_unresolved(folder_path: str, rounds: int, frozen: list) -> None:
+    """At the round cap, append every checklist item that did not pass to todo.md and
+    decision.md so they surface for human attention instead of looping forever.
+
+    "Did not pass" = reported unresolved, not reported at all, or the verdict file is
+    missing/unparseable (then every frozen item is escalated)."""
     verdict = read_json_artifact(folder_path, f"review-verify.round-{rounds}.json")
-    unresolved = _unresolved_items(verdict)
-    if not unresolved:
+    open_items = _open_checklist_items(frozen, verdict)
+    if not open_items:
         return
     lines = [f"\n## Unresolved after {rounds} revision rounds (needs human attention)"]
-    for it in unresolved:
-        lines.append(f"- [{it.get('id', '?')}] {it.get('location', '')}: {it.get('note') or it.get('issue', '')}")
+    for it in open_items:
+        detail = it.get("note") or it.get("issue", "")
+        if it.get("issue") and it.get("note") and it.get("note") != it.get("issue"):
+            detail = f"{it.get('issue')} — {it.get('note')}"
+        lines.append(f"- [{it.get('id', '?')}] {it.get('location', '')}: {detail}")
     block = "\n".join(lines) + "\n"
     for fname in ("todo.md", "decision.md"):
         path = Path(os.path.join(folder_path, fname))
@@ -632,7 +739,7 @@ def run_convergence_loop(draft_agent, review_agent, folder_path, folder_rel,
                          reference_excerpt, structure,
                          run_agent_stage, verify, mode_clause: str = "",
                          family: str = MIXED, res_ids_path=None,
-                         record_stage=None):
+                         record_stage=None, skills_clause: str = ""):
     """Freeze the first review's MUST FIX list as an acceptance checklist, then
     iterate revise -> verify up to MAX_REVISION_ROUNDS. Each verify round re-checks
     ONLY the frozen checklist (no new issues). Stop when every frozen item is
@@ -658,6 +765,7 @@ def run_convergence_loop(draft_agent, review_agent, folder_path, folder_rel,
             f"{mode_clause}"
             f"Address ALL 'MUST FIX' items. Write '{folder_path}/draft-v2.md' and '{folder_path}/todo.md'. "
             f"If major rewrite, also write '{folder_path}/decision.md'.\n\n{reference_excerpt}"
+            f"{skills_clause}"
         ))
         set_agent_context("Manager")
         return result
@@ -672,6 +780,7 @@ def run_convergence_loop(draft_agent, review_agent, folder_path, folder_rel,
             f"{mode_clause}"
             f"There are no MUST FIX items. Address SHOULD FIX items where supported by evidence, "
             f"then write a clean '{folder_path}/draft-v2.md' and '{folder_path}/todo.md'.\n\n{reference_excerpt}"
+            f"{skills_clause}"
         ))
         set_agent_context("Manager")
         return result
@@ -698,6 +807,7 @@ def run_convergence_loop(draft_agent, review_agent, folder_path, folder_rel,
                 f"Make the concrete change at each item's location. Preserve everything already correct — "
                 f"do not rewrite unaffected paragraphs. Write the full revised draft to '{folder_path}/{draft_round}'.\n\n"
                 f"{reference_excerpt}"
+                f"{skills_clause}"
             ))
             set_agent_context("Manager")
             if not verify([draft_round]):
@@ -745,7 +855,7 @@ def run_convergence_loop(draft_agent, review_agent, folder_path, folder_rel,
 
     # Round cap reached with items still open → promote last round, escalate leftovers.
     _promote_draft(folder_path, f"draft-v2.round-{MAX_REVISION_ROUNDS}.md")
-    _escalate_unresolved(folder_path, MAX_REVISION_ROUNDS)
+    _escalate_unresolved(folder_path, MAX_REVISION_ROUNDS, frozen)
     print("[Manager  ] converge   | round cap reached; unresolved items escalated to todo.md/decision.md", flush=True)
     return last_result
 
@@ -890,6 +1000,123 @@ ROUTE_DEPENDENT_ARTIFACT_GLOBS = [
     "draft-v2.round-*.md",
     "review-verify.round-*.json",
 ]
+
+
+def stage_model_groups() -> dict[str, str]:
+    """{阶段: provider/model}。阶段指纹的模型维;配置读取失败时返回空表(两侧同口径)。"""
+    try:
+        from config import (DRAFT_PROVIDER, DRAFT_MODEL, REVIEW_PROVIDER,
+                            REVIEW_MODEL, MANAGER_PROVIDER, MANAGER_MODEL)
+    except Exception:
+        return {}
+    dg = f"{DRAFT_PROVIDER}/{DRAFT_MODEL}"
+    rg = f"{REVIEW_PROVIDER}/{REVIEW_MODEL}"
+    mg = f"{MANAGER_PROVIDER}/{MANAGER_MODEL}"
+    return {"draft": dg, "evidence": dg, "revise": dg,
+            "review": rg, "verify": rg, "final": rg,
+            "xchap": rg, "plan": mg, "input": mg,
+            "number-gate": "", "citation": ""}
+
+
+def stage_candidates(folder_path: str) -> list[str]:
+    """参与阶段指纹校验的产物名(固定清单 + 收敛轮次 glob)。"""
+    names = list(ROUTE_DEPENDENT_ARTIFACTS)
+    for pattern in ROUTE_DEPENDENT_ARTIFACT_GLOBS:
+        names.extend(p.name for p in sorted(Path(folder_path).glob(pattern)) if p.is_file())
+    return names
+
+
+def stale_chapter_artifacts(folder_path: str, brief_fp: str, family: str,
+                            model_groups: dict | None = None,
+                            inputs: dict | None = None) -> list[str]:
+    """纯函数(不调模型):本章哪些"存在即跳过"产物与当前指纹不符。
+
+    不含 cross-chapter-draft.md:Stage 5 失败会留下未记账的候选文件,它由
+    Stage 5 自己的凭据检查处理(陈旧即删掉重跑),放进这里会把重跑永久堵死。
+    inputs 缺省时按 family 现算。
+    """
+    from .skills_registry import stale_stage_artifacts, inputs_fingerprint
+    if model_groups is None:
+        model_groups = stage_model_groups()
+    if inputs is None:
+        inputs = inputs_fingerprint(family, IDEA_PATH, DATA_ROOT)
+    return stale_stage_artifacts(
+        folder_path, stage_candidates(folder_path), brief_fp, model_groups, inputs)
+
+
+def chapter_staleness(folder_path: str) -> list[str]:
+    """给 `--all` 的跳过判断用:已完成的章节是否仍与当前输入/提示词/outline 一致。
+
+    返回人读的原因行;空列表 = 可以安全跳过。任何异常都按"需要重跑"处理(保守),
+    重跑时 run_4stage_with_progress 的正式门禁会给出准确的硬停信息。
+    """
+    try:
+        from .skills_registry import inputs_fingerprint, changed_inputs
+        folder_path = folder_path.replace("\\", "/")
+        chapter = chapter_name_from_folder(folder_path)
+        brief_fp = read_brief_fingerprint(os.path.join(folder_path, "brief.md"))
+        if not brief_fp:
+            return ["brief.md 不是 --init 生成的(缺 outline 指纹)"]
+        info = resolve_write_mode(chapter)
+        if chapter_fingerprint(info["chapter"]) != brief_fp:
+            return ["outline.md 已改动,brief.md 已过期"]
+        # 结果库歧义/读不了的文件:单章运行时 ensure_res_ids 会拒绝,跳过路径也要拦。
+        # 宽松加载器会丢掉 issues,规范化后的 store 可能完全不变、指纹也不变。
+        from .number_gate import load_results_store_report, format_store_issues
+        _store, issues = load_results_store_report(str(DATA_ROOT))
+        if issues["duplicates"] or issues["unreadable"]:
+            return ["data/ 结果库有歧义或读不了的文件(RES 目录会拒绝生成):"
+                    + format_store_issues(issues).splitlines()[0]]
+        route = resolve_run_route(folder_path, parse_brief_sections(folder_path))
+        inputs = inputs_fingerprint(route["family"], IDEA_PATH, DATA_ROOT)
+        stale = stale_chapter_artifacts(folder_path, brief_fp, route["family"], None, inputs)
+        if not stale:
+            return []
+        changed = changed_inputs(folder_path, stale, inputs)
+        why = f"作者输入已变化: {', '.join(changed)}" if changed else \
+            "输入/提示词/skill/模型指纹不符"
+        return [f"{why};陈旧产物: {', '.join(stale)}"]
+    except Exception as exc:
+        return [f"无法确认是否陈旧({type(exc).__name__}: {str(exc)[:120]})"]
+
+
+def handoff_is_current(folder_path: str) -> bool:
+    """Stage 5 交接凭据是否与当前指纹相符(cross-chapter-draft.md 存在且已按当前
+    brief/输入/模型记账)。
+
+    `--all` 判断"已完成"只看 final.md + 共享状态里的 claim;但改了输入、删掉陈旧
+    产物重跑到 Stage 4 后中断时,共享状态里还留着旧 claim,章节会被误判完成而
+    永远跳过新的交接。凭据不符 → 让该章重跑(前面产物都在,只会重跑 Stage 5)。
+    """
+    try:
+        from .skills_registry import stale_stage_artifacts, inputs_fingerprint
+        folder_path = folder_path.replace("\\", "/")
+        if not os.path.isfile(os.path.join(folder_path, "cross-chapter-draft.md")):
+            return False
+        brief_fp = read_brief_fingerprint(os.path.join(folder_path, "brief.md"))
+        if not brief_fp:
+            return False
+        route = resolve_run_route(folder_path, parse_brief_sections(folder_path))
+        if stale_stage_artifacts(
+                folder_path, ["cross-chapter-draft.md"], brief_fp, stage_model_groups(),
+                inputs_fingerprint(route["family"], IDEA_PATH, DATA_ROOT)):
+            return False
+        # 内容一致性:只比本章自己的条目(`- [<章名>] ` 开头的行)。不比整份文件——
+        # 后续章节交接会改写共享状态的其他部分,整份比对会让每次 --all 都重跑所有
+        # 前序章节的 Stage 5。本章条目被改动/删除 → 交接失效,需重跑。
+        chapter = chapter_name_from_folder(folder_path)
+        xchap = os.path.join(str(Path(folder_path).parent), CROSS_CHAPTER_STATE)
+        if not os.path.isfile(xchap):
+            return False
+        marker = f"- [{chapter}] "
+        own = lambda text: sorted(l.strip() for l in text.splitlines()
+                                  if l.strip().startswith(marker))
+        cand_text = Path(folder_path, "cross-chapter-draft.md").read_text(
+            encoding="utf-8", errors="replace")
+        state_text = Path(xchap).read_text(encoding="utf-8", errors="replace")
+        return bool(own(cand_text)) and own(cand_text) == own(state_text)
+    except Exception:
+        return False
 
 
 def warn_stale_route_artifacts(folder_path: str, folder_rel: str,
@@ -1217,6 +1444,18 @@ def run_4stage_direct(draft_agent, review_agent, folder_path: str) -> dict:
 
 
 def run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manager_agent=None) -> dict:
+    """章节流水线入口。experiment 模式下运行期间把 Agent 的 write_file 限定在本章
+    目录(idea.md / data/ / outline.md / references/ 物理只读),结束后解除。"""
+    from .tools import set_write_scope
+    if PAPER_MODE == "experiment":
+        set_write_scope(folder_path)
+    try:
+        return _run_4stage_with_progress(draft_agent, review_agent, folder_path, manager_agent)
+    finally:
+        set_write_scope(None)
+
+
+def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manager_agent=None) -> dict:
     """4-stage run with fully Python-controlled, human-readable progress output.
 
     All smolagents raw streaming is disabled; every visible line is written by this
@@ -1230,6 +1469,9 @@ def run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manage
     brief_fp = ""
     res_ids_path = None
     _model_groups: dict[str, str] = {}
+    _inputs_fp: dict = {}
+    # 方法论 skill 由编排器确定性注入(进阶段指纹),不再靠 Agent 自助 read_file。
+    draft_skills = review_skills = ""
 
     chapter = chapter_name_from_folder(folder_path)
     # C6: in experiment mode do not inject the survey reference index — the
@@ -1387,8 +1629,14 @@ def run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manage
             # Codex 审查 E2:目录生成失败不能静默继续——数据章的占位符纪律
             # 全靠它,缺席时提示词退回 data-index 表述,模型又回到"手打数字"
             # 的旧世界,产物却混进同一批指纹记账。硬停,与门禁缺席同语义。
-            print(f"[Manager  ] FAIL      | res-ids catalog 生成失败: "
-                  f"{str(exc)[:160]}", flush=True)
+            from .number_gate import ResultsStoreError
+            if isinstance(exc, ResultsStoreError):
+                # 数据歧义清单要完整给作者看(冲突 key + 两处来源),不截断。
+                for line in str(exc).splitlines():
+                    print(f"[Manager  ] FAIL      | {line}", flush=True)
+            else:
+                print(f"[Manager  ] FAIL      | res-ids catalog 生成失败: "
+                      f"{str(exc)[:160]}", flush=True)
             results["route_blocked"] = f"res-ids catalog error: {str(exc)[:120]}"
             return _finish_with_table(folder_path, results)
 
@@ -1398,30 +1646,21 @@ def run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manage
         # 挑出来硬停(不删文件,语义与 warn_stale_route_artifacts 一致:是否作废
         # 由使用者定)。本次改造前生成的老产物没有 manifest 记账,一律视为陈旧——
         # 宁可重跑,不让旧提示词的产物冒充新跑。
+        _model_groups = stage_model_groups()
         try:
-            from config import (DRAFT_PROVIDER, DRAFT_MODEL, REVIEW_PROVIDER,
-                                REVIEW_MODEL, MANAGER_PROVIDER, MANAGER_MODEL)
-            _dg = f"{DRAFT_PROVIDER}/{DRAFT_MODEL}"
-            _rg = f"{REVIEW_PROVIDER}/{REVIEW_MODEL}"
-            _mg = f"{MANAGER_PROVIDER}/{MANAGER_MODEL}"
-            _model_groups = {"draft": _dg, "evidence": _dg, "revise": _dg,
-                             "review": _rg, "verify": _rg, "final": _rg,
-                             "xchap": _rg, "plan": _mg, "input": _mg,
-                             "number-gate": "", "citation": ""}
-        except Exception:
-            _model_groups = {}
-        try:
-            from .skills_registry import stale_stage_artifacts
-            _candidates = list(ROUTE_DEPENDENT_ARTIFACTS)
-            for pattern in ROUTE_DEPENDENT_ARTIFACT_GLOBS:
-                _candidates.extend(p.name for p in sorted(Path(folder_path).glob(pattern))
-                                   if p.is_file())
-            _fingerprinted = stale_stage_artifacts(
-                folder_path, _candidates, brief_fp, _model_groups)
+            from .skills_registry import inputs_fingerprint, changed_inputs
+            _inputs_fp = inputs_fingerprint(family, IDEA_PATH, DATA_ROOT)
+            _fingerprinted = stale_chapter_artifacts(
+                folder_path, brief_fp, family, _model_groups, _inputs_fp)
             if _fingerprinted:
-                results["route_blocked"] = "stage fingerprints stale (prompts/skills/model changed)"
+                _changed = changed_inputs(folder_path, _fingerprinted, _inputs_fp)
+                results["route_blocked"] = ("stage fingerprints stale "
+                                            "(inputs/prompts/skills/model changed)")
                 results["stale_stage_artifacts"] = _fingerprinted
-                print(f"[Manager  ] FAIL      | 下列产物生成时的 prompt/skill/模型指纹与当前不符,", flush=True)
+                if _changed:
+                    print(f"[Manager  ] FAIL      | 作者输入已变化: {', '.join(_changed)}"
+                          f" —— 旧产物是按旧输入写的", flush=True)
+                print(f"[Manager  ] FAIL      | 下列产物生成时的输入/prompt/skill/模型指纹与当前不符,", flush=True)
                 print(f"[Manager  ] FAIL      | 「存在即跳过」会把它们当成本次结果静默复用:", flush=True)
                 for name in _fingerprinted:
                     print(f"[Manager  ] STALE      |   {folder_rel}/{name}", flush=True)
@@ -1442,6 +1681,9 @@ def run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manage
         print(f"[Manager  ] content    | {content_source_summary(family)}", flush=True)
         structure = f"{folder_path}/brief.md"
         routing_clause = build_routing_clause(route)
+        from .skills_registry import build_skill_injection
+        draft_skills = build_skill_injection("draft")
+        review_skills = build_skill_injection("review")
     else:
         structure = "paper/01 Structure/final.md"
         xchap = ""
@@ -1480,7 +1722,7 @@ def run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manage
                 if os.path.exists(os.path.join(folder_path, name)):
                     record_stage_fingerprint(
                         folder_path, name, brief_fp, stage,
-                        _model_groups.get(stage, ""))
+                        _model_groups.get(stage, ""), _inputs_fp)
         except Exception as exc:
             # 记账失败会让"存在但未记账"的产物在下次运行被判陈旧硬停(保守失败,
             # 不会冒充新跑),所以这里 notice 即可,不上抛。
@@ -1663,6 +1905,7 @@ def run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manage
             f"Follow draft-v1.plan.md for REF IDs, forbidden overlap, and transitions. "
             f"Do not write other parts and do not duplicate material assigned to other parts.\n\n"
             f"{reference_excerpt}"
+            f"{draft_skills}"
         ))
         results["stage1_parts"].append(result)
         set_agent_context("Manager")
@@ -1763,6 +2006,7 @@ def run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manage
                f"only when you are confident it matches; otherwise set suggested_key to null (the "
                f"framework will hand it to the user, never invent a citation).\n\n")
             + f"{reference_excerpt}"
+            + f"{review_skills}"
         ))
         set_agent_context("Manager")
         if PAPER_MODE == "experiment" and not _skip_structured:
@@ -1881,7 +2125,7 @@ def run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manage
             draft_agent, review_agent, folder_path, folder_rel,
             reference_excerpt, structure,
             run_agent_stage, verify, mode_clause, family, res_ids_path,
-            record_stage=record_stage,
+            record_stage=record_stage, skills_clause=draft_skills,
         )
     if not verify(["draft-v2.md"]):
         return _finish_with_table(folder_path, results)
@@ -1899,17 +2143,31 @@ def run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manage
         set_agent_context("Review")
         results["stage4"] = run_agent_stage(review_agent, "Review", (
             f"{idea_clause(family, res_ids_path)}"
-            f"Read draft-v1.md, draft-v2.md, review-v1.md, brief.md, input.md from '{folder_path}'. "
+            f"Read draft-v2.md, review-v1.md, brief.md, input.md from '{folder_path}'. "
             f"Also read '{structure}'. Do not read references/index.md directly; use the filtered reference excerpt below. "
             f"{mode_clause}"
-            f"Merge the best parts, resolve all issues. "
-            f"Write '{folder_path}/final.md' (English), '{folder_path}/final.zh.md' (Chinese review), "
-            f"'{folder_path}/decision.md', and '{folder_path}/todo.md'.\n\n"
+            f"draft-v2.md is the verified revision and the ONLY base text — do not read or "
+            f"reintroduce anything from draft-v1.md (issues fixed in revision must stay fixed). "
+            f"Finalize it with a light polish only: transitions, terminology consistency, "
+            f"grammar. Do NOT change any claim, number, `{{{{RES-xxx}}}}` placeholder, citation, "
+            f"[MISSING DATA] / [IDEA NEEDED] marker, or the meaning of any sentence, and do NOT add "
+            f"new content. If you notice a remaining problem, leave the text as is and list it in "
+            f"todo.md instead of fixing it yourself. "
+            f"Write '{folder_path}/final.md' (English), '{folder_path}/final.zh.md' (a faithful "
+            f"Chinese rendering of final.md for the author to review, same placeholders and markers), "
+            f"'{folder_path}/decision.md' (what was polished), and '{folder_path}/todo.md' "
+            f"(remaining issues).\n\n"
             f"{reference_excerpt}"
+            f"{review_skills}"
         ))
         set_agent_context("Manager")
     all_ok = verify(final_outputs)
     record_stage(["final.md", "final.zh.md"], "final")
+
+    # 核验状态与 all_ok 分离:all_ok = 产物齐全(决定 Stage 5 是否执行);
+    # verification_reasons = 证据核验没通过的原因(决定最后是"核验通过"还是
+    # "生成完成但未核验")。允许带显式缺口的初稿,但不允许把它报成全部通过。
+    verification_reasons: list[str] = []
 
     # ── 演进点②:定稿后程序替换 RES 占位符(数字不经模型之手的最后一环) ────
     # final.md / final.zh.md 里的 {{RES-xxx}} 在此替换为 data/ 记录值。未知 ID
@@ -1939,6 +2197,8 @@ def run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manage
                 print(f"[Manager  ] FAIL      | {folder_rel}/{fname} 有 {len(set(unresolved))} 个"
                       f"未解析 RES 占位符 → 已记入 todo.md", flush=True)
                 all_ok = False
+                verification_reasons.append(
+                    f"{fname} 有 {len(set(unresolved))} 个未解析 RES 占位符(见 todo.md)")
             if new_text != text:
                 tmp = fpath.with_suffix(fpath.suffix + ".tmp")
                 tmp.write_text(new_text, encoding="utf-8")
@@ -1959,7 +2219,9 @@ def run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manage
     # 引入 draft-v1 里没出现的数字,这些也要对回 data/。两次门禁(Stage 1 后 + Stage 4
     # 后)都写同一个 number-check.md:定稿版覆盖初稿版,留下的是最终对账单。任意一处
     # mismatch 都写进 todo.md —— 绝不让一篇定稿悄悄带着与结果库矛盾的数字。
+    final_gate_attempted = False
     if PAPER_MODE == "experiment" and all_ok and gate != OFF:
+        final_gate_attempted = True
         try:
             from .number_gate import run_number_gate
             final_gate_passed, final_gate_msgs = run_number_gate(
@@ -1979,7 +2241,10 @@ def run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manage
                     for m in final_gate_msgs):
                 print(f"[Manager  ] number-gate| advisory: no results store; final numbers UNVERIFIED",
                       flush=True)
+                verification_reasons.append("数字未核验:尚无实验结果库(data/ 为空)")
             elif not final_gate_passed:
+                verification_reasons.append(
+                    f"终稿数字门禁不符 {len(final_gate_msgs)} 处(见 number-check.md / todo.md)")
                 block = "\n## Final number gate: MISMATCHES to fix before submission\n"
                 for m in final_gate_msgs:
                     block += f"- {m}\n"
@@ -1992,7 +2257,18 @@ def run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manage
                 print(f"[Manager  ] number-gate| final.md numbers OK → overwrote {folder_rel}/number-check.md",
                       flush=True)
         except Exception as exc:
-            print(f"[Manager  ] notice     | final number gate skipped: {str(exc)[:160]}", flush=True)
+            print(f"[Manager  ] FAIL      | final number gate error: {str(exc)[:160]}", flush=True)
+            verification_reasons.append(f"终稿数字门禁执行出错,数字未核验: {str(exc)[:120]}")
+
+    if PAPER_MODE == "experiment" and os.path.exists(os.path.join(folder_path, "final.md")):
+        if gate != OFF and not final_gate_attempted:
+            # 终稿产物不全(或 RES 填充失败)时门禁不会执行——没执行不等于通过。
+            verification_reasons.append("终稿产物不全或前置步骤失败,RES 填充/终稿数字门禁未执行")
+        try:
+            verification_reasons.extend(checklist_status(folder_path))
+        except Exception as exc:
+            verification_reasons.append(f"MUST FIX 核验状态读取出错: {str(exc)[:120]}")
+        results["verification"] = write_verification(folder_path, verification_reasons)
 
     # ── Stage 5: 更新跨章状态 ─────────────────────────────────────────
     # cross-chapter-state.md 是章节间传递术语与结论的唯一载体:下一章的 Agent 靠它
@@ -2012,7 +2288,8 @@ def run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manage
             from .skills_registry import stale_stage_artifacts
             _xchap_stale = stale_stage_artifacts(
                 folder_path, ["cross-chapter-draft.md"], brief_fp,
-                {**_model_groups, "xchap": _model_groups.get("xchap", "")})
+                {**_model_groups, "xchap": _model_groups.get("xchap", "")},
+                _inputs_fp)
             _xchap_recorded = (candidate.is_file() and not _xchap_stale
                                and cross_chapter_state_has_claim(
                                    before_text, chapter))
@@ -2106,7 +2383,15 @@ def run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manage
             all_ok = False
 
     if all_ok:
-        print(f"\n[Manager  ] DONE       | All stages complete for {folder_rel}", flush=True)
+        _ver = results.get("verification") or {}
+        if _ver.get("status") == "unverified":
+            print(f"\n[Manager  ] DONE       | {folder_rel} 生成完成,但未通过核验"
+                  f"({len(_ver['reasons'])} 项,见 verification.md):", flush=True)
+            for reason in _ver["reasons"]:
+                print(f"[Manager  ] UNVERIFIED |   {reason}", flush=True)
+        else:
+            print(f"\n[Manager  ] DONE       | All stages complete for {folder_rel} "
+                  f"(核验通过)", flush=True)
 
     # 章节进度汇总表:把 results + 工作区产物整理成一张表,替代"一列一列"的状态行。
     # 放在 return 前,确保无论成功/失败/路由硬停,都能看到一章的完整状态。

@@ -56,11 +56,13 @@ GLOBAL_INSTRUCTIONS = """\
 
 ### Communication
 - If information is insufficient, explicitly mark "MISSING INFO" — never guess to fill gaps.
-- Skills live in the project's skills/ directory. Use read_file to load the
-  relevant one when a task needs it (Draft: skills/writing-style.md,
+- Methodology skills (skills/*.md): when your task prompt ends with a
+  "METHODOLOGY SKILLS" block, they are pre-loaded — apply them and do not re-read
+  those files. If no such block is present, use read_file to load the relevant one
+  when a task needs it (Draft: skills/writing-style.md,
   skills/figure-table-placeholder.md, skills/math-formula.md,
-  skills/experiment-writing.md; Review: skills/review-rubric.md). Do not inline
-  their full content into output — read and apply as needed.
+  skills/experiment-writing.md; Review: skills/review-rubric.md).
+  Do not inline their content into output.
 - Do not print full drafts, reviews, notes, or generated markdown to the terminal. Report only concise progress, tool/file actions, stage status, and errors.
 - Keep draft-v1.md, draft-v2.md, and final.md in English. Create final.zh.md only during finalization as the Chinese reading/review version.
 
@@ -301,13 +303,13 @@ When asked to VERIFY a revised draft against a frozen checklist:
 
 ## Finalization Mode
 When instructed to finalize:
-1. Read all draft versions and reviews
-2. Merge the best parts of all versions — prioritize the version that better answers the brief's central question
-3. Resolve all outstanding MUST FIX and SHOULD FIX issues
+1. Read the base draft the task names (the latest verified revision) and the reviews
+2. Do NOT merge in text from older draft versions unless the task explicitly tells you to merge — fixes made during revision must not be undone
+3. Polish only as far as the task allows; never change claims, numbers, placeholders or citations on your own — list remaining problems in todo.md instead
 4. Ensure all writing standards are met (no AI traces, proper citations, consistent terminology)
 5. Output final.md — this must be English publication-ready prose
 6. Output final.zh.md — this must be a Chinese reading/review version for the user, preserving the same structure and claims as final.md
-7. Output decision.md — explain what was kept from each version, what was dropped, and why
+7. Output decision.md — explain what was changed during finalization and why
 8. Output todo.md — list any remaining issues that could not be resolved (missing references, data gaps, cross-section inconsistencies)
 9. Do NOT include review comments or meta-commentary in final.md
 """

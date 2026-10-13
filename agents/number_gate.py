@@ -128,7 +128,40 @@ def _fmt(v) -> str:
 
 
 # ── (1) Results store ─────────────────────────────────────────────────────
-def _flatten(obj, prefix: str, store: dict) -> None:
+# CSV 身份列:同一指标的多次运行(多 seed / 多 run / 交叉验证折)靠这些列区分。
+# 它们不是指标值,而是 key 的一部分(如 "exp.ours.seed=0.acc")。没有这些列
+# 的文件 key 与以前完全一致。框架不替作者做跨 seed 聚合——均值由作者提供。
+_ID_COLS = ("seed", "run", "run_id", "trial", "fold")
+
+
+class ResultsStoreError(ValueError):
+    """data/ 结果库有歧义(同一 key 多个不同取值)或有文件读不了。"""
+
+
+class _Tracker:
+    """记录每个 key 的来源,检测"同一 key 写入不同取值"的覆盖。"""
+
+    def __init__(self):
+        self.sources: dict = {}
+        self.duplicates: list = []   # (key, 先前来源, 本次来源)
+        self.unreadable: list = []   # (path, 错误)
+
+    def put(self, store: dict, key: str, value, source: str) -> None:
+        if key in store and store[key] != value and (
+                _is_number(store[key]) or _is_number(value)):
+            self.duplicates.append((key, self.sources.get(key, "?"), source))
+        store[key] = value
+        self.sources[key] = source
+
+
+def _store_put(store: dict, key: str, value, tracker, source: str) -> None:
+    if tracker is None:
+        store[key] = value
+    else:
+        tracker.put(store, key, value, source)
+
+
+def _flatten(obj, prefix: str, store: dict, tracker=None, source: str = "") -> None:
     """Recursively collect numeric leaves into `store` with dot-joined keys."""
     if isinstance(obj, dict):
         # AI-Scientist metric object: {"means": v, "stderr": s, "n": k}.
@@ -138,36 +171,36 @@ def _flatten(obj, prefix: str, store: dict) -> None:
                 mean_val = float(obj[mk])
                 break
         if mean_val is not None and prefix:
-            store[prefix] = mean_val
+            _store_put(store, prefix, mean_val, tracker, source)
             for k, v in obj.items():
                 if k in ("means", "mean"):
                     continue
-                _flatten(v, f"{prefix}.{k}", store)
+                _flatten(v, f"{prefix}.{k}", store, tracker, source)
             return
         for k, v in obj.items():
             nk = f"{prefix}.{k}" if prefix else str(k)
-            _flatten(v, nk, store)
+            _flatten(v, nk, store, tracker, source)
     elif isinstance(obj, list):
         for i, v in enumerate(obj):
             nk = f"{prefix}.{i}" if prefix else str(i)
-            _flatten(v, nk, store)
+            _flatten(v, nk, store, tracker, source)
     else:
         if _is_number(obj):
-            store[prefix] = float(obj)
+            _store_put(store, prefix, float(obj), tracker, source)
         elif isinstance(obj, str):
             v = _try_float(obj)
             if v is not None:
-                store[prefix] = v
+                _store_put(store, prefix, v, tracker, source)
             else:
                 # I12: keep textual metadata (run_name, description, hardware,
                 # dataset, hyperparameters) so data-index.md / evidence mining
                 # can describe WHAT was run, not just the numbers. Non-numeric
                 # strings are stored with a ":" marker to distinguish text from
                 # numeric metrics for downstream table rendering.
-                store[prefix] = ":" + obj
+                _store_put(store, prefix, ":" + obj, tracker, source)
 
 
-def _load_csv(path: str, stem: str, store: dict) -> None:
+def _load_csv(path: str, stem: str, store: dict, tracker=None) -> None:
     with open(path, "r", newline="", encoding="utf-8", errors="replace") as f:
         rows = [r for r in csv.reader(f) if r]
     if not rows:
@@ -175,6 +208,11 @@ def _load_csv(path: str, stem: str, store: dict) -> None:
     header = rows[0]
     hlower = [h.strip().lower() for h in header]
     data = rows[1:]
+    id_idx = [i for i, h in enumerate(hlower) if h in _ID_COLS]
+
+    def id_parts(r) -> list:
+        return [f"{hlower[i]}={r[i].strip()}" for i in id_idx
+                if i < len(r) and r[i].strip()]
 
     name_cols = [i for i, h in enumerate(hlower)
                  if h in ("name", "metric", "key", "metric_name")]
@@ -184,13 +222,14 @@ def _load_csv(path: str, stem: str, store: dict) -> None:
     # Long / key-value format.
     if name_cols and val_cols:
         ni, vi = name_cols[0], val_cols[0]
-        for r in data:
+        for ri, r in enumerate(data, start=2):
             if len(r) <= max(ni, vi):
                 continue
             name = r[ni].strip()
             v = _try_float(r[vi])
             if name and v is not None:
-                store[f"{stem}.{name}"] = v
+                key = ".".join([stem, *id_parts(r), name])
+                _store_put(store, key, v, tracker, f"{path}:{ri}")
         return
 
     if not data:
@@ -198,36 +237,72 @@ def _load_csv(path: str, stem: str, store: dict) -> None:
 
     # Wide format. If the first column is non-numeric it is a row label.
     first_col_numeric = all(_try_float(r[0]) is not None for r in data if r)
+    label_col = None if first_col_numeric else 0
+    skip_cols: set = set()
+    if id_idx:
+        # 有身份列时:标签取第一个非身份、非纯数字的列(可在身份列之后,如
+        # "seed,model,acc");身份列只进 key、不当指标值。若 (标签, 身份) 仍不能
+        # 唯一确定每一行,同一 key 会出现多个值,由 tracker 报冲突、拒绝生成 RES
+        # 目录——不退回按行号编 key:那会把"同一身份两个结果"悄悄当成两个独立
+        # 结果接受(宁可拒绝,不猜)。
+        label_col = next((i for i in range(len(header)) if i not in id_idx and not all(
+            i < len(r) and _try_float(r[i]) is not None for r in data)), None)
+        skip_cols = set(id_idx)
     for ri, r in enumerate(data):
-        start = 0 if first_col_numeric else 1
-        label = None if first_col_numeric else r[0].strip()
-        for ci in range(start, len(r)):
+        label = (r[label_col].strip() if label_col is not None and label_col < len(r)
+                 else None)
+        ids = id_parts(r)
+        for ci in range(len(r)):
+            if ci == label_col or ci in skip_cols:
+                continue
             v = _try_float(r[ci])
             if v is None:
                 continue
             col = header[ci].strip() if ci < len(header) and header[ci].strip() else f"col{ci}"
-            if label:
-                key = f"{stem}.{label}.{col}"
+            if label or ids:
+                key = ".".join([stem, *([label] if label else []), *ids, col])
             elif len(data) > 1:
                 key = f"{stem}.{col}.{ri}"
             else:
                 key = f"{stem}.{col}"
-            store[key] = v
+            _store_put(store, key, v, tracker, f"{path}:{ri + 2}")
 
 
-def load_results_store(data_root: str) -> dict:
-    """Scan `data_root` for *.json / *.csv and flatten into {metric: float}.
+def _json_load_checked(f, path: str, tracker) -> object:
+    """json.load,但对象内重复键(json.load 默认静默取最后一个)记为重复。"""
+    if tracker is None:
+        return json.load(f)
 
-    JSON nested dicts are dot-joined; AI-Scientist ``means`` objects register
-    under the metric's own path. CSV long tables (name/value) and wide tables
-    are both handled. Unparseable files are skipped silently. All values float.
+    def hook(pairs):
+        obj = {}
+        for k, v in pairs:
+            if k in obj and obj[k] != v:
+                tracker.duplicates.append((k, f"{path} (JSON duplicate key)", path))
+            obj[k] = v
+        return obj
+    return json.load(f, object_pairs_hook=hook)
+
+
+def load_results_store_report(data_root: str) -> tuple[dict, dict]:
+    """Like load_results_store, but also report ambiguity instead of hiding it.
+
+    Returns (store, issues), issues = {"duplicates": [(key, src_a, src_b)],
+    "unreadable": [(path, error)]}. A duplicate is the same key written twice with
+    different values (e.g. a multi-seed CSV without a seed column, or two run
+    folders sharing a name) — the store would silently keep only the last one.
     """
     store: dict = {}
+    tracker = _Tracker()
     root = str(data_root)
     if not os.path.isdir(root):
-        return store
-    for dirpath, _dirs, filenames in os.walk(root):
-        for fn in filenames:
+        return store, {"duplicates": [], "unreadable": []}
+    def _walk_error(err: OSError) -> None:
+        # os.walk 默认静默跳过读不了的子目录——里面的结果会悄悄缺席。
+        tracker.unreadable.append((getattr(err, "filename", "") or "?",
+                                   f"{type(err).__name__}: {err.strerror or err}"))
+
+    for dirpath, _dirs, filenames in sorted(os.walk(root, onerror=_walk_error)):
+        for fn in sorted(filenames):
             # I11: skip example/template files so illustrative data is never
             # treated as real experimental evidence.
             if ".example." in fn or fn.endswith(".example") or fn.startswith("_template"):
@@ -252,14 +327,53 @@ def load_results_store(data_root: str) -> dict:
             try:
                 if ext == ".json":
                     with open(path, "r", encoding="utf-8", errors="replace") as f:
-                        data = json.load(f)
-                    _flatten(data, prefix, store)
+                        data = _json_load_checked(f, path, tracker)
+                    _flatten(data, prefix, store, tracker, path)
                 elif ext == ".csv":
-                    _load_csv(path, prefix, store)
-            except Exception:
-                # Robust by contract: a broken file must not sink the whole scan.
+                    _load_csv(path, prefix, store, tracker)
+            except Exception as exc:
+                # A broken file must not sink the whole scan — but it must be
+                # reported: its numbers are silently missing from the store.
+                tracker.unreadable.append((path, f"{type(exc).__name__}: {str(exc)[:120]}"))
                 continue
-    return store
+    # 来源路径显示为相对 data_root 的形式,报错给作者看时更短更好认。
+    rel = lambda t: t.replace(os.path.join(root, ""), "")
+    return store, {
+        "duplicates": [(k, rel(a), rel(b)) for k, a, b in tracker.duplicates],
+        "unreadable": [(rel(pth), err) for pth, err in tracker.unreadable],
+    }
+
+
+def format_store_issues(issues: dict, limit: int = 20) -> str:
+    """把 load_results_store_report 的 issues 渲染成给作者看的中文清单。"""
+    lines = []
+    dups = issues.get("duplicates") or []
+    bad = issues.get("unreadable") or []
+    if dups:
+        lines.append(f"同一结果 key 出现多个不同取值({len(dups)} 处),RES 编号无法确定指向哪一个:")
+        for key, a, b in dups[:limit]:
+            lines.append(f"  - {key}: {a} 与 {b}")
+        lines.append("  修法:多 seed/多 run 的 CSV 加一列 seed / run / run_id / trial / fold;"
+                     "同一 seed 下还有其他变化维度(如超参扫描)时再加 run_id 或文本标签列"
+                     "(方法/配置名)区分每一行;或把同名的运行目录/文件改成不同名字。")
+    if bad:
+        lines.append(f"有 {len(bad)} 个结果文件读不了(其中的数字不会进入结果库):")
+        for path, err in bad[:limit]:
+            lines.append(f"  - {path}: {err}")
+        lines.append("  修法:修好文件格式,或把它移出 data/。")
+    return "\n".join(lines)
+
+
+def load_results_store(data_root: str) -> dict:
+    """Scan `data_root` for *.json / *.csv and flatten into {metric: float}.
+
+    JSON nested dicts are dot-joined; AI-Scientist ``means`` objects register
+    under the metric's own path. CSV long tables (name/value) and wide tables
+    are both handled. All values float. Lenient view: issues (duplicates,
+    unreadable files) are dropped here — the RES-ID catalog
+    (result_ids.ensure_res_ids) uses load_results_store_report and refuses them.
+    """
+    return load_results_store_report(data_root)[0]
 
 
 # ── (2) Number extraction ─────────────────────────────────────────────────
