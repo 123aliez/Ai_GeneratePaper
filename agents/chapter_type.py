@@ -12,7 +12,7 @@ numbers yet.
 Two things are resolved here:
 
 * **family** — which evidence source feeds the draft:
-    - ``idea``  : `idea.md` is the primary input (method/intro/related/abstract)
+    - ``idea``  : `idea.md` is the primary input (method/related/background/theory)
     - ``data``  : the results store under `data/` is primary (experiments/results)
     - ``mixed`` : both (discussion/conclusion, and the unknown-type fallback)
 
@@ -36,8 +36,8 @@ OFF = "off"
 
 # Canonical chapter types → (family, gate). Order matters only for reporting.
 CHAPTER_TYPES = {
-    "abstract":     (IDEA, ADVISORY),
-    "intro":        (IDEA, ADVISORY),
+    "abstract":     (MIXED, ADVISORY),   # 摘要/引言要报 headline 结果:数字只能走 RES 占位符
+    "intro":        (MIXED, ADVISORY),
     "related":      (IDEA, OFF),
     "background":   (IDEA, OFF),
     "method":       (IDEA, ADVISORY),

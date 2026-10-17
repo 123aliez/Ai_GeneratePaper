@@ -27,18 +27,20 @@ import os
 import re
 from pathlib import Path
 
-from .number_gate import (load_results_store_report, format_store_issues,
-                          ResultsStoreError, _is_number)
+from .number_gate import (load_results_store_report, load_results_raw, format_store_issues,
+                          ResultsStoreError, _is_number, _try_float)
 
 RES_IDS_FILENAME = "res-ids.md"
 RES_ID_RE = re.compile(r"\{\{(RES-\d+)\}\}")
 # fill 之后可能出现的未知标记(number gate 同样要剥离,其中的数字不是证据)
-UNKNOWN_REF_RE = re.compile(r"⟨未知结果 (RES-\d+)⟩")
+UNKNOWN_REF_RE = re.compile(r"⟨未知结果 ([^⟩]+)⟩")
+# 派生数字:两个已有结果的差 / 相对提升,由程序计算(可回查来源),模型不手算。
+DERIVED_RE = re.compile(r"\{\{(DIFF|REL):\s*(RES-\d+)\s*,\s*(RES-\d+)\s*\}\}")
 
 _HEADER = """\
-# data/res-ids.md — RES-ID catalog (program-generated; do not edit by hand)
+# res-ids.md — RES-ID catalog (program-generated; do not edit by hand)
 
-Every numeric result under data/ gets a stable RES-ID. Draft prose cites a
+Every numeric result under inbox/results/ gets a stable RES-ID. Draft prose cites a
 result ONLY as a `{{RES-xxx}}` placeholder copied VERBATIM from the ID column
 of this table — never by typing the number. The assembler substitutes the
 recorded value at finalization. If you add a unit suffix (%, x, hours, ...),
@@ -48,7 +50,9 @@ it must be consistent with the value column.
 |---|---|---:|
 """
 
-_ROW_RE = re.compile(r"^\|[ \t]*(RES-[0-9]+)[ \t]*\|([^|\r\n]+)\|([^|\r\n]*)\|[ \t]*$")
+# ID 列新格式 `{{RES-001}}`(可直接逐字复制),旧格式裸 `RES-001` 仍能解析——
+# 否则已有目录会被判损坏、整张表重新编号。
+_ROW_RE = re.compile(r"^\|[ \t]*(?:\{\{)?(RES-[0-9]+)(?:\}\})?[ \t]*\|([^|\r\n]+)\|([^|\r\n]*)\|[ \t]*$")
 # 退役 ID 列表行。故意不用表格行格式:不匹配 _ROW_RE,Agent 读目录时也不会把
 # 退役编号当成可引用的结果。
 _RETIRED_HEADING = "## Retired IDs (do not cite)"
@@ -139,13 +143,32 @@ def render_res_ids_md(res_map: dict, retired: dict | None = None) -> str:
     for rid in sorted(res_map):
         entry = res_map[rid]
         # 值列用 repr 级转换(不经 %g 截断六位有效数字),与"never round"纪律一致。
-        lines.append(f"| {rid} | {entry['key']} | {fmt_value(entry['value'])} |")
+        lines.append(f"| {{{{{rid}}}}} | {entry['key']} | {display_text(entry)} |")
     if retired:
         lines += ["", _RETIRED_HEADING, "",
                   "These IDs belonged to results no longer present in data/. They are",
                   "kept only so the numbers are never reassigned; never cite them.", ""]
         lines += [f"- {rid} (was: {key})" for rid, key in sorted(retired.items())]
     return "\n".join(lines) + "\n"
+
+
+def display_text(entry: dict) -> str:
+    """一条结果替换进正文的文本:优先 CSV 单元格原文(保住 76.10 的小数位),
+    没有原文(JSON 来源)时按数值渲染。"""
+    text = entry.get("text")
+    return text if text else fmt_value(entry["value"])
+
+
+def _clean_raw(raw, value):
+    """CSV 原文 → 可直接替换进正文的文本:去掉尾部 %(单位由正文在花括号外自己加,
+    避免出现 76.1%%);原文解析出的数值与库里的值不一致则不用(宁可回退成数值渲染)。"""
+    if not raw:
+        return None
+    text = str(raw).strip()
+    if text.endswith("%"):
+        text = text[:-1].strip()
+    parsed = _try_float(text)
+    return text if parsed is not None and parsed == value else None
 
 
 def fmt_value(value) -> str:
@@ -155,8 +178,11 @@ def fmt_value(value) -> str:
     return repr(value) if isinstance(value, float) else str(value)
 
 
-def ensure_res_ids(data_root: str) -> tuple[dict, Path | None]:
-    """生成/合并 data/res-ids.md。返回 (res_map, 路径)。
+def ensure_res_ids(data_root: str, catalog_path=None) -> tuple[dict, Path | None]:
+    """生成/合并 RES 编号目录。返回 (res_map, 路径)。
+
+    catalog_path 缺省时写在 data_root/res-ids.md(单元测试用);项目模式下编排器传
+    _work/index/res-ids.md,作者的 inbox 保持只读。
 
     空 store → 返回 ({}, None) 不落盘(data/ 没有数字时硬造一张空表只会误导)。
     结果库有重复 key(不同取值)或读不了的文件 → 抛 ResultsStoreError(调用方硬停)。
@@ -169,7 +195,8 @@ def ensure_res_ids(data_root: str) -> tuple[dict, Path | None]:
         # 引用的是哪一个;读不了的文件意味着作者以为在库里的数字其实缺席。
         raise ResultsStoreError("data/ 结果库有问题,拒绝生成 RES 目录:\n"
                                 + format_store_issues(issues))
-    path = Path(data_root) / RES_IDS_FILENAME
+    path = Path(catalog_path) if catalog_path else Path(data_root) / RES_IDS_FILENAME
+    path.parent.mkdir(parents=True, exist_ok=True)
     if not _numeric_store(store):
         # 数值结果全部消失但目录还在:把历史 ID 全部转入退役列表再返回"无目录",
         # 否则旧 ID 仍以"可引用"的活跃行留在 res-ids.md 里,与 data/ 不一致。
@@ -187,6 +214,9 @@ def ensure_res_ids(data_root: str) -> tuple[dict, Path | None]:
             store, path.read_text(encoding="utf-8", errors="replace"))
     else:
         res_map, retired = assign_res_ids(store), {}
+    raw = load_results_raw(data_root)
+    for entry in res_map.values():
+        entry["text"] = _clean_raw(raw.get(entry["key"]), entry["value"])
     text = render_res_ids_md(res_map, retired)
     if not (path.is_file() and path.read_text(encoding="utf-8", errors="replace") == text):
         tmp = path.with_suffix(f".md.{os.getpid()}.tmp")
@@ -195,23 +225,108 @@ def ensure_res_ids(data_root: str) -> tuple[dict, Path | None]:
     return res_map, path
 
 
-def fill_result_refs(text: str, res_map: dict) -> tuple[str, list[str]]:
-    """把正文中的 {{RES-xxx}} 替换为记录值。返回 (新文本, 未知 ID 列表)。
+def _decimals(text: str) -> int:
+    """原文的小数位数(含科学计数法:1.00e-3 → 5 位)。"""
+    from decimal import Decimal, InvalidOperation
+    try:
+        exp = Decimal((text or "").replace(",", "").strip()).as_tuple().exponent
+    except InvalidOperation:
+        return 0
+    return max(0, -exp) if isinstance(exp, int) else 0
 
-    未知 ID 替换为显式标记 ⟨未知结果 xxx⟩ —— 宁可留下一个看得见的洞,
-    也不编一个值填上。
+
+def _derive(kind: str, a: dict, b: dict) -> str | None:
+    """DIFF = a−b(小数位取两者较大者);REL = (a−b)/b×100(1 位小数)。b=0 → None。"""
+    va, vb = float(a["value"]), float(b["value"])
+    if kind == "DIFF":
+        places = max(_decimals(display_text(a)), _decimals(display_text(b)))
+        from decimal import Decimal
+        try:
+            diff = Decimal(display_text(a).replace(",", "")) - Decimal(display_text(b).replace(",", ""))
+            return f"{diff:.{places}f}"
+        except Exception:
+            return f"{va - vb:.{places}f}"
+    if vb == 0:
+        return None
+    return f"{(va - vb) / abs(vb) * 100:.1f}"
+
+
+def fill_result_refs(text: str, res_map: dict, used: list | None = None) -> tuple[str, list[str]]:
+    """把正文中的 {{RES-xxx}} / {{DIFF:..}} / {{REL:..}} 替换为记录值。
+    返回 (新文本, 未知项列表)。
+
+    未知 ID(或除数为 0 的相对提升)替换为显式标记 ⟨未知结果 xxx⟩ —— 宁可留下
+    一个看得见的洞,也不编一个值填上。used 不为 None 时追加使用记录
+    {"placeholder","ids","text","kind"},供数字溯源表使用。
     """
     unresolved: list[str] = []
 
-    def _repl(m: re.Match) -> str:
+    def _derived(m: re.Match) -> str:
+        kind, ra, rb = m.group(1), m.group(2), m.group(3)
+        a, b = res_map.get(ra), res_map.get(rb)
+        label = f"{kind}:{ra},{rb}"
+        if a is None or b is None:
+            unresolved.extend(r for r, e in ((ra, a), (rb, b)) if e is None)
+            return f"⟨未知结果 {label}⟩"
+        out = _derive(kind, a, b)
+        if out is None:
+            unresolved.append(label)
+            return f"⟨未知结果 {label}⟩"
+        if used is not None:
+            used.append({"placeholder": m.group(0), "ids": [ra, rb], "text": out, "kind": kind,
+                         "negative": out.startswith("-")})
+        return out
+
+    def _plain(m: re.Match) -> str:
         rid = m.group(1)
         entry = res_map.get(rid)
         if entry is None:
             unresolved.append(rid)
             return f"⟨未知结果 {rid}⟩"
-        return fmt_value(entry["value"])
+        out = display_text(entry)
+        if used is not None:
+            used.append({"placeholder": m.group(0), "ids": [rid], "text": out, "kind": "RES",
+                         "negative": False})
+        return out
 
-    return RES_ID_RE.sub(_repl, text), unresolved
+    text = DERIVED_RE.sub(_derived, text)
+    return RES_ID_RE.sub(_plain, text), unresolved
+
+
+# 边界只按 ASCII 字母数字判定:中文紧邻("结果RES-001是")也要抓到。
+_BARE_RES_RE = re.compile(r"(?<![A-Za-z0-9_\-])RES-\d+(?![A-Za-z0-9_])")
+# 残缺花括号占位符:{RES-001} / {{RES-001} / {RES-001}} ——fill 不会替换它们。
+_MALFORMED_RES_RE = re.compile(r"(?<!\{)\{RES-\d+\}?(?!\})|(?<!\{)\{\{RES-\d+\}(?!\})|\{RES-\d+\}\}")
+
+
+def residual_res_problems(text: str) -> list[str]:
+    """终稿里不该再有的 RES 痕迹:未知标记、未替换的占位符、不带花括号的裸编号。
+
+    每次核验都重扫(不依赖"本次是否刚做过替换"):首次定稿把缺口标成
+    ⟨未知结果⟩ 后,重跑时填充器看不到 {{RES-}} 了,缺口会被洗成"已核验"。
+    """
+    problems = []
+    unknown = sorted(set(UNKNOWN_REF_RE.findall(text)))
+    if unknown:
+        problems.append(f"有 {len(unknown)} 个未知结果标记 ⟨未知结果⟩({', '.join(unknown)}):"
+                        f"该数字在结果表里不存在,正文留了空洞")
+    left_derived = sorted({m.group(0) for m in DERIVED_RE.finditer(text)})
+    if left_derived:
+        problems.append(f"有 {len(left_derived)} 个未替换的派生数字占位符({', '.join(left_derived)})")
+    left = sorted(set(RES_ID_RE.findall(text)))
+    if left:
+        problems.append(f"有 {len(left)} 个未替换的 {{{{RES-xxx}}}} 占位符({', '.join(left)})")
+    scrubbed = DERIVED_RE.sub(" ", RES_ID_RE.sub(" ", UNKNOWN_REF_RE.sub(" ", text)))
+    malformed = sorted({m.group(0) for m in _MALFORMED_RES_RE.finditer(scrubbed)})
+    if malformed:
+        problems.append(f"有 {len(malformed)} 个花括号残缺的占位符({', '.join(malformed)}),"
+                        f"不会被替换成数值")
+    scrubbed = _MALFORMED_RES_RE.sub(" ", scrubbed)
+    bare = sorted(set(_BARE_RES_RE.findall(scrubbed)))
+    if bare:
+        problems.append(f"有 {len(bare)} 个不带花括号的裸 RES 编号({', '.join(bare)}),"
+                        f"不会被替换成数值(若这是正文里的普通词,请人工确认)")
+    return problems
 
 
 def strip_placeholders(text: str) -> str:
@@ -220,5 +335,6 @@ def strip_placeholders(text: str) -> str:
     "{{RES-001}}" 中的 "001" 会被数字提取器当成一个数(前导字符 '-' 不在
     字符类里,拦不住),而占位符编号不是实验证据 —— 不剥会造成误报。
     """
+    text = DERIVED_RE.sub(" ", text)
     text = RES_ID_RE.sub(" ", text)
     return UNKNOWN_REF_RE.sub(" ", text)

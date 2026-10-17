@@ -1,11 +1,11 @@
 """内容源抽象 —— 让同一套 Draft/Review 骨架能写综述(证据=文献笔记)或实验论文
 (证据=结果库:CSV/JSON/日志/图)。
 
-`PAPER_MODE` 决定后端。本模块只负责"读取并整理原始素材",不再产出聚合文件:
+本模块只负责"读取并整理原始素材",不再产出聚合文件:
 - idea 全文:不再复制进任何 pack,每个 stage 的提示词第一行直接指向全局 idea.md,
   Agent 用 read_file 读原文(见 orchestrator 的 idea_clause 注入)。
-- data/ 结果:Manager 在 --init 时按三级索引生成 data/data-index.md 供 data 类章节
-  导航(见 build_data_index_prompt);数字门禁仍直读 data/ 原文作为 ground truth。
+- 结果表:数据索引由程序生成(见 results_tables.render_data_index);数字门禁仍直读
+  结果目录原文作为 ground truth。
 
 所以本模块现在只剩两类纯读取/整理函数:idea 相关(load_idea_document / idea_is_skeleton)
 与 data 相关(load_results_store / list_plots / render_results_summary)。前者服务于
@@ -19,7 +19,7 @@ from pathlib import Path
 
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from config import PAPER_MODE, DATA_ROOT, REFERENCES_ROOT, IDEA_PATH
+from config import DATA_ROOT, IDEA_PATH
 from .chapter_type import IDEA, DATA, MIXED
 
 
@@ -141,7 +141,7 @@ def render_results_summary(store: dict, plots: list[str] = None,
         blocks.append("## Numeric results (the ONLY citable values)")
         blocks.append("\n".join(rows))
     else:
-        blocks.append("(no numeric results found in data/ — provide CSV/JSON results first)")
+        blocks.append("(no numeric results found — provide result CSVs under inbox/results/ first)")
     if plots:
         blocks.append("## Available plots (reference by filename; do not invent figures)")
         blocks.append("\n".join(f"- {p}" for p in plots))
@@ -217,20 +217,17 @@ def idea_is_skeleton(idea_text: str) -> tuple[bool, int]:
 
 def content_source_summary(family: str = "") -> str:
     """运行横幅用的单行素材状态摘要。"""
-    if PAPER_MODE != "experiment":
-        return f"survey mode — reference notes in {REFERENCES_ROOT}"
     numeric = {k: v for k, v in load_results_store().items()
                if not (isinstance(v, str) and v.startswith(":"))}
     idea = load_idea_document()
     idea_state = f"idea.md {len(idea.split())} words" if idea else "idea.md MISSING"
-    parts = [f"experiment mode — {idea_state}", f"{len(numeric)} metrics in {DATA_ROOT.name}/"]
+    parts = [f"{idea_state}", f"{len(numeric)} metrics in {DATA_ROOT.name}/"]
     if family:
         parts.append(f"routing={family}")
     return " — ".join(parts[:1]) + ", " + ", ".join(parts[1:])
 
 
 if __name__ == "__main__":
-    print("PAPER_MODE:", PAPER_MODE)
     print("summary:", content_source_summary())
     # idea 相关函数自检:填了的 idea 不算骨架,没填的算。
     filled = "# Idea\n\n## 贡献\n我们提出 Spec 模块,提升细粒度分类精度。\n"

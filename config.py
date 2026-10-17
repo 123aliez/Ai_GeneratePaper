@@ -1,78 +1,59 @@
 """Central configuration for the experiment-paper writing framework.
 
-This is a standalone project (sibling of `survey/`). Unlike the survey engine,
-its content source is a directory of experiment results (CSV/JSON/logs/plots)
-rather than a literature-note library. Paths below are all project-relative so
-the framework can be copied anywhere.
+一篇论文 = 一个项目文件夹(`python run.py --new 名字` 建立,之后所有命令带
+`--project <路径>`)。run.py 在 import 本模块之前把路径放进环境变量 PAPER_PROJECT,
+下面所有路径都从它派生:
+
+    <项目>/
+    ├── inbox/            作者的全部材料(Agent 只读)
+    │   ├── idea.md  outline_draft.md
+    │   ├── results/      主结果.csv 等 + 实验设置.md
+    │   ├── references/   refs.bib + 每篇一个文件夹(笔记 + 原文)
+    │   ├── code/         实验代码(只建静态索引)
+    │   └── latex-template/  可选
+    ├── outline.zh.md     展开后的中文大纲(作者审这个)
+    ├── _work/            中间产物:索引、英文大纲、各章工作区
+    └── output/           交付物
+
+没有指定项目时(测试 / 仅 import)退回仓库根目录,路径指向不存在的 inbox/,
+真正的命令入口会在 main() 里拒绝这种情况。
 """
 import os
 from pathlib import Path
 from dotenv import load_dotenv
 
-load_dotenv(Path(__file__).parent / ".env", override=True)
+_REPO_ROOT = Path(__file__).resolve().parent
+load_dotenv(_REPO_ROOT / ".env", override=True)
 
-# ── 平台运行根目录注入（多用户平台用；CLI 单机模式完全不受影响）──────────
-# 现有引擎在 import 时就 ``from config import IDEA_PATH`` 冻结路径，所以多任务隔离
-# 靠「每任务一个全新子进程，在 import config 之前注入 PAPER_RUNTIME_ROOT」实现：
-# 平台把该环境变量指向任务的 work/ 目录，config 据此把 PROJECT_ROOT 重定向过去，
-# idea/data/workspace/references 全部级联到任务专属目录内。
-# 留空（CLI 模式）→ PROJECT_ROOT 仍是 config.py 所在目录，行为与改造前逐字节一致。
-_PAPER_RUNTIME_ROOT = os.environ.get("PAPER_RUNTIME_ROOT")
-if _PAPER_RUNTIME_ROOT:
-    PROJECT_ROOT = Path(_PAPER_RUNTIME_ROOT).resolve()
-else:
-    PROJECT_ROOT = Path(__file__).resolve().parent
+_PROJECT_ENV = os.environ.get("PAPER_PROJECT")
+PROJECT_ROOT = Path(_PROJECT_ENV).resolve() if _PROJECT_ENV else _REPO_ROOT
+HAS_PROJECT = bool(_PROJECT_ENV)
+if HAS_PROJECT:
+    load_dotenv(PROJECT_ROOT / ".env", override=True)   # 项目级 .env 可覆盖模型配置
 
-# ── Project layout ──────────────────────────────────────────────────────
-# 注意：PROJECT_ROOT 在平台子进程模式下被重定向到任务 work 目录；DATA_ROOT /
-# WORKSPACE_ROOT / REFERENCES_ROOT 都从这里派生，随之落到任务专属目录内。
-DATA_ROOT = Path(os.getenv("DATA_ROOT") or (PROJECT_ROOT / "data"))            # user-provided experiment results
-WORKSPACE_ROOT = Path(os.getenv("WORKSPACE_ROOT") or (PROJECT_ROOT / "workspace"))  # section drafts / reviews / finals
-REFERENCES_ROOT = PROJECT_ROOT / "references"  # bibliography + reading notes
-REFERENCE_INDEX_PATH = REFERENCES_ROOT / "index.md"
-BIBLIOGRAPHY_PATH = REFERENCES_ROOT / "bibliography.md"
+# ── 项目布局 ────────────────────────────────────────────────────────────
+INBOX_ROOT = PROJECT_ROOT / "inbox"                       # 作者材料(只读)
+WORK_ROOT = PROJECT_ROOT / "_work"                        # 中间产物
+OUTPUT_ROOT = PROJECT_ROOT / "output"                     # 交付物
+INDEX_DIR = WORK_ROOT / "index"                           # 程序生成的索引
+WORKSPACE_ROOT = WORK_ROOT / "workspace"                  # 各章工作区
 
-# ── The idea document (highest-priority input, read by EVERY agent) ──────
-# One global file the user writes: the novelty, the mechanism, the method
-# design, the claims. This — not the results store — is what a Method /
-# Introduction / Related Work chapter is written from. Experiment numbers only
-# support the idea; they are not the contribution. Every chapter reads the SAME
-# idea.md, so the novelty is stated identically across the paper. It is injected
-# as the first instruction of every stage prompt (idea is never copied into a
-# pack or paraphrased — paraphrasing upstream is how a paper's claims drift).
-IDEA_PATH = Path(os.getenv("IDEA_PATH") or (PROJECT_ROOT / "idea.md"))
+IDEA_PATH = INBOX_ROOT / "idea.md"                        # 贡献的唯一来源
+DATA_ROOT = INBOX_ROOT / "results"                        # 实验结果(csv)+ 实验设置.md
+REFERENCES_ROOT = INBOX_ROOT / "references"               # 文献室
+REFS_BIB_PATH = REFERENCES_ROOT / "refs.bib"              # 引用 key 的唯一来源
+CODE_ROOT = INBOX_ROOT / "code"                           # 实验代码(只读、不执行)
+TEMPLATE_ROOT = INBOX_ROOT / "latex-template"             # 可选会议模板
+SETTINGS_FILENAME = "实验设置.md"
 
-# ── The data index (Manager-built navigation over data/) ─────────────────
-# data/ holds the raw experiment files (CSV/JSON/logs/plots). Agents drafting
-# data-family chapters (results/experiments/ablation) navigate them via this
-# index — a three-level map (experiment → result → specific value) the Manager
-# writes during `--init`. Once it exists it is NOT overwritten (the author may
-# have edited it). The number gate still reads the raw data/ as ground truth;
-# this index is only for the agents' navigation, never for verification.
-DATA_INDEX_PATH = Path(os.getenv("DATA_INDEX_PATH") or (DATA_ROOT / "data-index.md"))
+# 程序生成的索引与目录:一律写在 _work/index/,不写进作者的 inbox。
+DATA_INDEX_PATH = INDEX_DIR / "data-index.md"             # 数据导航索引
+RES_IDS_PATH = INDEX_DIR / "res-ids.md"                   # RES 数字编号目录
+REF_INDEX_PATH = INDEX_DIR / "ref-index.md"               # 文献总索引
+CODE_INDEX_PATH = INDEX_DIR / "code-index.md"             # 代码静态索引
 
-# ── Inbox 前处理层（--intake，可选入口）─────────────────────────────────
-# 散装材料投放区：作者把 idea 文档 / 代码 / 数据 / 文献等乱扔进 inbox/，
-# `python run.py --intake`（纯 Python、零模型调用）扫描盘点 → 产出报告与
-# manifest → 把选定的 idea 候选逐字转正为 idea.md。流水线本身只认三份事实源
-# （idea.md / outline.md / data/），inbox 不改变任何下游契约。
-# INBOX_ROOT 从 PROJECT_ROOT 派生（非硬编码）→ 平台注入 PAPER_RUNTIME_ROOT 时
-# inbox 自动落进任务 work/，server/ 将来接入只需 materialize 多复制一个 inbox/
-# 再先跑一次 `run.py --intake` 子进程。env 可覆盖，与 DATA_ROOT 同款约定。
-INBOX_ROOT = Path(os.getenv("INBOX_ROOT") or (PROJECT_ROOT / "inbox"))
-# 盘点产物必须在 inbox/ 之外：写进 inbox 会改变其内容哈希，幂等跳过永不成立。
-# var/ 已被 .gitignore 覆盖（运行时状态，不入库）。
-INTAKE_STATE_DIR = Path(os.getenv("INTAKE_STATE_DIR") or (PROJECT_ROOT / "var" / "intake"))
-INBOX_MANIFEST_PATH = INTAKE_STATE_DIR / "inbox-manifest.json"
-INBOX_REPORT_PATH = INTAKE_STATE_DIR / "inbox-report.md"
-
-# Kept as a str for parity with the survey engine's tool code.
+# Kept as a str for parity with older tool code.
 PAPER_ROOT = str(WORKSPACE_ROOT)
-
-# ── Mode ────────────────────────────────────────────────────────────────
-# "experiment": content source is data/ (results). "survey": content source is
-# references/ notes (parity with the original engine, for reuse/testing).
-PAPER_MODE = os.getenv("PAPER_MODE", "experiment")
 
 # ── Per-agent model config (provider + model + key + base, each independent) ─
 # 模型调用框架：OpenAI 走 smolagents OpenAIModel，Claude 走 AnthropicModel 直连 /v1/messages。
@@ -114,13 +95,6 @@ LLM_RETRY_DELAY_2 = float(os.getenv("LLM_RETRY_DELAY_2", "2.0"))   # 第 2 次�
 LLM_RETRY_JITTER_RATIO = float(os.getenv("LLM_RETRY_JITTER_RATIO", "0.25"))
 LLM_FAST_RETRY_AFTER_CAP = float(os.getenv("LLM_FAST_RETRY_AFTER_CAP", "15"))  # 服务端 Retry-After 上限
 
-# ── Retrieval LLM (the strong web-search model, e.g. grok) ──────────────
-# Used by the two-tier retrieval: notes/bib first, this model for web lookup.
-# Left blank disables the web tier; the framework still works notes-only.
-RETRIEVAL_MODEL = os.getenv("RETRIEVAL_MODEL", "")
-RETRIEVAL_API_KEY = os.getenv("RETRIEVAL_API_KEY", "")
-RETRIEVAL_API_BASE = os.getenv("RETRIEVAL_API_BASE", "")
-
 MAX_STEPS_AGENT = int(os.getenv("MAX_STEPS_AGENT", "15"))
 MAX_STEPS_MANAGER = int(os.getenv("MAX_STEPS_MANAGER", "20"))
 
@@ -131,11 +105,6 @@ MAX_STEPS_MANAGER = int(os.getenv("MAX_STEPS_MANAGER", "20"))
 # the score; REVIEW_SCORE_THRESHOLD only records the bar we report against.
 MAX_REVISION_ROUNDS = int(os.getenv("MAX_REVISION_ROUNDS", "4"))
 REVIEW_SCORE_THRESHOLD = float(os.getenv("REVIEW_SCORE_THRESHOLD", "4.0"))
-
-# ── Citation integrity ──────────────────────────────────────────────────
-# Auto-supplement missing citations only from the local bibliography by
-# default; web-sourced citations must carry a verifiable URL before insertion.
-AUTO_CITE_WEB = os.getenv("AUTO_CITE_WEB", "false").lower() == "true"
 
 
 def _model_timeout() -> float | None:

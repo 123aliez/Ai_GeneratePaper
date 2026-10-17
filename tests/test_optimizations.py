@@ -96,23 +96,6 @@ def test_no_alignment_special_case():
         check(f"{count} 节分组边界", got == want, f"got {got}, want {want}")
 
 
-# ── 优化 2:survey 专用路径在 experiment 模式下拒绝执行 ────────────────
-def test_survey_paths_refuse_in_experiment_mode():
-    check("当前是 experiment 模式", orch.PAPER_MODE == "experiment", orch.PAPER_MODE)
-    for name, call in [
-        ("build_4stage_manager_prompt", lambda: orch.build_4stage_manager_prompt("x")),
-        ("run_4stage_via_manager", lambda: orch.run_4stage_via_manager(None, "x")),
-        ("run_4stage_via_manager_stream", lambda: orch.run_4stage_via_manager_stream(None, "x")),
-        ("run_4stage_direct", lambda: orch.run_4stage_direct(None, None, "x")),
-    ]:
-        try:
-            call()
-        except RuntimeError as exc:
-            check(f"{name} 在 experiment 模式下抛 RuntimeError",
-                  "survey" in str(exc) and "experiment" in str(exc), str(exc))
-        else:
-            raise AssertionError(f"{name} 应当拒绝执行,却正常返回了")
-
 
 # ── 优化 3:brief 指纹捕获路由变化 + 陈旧产物告警 ─────────────────────
 # context-pack 已删除,路由变化改由 brief.md 首行的 outline 指纹(chapter_fingerprint,
@@ -182,106 +165,6 @@ def test_stale_artifact_warning():
           orch.warn_stale_route_artifacts(tempfile.mkdtemp(), "ws/x", "old", "new") == [])
 
 
-# ── 优化 4:两层检索已接成 Agent 工具 ─────────────────────────────────
-def test_search_literature_formatting():
-    """格式化逻辑用 mock 驱动,不碰网络。
-
-    审查指出原测试直接调真 two_tier_search:一旦 .env 配了 RETRIEVAL_MODEL,
-    这个"离线测试"会真的发网络请求。
-    """
-    import agents.tools as tools_mod
-
-    def fake_search(notes, web):
-        return lambda query, k=5: {"notes": notes, "web": web, "query": query}
-
-    original = None
-    if hasattr(tools_mod, "two_tier_search"):
-        original = tools_mod.two_tier_search
-
-    # 1) 两层都有命中
-    hit_note = {"id": "REF-0003", "title": "Chinchilla",
-                "note_path": "references/chinchilla.md", "snippet": "scaling law"}
-    hit_web = {"title": "Some paper", "url": "https://arxiv.org/abs/1234",
-               "snippet": "abstract text"}
-    out = tools_mod._format_literature_result(
-        "scaling", {"notes": [hit_note], "web": [hit_web]})
-    check("Tier 1 命中渲染成表格", "REF-0003" in out and "Chinchilla" in out, out[:400])
-    check("Tier 1 命中标注可 cite", "\\cite" in out, out[:400])
-    check("Tier 2 命中渲染出 URL", "https://arxiv.org/abs/1234" in out, out[:600])
-    check("Tier 2 明确标注不可引用",
-          "LEADS ONLY" in out and "no \\cite key" in out, out[:800])
-
-    # 2) 两层都空
-    out = tools_mod._format_literature_result("nothing", {"notes": [], "web": []})
-    check("Tier 1 无命中时禁止编造 cite key",
-          "do NOT invent" in out, out[:400])
-    check("Tier 2 无命中时说明关闭",
-          "disabled" in out.lower(), out[:600])
-
-    # 3) 返回值不是 dict → 明确错误,不抛异常
-    out = tools_mod._format_literature_result("x", "not a dict")
-    check("非 dict 返回值给出错误字符串", out.startswith("Error:"), out[:200])
-
-    # 4) 字段缺失的脏数据 → 过滤掉,不 KeyError
-    dirty = {"notes": [{"id": "REF-1"},                    # 缺 title/note_path/snippet
-                       {"title": "no id"},                  # 无 id,应被过滤
-                       "not a dict"],
-             "web": [{"title": "no url"},                   # 缺 url,应被过滤
-                     {"url": "https://x", "title": "ok"},
-                     None]}
-    out = tools_mod._format_literature_result("dirty", dirty)
-    check("缺字段的 note 不会 KeyError", "REF-1" in out, out[:400])
-    check("无 id 的 note 被过滤", "no id" not in out, out[:400])
-    check("无 url 的 web 命中被过滤", "no url" not in out, out[:600])
-    check("合法 web 命中保留", "https://x" in out, out[:600])
-
-    # 5) two_tier_search 抛异常 → 返回错误字符串,不把异常丢给 Agent
-    def boom(query, k=5):
-        raise RuntimeError("network down")
-
-    tools_mod.two_tier_search = boom
-    try:
-        out = tools_mod.search_literature("anything")
-        check("检索抛异常时返回错误字符串", out.startswith("Error:"), out[:200])
-        check("错误信息带上原因", "network down" in out, out[:200])
-    finally:
-        if original is not None:
-            tools_mod.two_tier_search = original
-        else:
-            delattr(tools_mod, "two_tier_search")
-
-    # 6) mock 正常返回 → 走完整路径
-    tools_mod.two_tier_search = fake_search([hit_note], [])
-    try:
-        out = tools_mod.search_literature("scaling", 3)
-        check("mock 驱动的完整调用返回 Tier 1 命中", "REF-0003" in out, out[:400])
-    finally:
-        if original is not None:
-            tools_mod.two_tier_search = original
-        else:
-            delattr(tools_mod, "two_tier_search")
-
-    # 7) 格式化本身抛异常也不能漏给 Agent(复审 PARTIAL 项:_format_literature_result
-    #    原先在 try 之外,渲染阶段的意外异常会直接冒到 Agent 侧)
-    original_fmt = tools_mod._format_literature_result
-
-    def fmt_boom(query, result):
-        raise ValueError("render exploded")
-
-    tools_mod.two_tier_search = fake_search([hit_note], [])
-    tools_mod._format_literature_result = fmt_boom
-    try:
-        out = tools_mod.search_literature("scaling")
-        check("格式化异常也被兜住,返回错误字符串", out.startswith("Error:"), out[:200])
-        check("格式化异常信息带上原因", "render exploded" in out, out[:200])
-    finally:
-        tools_mod._format_literature_result = original_fmt
-        if original is not None:
-            tools_mod.two_tier_search = original
-        else:
-            delattr(tools_mod, "two_tier_search")
-
-
 def test_all_three_agents_get_search_literature():
     """三个 Agent 的 tools 列表都必须含 search_literature。
 
@@ -305,9 +188,12 @@ def test_all_three_agents_get_search_literature():
 
     for label, agent in (("manager", manager), ("draft", draft), ("review", review)):
         names = {getattr(t, "name", getattr(t, "__name__", "")) for t in agent.tools}
-        check(f"{label}_agent 持有 search_literature", "search_literature" in names, str(names))
-        check(f"{label}_agent 原有工具未丢",
-              {"read_file", "write_file", "list_folder"} <= names, str(names))
+        check(f"{label}_agent 持有文献受控读取工具",
+              {"read_reference", "search_reference_text"} <= names, str(names))
+        check(f"{label}_agent 持有读取护栏工具且原有工具未丢",
+              {"read_file", "read_file_range", "write_file", "list_folder"} <= names, str(names))
+        check(f"{label}_agent 不再有联网/旧索引检索工具",
+              not ({"search_literature", "search_references"} & names), str(names))
 
 
 if __name__ == "__main__":

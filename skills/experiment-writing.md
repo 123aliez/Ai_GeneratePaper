@@ -10,8 +10,8 @@
 | family | 主源 | 另一个源的角色 |
 |---|---|---|
 | `idea` | **`idea.md`**(作者写的全局文档,读全文) | 数字只作辅助,最多引一个 headline 数 |
-| `data` | **`data-index.md`**(导航 `data/` 结果的三级索引) | idea.md 只用来决定 narrative,不重述方法设计 |
-| `mixed` | 两者并重 | 论断来自 idea.md,支撑来自 data-index.md |
+| `data` | **数据索引 `data-index.md`**(每张结果表一个 `{{RES-xxx}}=值` 网格)+ 实验设置.md | idea.md 只用来决定 narrative,不重述方法设计 |
+| `mixed` | 两者并重 | 论断来自 idea.md,支撑来自数据索引 |
 
 **不许跨类型代偿**:方法章不许用实验结果代替机制解释("我们的方法涨了 3.4 点"
 不是"为什么这样设计能work"的答案);结果章不许用方法阐述填篇幅。
@@ -24,23 +24,23 @@
 - 解释机制要回答"为什么work",不是"效果多好"
 
 ## 数字纪律(data 类章节最高优先)
-- **每个数字必须来自 `data/` 结果库**,能从 `data-index.md` 的索引追回原值
+- **每个结果数字必须来自结果表**:只写 `{{RES-xxx}}` 占位符(差值/相对提升写 `{{DIFF:..}}`/`{{REL:..}}`),整张表写 `[TABLE: …]`,不手打数字
 - 引用数字必须带来源:如 `run_1_ours 的 top1_accuracy = 81.7%`
 - 缺数据标 `[MISSING DATA]`,绝不猜、绝不 extrapolate
 - 结果与讨论必须引**同一组数**——同一指标在不同章节值不能变
-- idea 类章节引 headline 数时同样受这条约束:不在 data-index.md 里的数字一律不许写
+- idea 类章节引 headline 数时同样受这条约束:不在数据索引里的数字一律不许写
 
 ## 章节内容边界
 | 章节 | type | 只写什么 |
 |---|---|---|
-| Abstract | `abstract` | 问题+方法+最强量化结果(数字必须在 data-index.md 里) |
+| Abstract | `abstract` | 问题+方法+最强量化结果(数字只能是 `{{RES-xxx}}` 占位符) |
 | Introduction | `intro` | 动机+贡献清单(**照 idea.md 的清单,不加不减**),每个贡献要有后续支撑 |
-| Related Work | `related` | 用你的 bibliography + idea.md 的 delta 表;不凭记忆说别人数字 |
+| Related Work | `related` | 用文献索引与笔记 + idea.md 的 delta 表;只写别人怎么做、效果好不好、局限在哪,不写具体数字 |
 | Background | `background` | 预备知识和记号;不掺入本文贡献 |
 | Method | `method` | **从 idea.md 展开机制与设计选择**;只写真正实现的;遵守 Notation Table |
 | Theory | `theory` | 从 idea.md 的公式出发;假设要写全 |
-| Experimental Setup | `experiments` | 只写 data/ / hardware 里有的;没有标 [UNKNOWN] |
-| Results | `results` | 只写 data/ 里的;表格用 3+ 对比;禁幻觉;不重述方法 |
+| Experimental Setup | `experiments` | 只写 实验设置.md 里有的;代码细节标 `[FROM CODE — 需核对]`;都没有标 [UNKNOWN] |
+| Results | `results` | 只写结果表里的;结果表用 `[TABLE: …]`;禁幻觉;不重述方法 |
 | Ablation | `ablation` | 逐个组件对照;缺的消融标 gap 不编 |
 | Discussion | `discussion` | 只解释已报告的结果;同一组数;区分 supported vs suggests |
 | Limitations | `limitations` | 以 idea.md 的「已知局限」为底,加数据暴露的短板 |
@@ -54,7 +54,7 @@
 
 ## 防幻觉铁律
 - 不臆想**创新点或机制**(idea.md 里没有的 → `[DESIGN DETAIL NEEDED]`)
-- 不臆想硬件/超参/数据集大小(data/ 里没有的 → `[UNKNOWN]`)
+- 不臆想硬件/超参/数据集大小(实验设置.md 里没有的 → `[UNKNOWN]`)
 - 不臆想未跑的实验/消融(缺失 baseline → 标 gap,不编)
 - 不臆想显著性(没有检验/区间数据 → 只描述趋势,不 assert significance)
 - 答不出就说 "I cannot answer from the provided evidence",不留空档硬编
@@ -63,7 +63,7 @@
 1. 这段的 `CHAPTER TYPE` 是什么?主源用对了吗?
 2. idea 类:机制是**解释**了还是只**断言**了?设计选择给理由了吗?
 3. idea 类:声称的贡献都在 idea.md 的贡献清单里吗?
-4. data 类:每个数字都能对回 data/ 结果库(data-index.md 里有)?
+4. data 类:每个数字都是占位符/渲染表,没有手打?
 5. Results 和 Discussion 引同一组数?
 6. 每张图占位符都有数据来源 + 支撑论断?
 7. 每个符号首次使用都定义了,且与 idea.md 一致?

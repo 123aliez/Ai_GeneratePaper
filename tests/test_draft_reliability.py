@@ -162,7 +162,7 @@ def test_retired_ids_are_never_reused():
     write(f"{d}/r.json", json.dumps({"a": 1.0, "b": 2.0, "c": 9.0, "d": 4.0}))
     m4, _ = ensure_res_ids(d)
     check("同 key 重现恢复原 ID,值取当前 data/",
-          m4.get("RES-003") == {"key": "r.c", "value": 9.0}, str(m4))
+          m4.get("RES-003", {}).get("key") == "r.c" and m4["RES-003"]["value"] == 9.0, str(m4))
     check("恢复后退役列表清空", parse_retired_ids(path.read_text(encoding="utf-8")) == {})
 
 
@@ -217,7 +217,7 @@ def test_inputs_fingerprint_scope():
     f_idea = sr.inputs_fingerprint("idea", idea, data)
     f_data = sr.inputs_fingerprint("data", idea, data)
     check("idea 章只依赖 idea.md", set(f_idea) == {"idea"}, str(f_idea))
-    check("data 章依赖 idea.md + 结果库", set(f_data) == {"idea", "data"}, str(f_data))
+    check("data 章依赖 idea.md + 结果库 + 实验设置", set(f_data) == {"idea", "data", "settings"}, str(f_data))
     write(f"{data}/r.json", '{"acc": 0.6}')
     check("结果数值变 → data 章指纹变", sr.inputs_fingerprint("data", idea, data) != f_data)
     check("结果数值变 → idea 章指纹不变", sr.inputs_fingerprint("idea", idea, data) == f_idea)
@@ -276,16 +276,15 @@ def test_run_all_stops_on_stale_completed_chapter():
     check("陈旧时不调流水线", not calls)
 
 
-def _run_all_patched(ws, calls, handoff, staleness, mode="experiment"):
+def _run_all_patched(ws, calls, handoff, staleness):
     """在桩环境里跑 run_all_chapters:单章 01-method,已完成;返回 (stdout, rc)。"""
     import run as run_mod
     saved = (run_mod.outline_chapters_in_order, run_mod.chapter_is_complete,
-             run_mod.PAPER_ROOT, run_mod.run_4stage_with_progress, run_mod.PAPER_MODE,
+             run_mod.PAPER_ROOT, run_mod.run_4stage_with_progress,
              orch.chapter_staleness, orch.handoff_is_current)
     run_mod.outline_chapters_in_order = lambda: (["01-method"], None)
     run_mod.chapter_is_complete = lambda name: True
     run_mod.PAPER_ROOT = ws
-    run_mod.PAPER_MODE = mode
     run_mod.run_4stage_with_progress = lambda *a, **k: calls.append(a) or {"route_blocked": "stub"}
     orch.chapter_staleness = staleness
     orch.handoff_is_current = lambda folder: handoff
@@ -295,24 +294,12 @@ def _run_all_patched(ws, calls, handoff, staleness, mode="experiment"):
             rc = run_mod.run_all_chapters(None, None, None)
     finally:
         (run_mod.outline_chapters_in_order, run_mod.chapter_is_complete,
-         run_mod.PAPER_ROOT, run_mod.run_4stage_with_progress, run_mod.PAPER_MODE,
+         run_mod.PAPER_ROOT, run_mod.run_4stage_with_progress,
          orch.chapter_staleness, orch.handoff_is_current) = saved
     return buf.getvalue(), rc
 
 
 # ── codex 审查首轮问题的回归 ─────────────────────────────────────────────
-def test_run_all_survey_mode_skips_fingerprint_check():
-    """I2:survey 没有阶段指纹记账,已完成章不能被实验模式的检查硬停。"""
-    ws = tempfile.mkdtemp()
-    os.makedirs(os.path.join(ws, "01-method"))
-    calls = []
-
-    def boom(folder):
-        raise AssertionError("survey 模式不应调用 chapter_staleness")
-    out, rc = _run_all_patched(ws, calls, handoff=False, staleness=boom, mode="survey")
-    check("survey 已完成章照常跳过", rc == 0 and "已完成,跳过" in out and not calls, out[-300:])
-
-
 def test_run_all_reruns_chapter_when_handoff_not_current():
     """I3:交接凭据不符 → 不当作已完成跳过,而是跑该章(只会重跑 Stage 5)。"""
     ws = tempfile.mkdtemp()

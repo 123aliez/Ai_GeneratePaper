@@ -4,12 +4,12 @@
 >
 > **状态:未填写**(填完请删掉这一行)
 >
-> 修改本文件为 `idea.md`(项目根目录),框架会自动读取。
-> 想放别处就在 `.env` 里设 `IDEA_PATH=你的路径`。
+> 这份文件放在项目的 `inbox/idea.md`,框架会自动读取。每一节写什么见根目录 README 的
+> “idea.md 怎么写”。
 
 > 论文的贡献是**创新点和原理**
 > Method / Introduction / Related Work 这些章节以本文档为主输入;只有
-> Experiments / Results / Ablation 章才以 `data/` 结果库为主输入。
+> Experiments / Results / Ablation 章才以 `inbox/results/` 的结果表为主输入。
 >
 > 框架**绝不替你编造创新点**。本文档没写到的设计细节,起草时会标成
 > `[DESIGN DETAIL NEEDED]` 交回给你,而不是"合理地"补一个。
@@ -63,11 +63,11 @@
 ## 5. 与最近工作的区别
 
 对每个最相关的工作,说清楚**差在哪**。Related Work 章从这节展开,
-引用请用 `references/bibliography.md` 里的 REF-ID。
+引用用 `inbox/references/refs.bib` 里的 bib key。
 
-| 相关工作 | REF-ID | 它做了什么 | 我们的不同 |
+| 相关工作 | bib key | 它做了什么 | 我们的不同 |
 |---|---|---|---|
-| <> | REF-0007 | <> | <> |
+| <> | he2016resnet | <> | <> |
 
 ## 6. 论文声称的贡献清单
 
@@ -86,4 +86,4 @@
 ## 8. 预期结论
 
 <读者读完应该记住什么。Conclusion 章从这节收口。注意:这里写的是
-"论点",不是"数字"——具体数字由 data/ 结果库提供,框架会做数字比对门禁。>
+"论点",不是"数字"——具体数字由 inbox/results/ 的结果表提供,框架会做数字比对门禁。>

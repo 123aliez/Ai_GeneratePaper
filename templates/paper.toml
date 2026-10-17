@@ -1,0 +1,3 @@
+# 可选。LaTeX 工程的标题与作者。
+title = "Paper Title"
+authors = ["Author One", "Author Two"]

@@ -125,11 +125,12 @@ def test_number_gate_strips_placeholders():
 def test_idea_clause_uses_res_ids_when_available():
     import agents.orchestrator as orch
     clause = orch.idea_clause("data", res_ids_path="/x/data/res-ids.md")
-    check("res_ids_path 在场 → 数字纪律指向占位符",
-          "res-ids.md" in clause and "{{RES-xxx}}" in clause, clause[:300])
+    check("res_ids_path 在场 → 数字纪律指向数据索引与占位符",
+          "data-index.md" in clause and "{{RES-xxx}}" in clause and "{{DIFF:RES-a,RES-b}}" in clause
+          and "[TABLE:" in clause, clause[:300])
     legacy = orch.idea_clause("data", res_ids_path=None)
-    check("res_ids_path 缺席 → 退回 data-index 旧表述",
-          "data-index.md" in legacy and "RES" not in legacy, legacy[:300])
+    check("res_ids_path 缺席 → 不许写任何结果数字",
+          "NO experiment results" in legacy and "RES-xxx" not in legacy, legacy[:300])
     idea_c = orch.idea_clause("idea", res_ids_path="/x/data/res-ids.md")
     check("idea 章不带数字纪律", "RES" not in idea_c, idea_c[:200])
 

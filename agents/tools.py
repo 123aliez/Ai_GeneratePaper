@@ -4,10 +4,19 @@ from smolagents import tool
 
 _current_agent = "Agent"
 # 写入作用域:章节流水线运行时设为本章目录,write_file 只允许写进这里。
-# idea.md / data/ / outline.md / references/ 是作者的输入,Agent 物理上不可改——
-# 仅靠提示词"不要改"约束不住。None = 不限制(--expand/--init/--retrieve 需要
-# 写 outline.md / data-index.md / retrieval-queries.json)。
+# inbox 里的作者材料(idea、结果、文献、代码)与 outline 对 Agent 物理只读——
+# 仅靠提示词"不要改"约束不住。None = 不限制(--expand / 建索引 / 翻译需要写
+# outline 与索引文件,它们用下面的文件白名单约束)。
 _write_scope: str | None = None
+# 独立阶段(--expand / 建索引 / 翻译大纲)没有"本章目录",改用显式文件白名单:
+# 只允许写这几个路径。None = 不启用白名单。
+_write_allowlist: set | None = None
+
+# 单次读取上限:超大文件(日志、CSV)整份塞进上下文会撑爆窗口,也会被依赖层静默截断。
+MAX_READ_CHARS = 100000
+MAX_RANGE_LINES = 400
+MAX_LIST_ENTRIES = 200
+LOOKUP_LOG_NAME = "fulltext-lookups.md"
 
 
 def set_agent_context(name: str) -> None:
@@ -21,7 +30,22 @@ def set_write_scope(root: str | None) -> None:
     _write_scope = os.path.realpath(root) if root else None
 
 
+def set_write_allowlist(paths) -> None:
+    """独立阶段用:write_file 只能写这些文件;None/空 解除。"""
+    global _write_allowlist
+    _write_allowlist = {os.path.realpath(p) for p in paths} if paths else None
+
+
+# 程序专属文件:即使在本章目录内,Agent 也不能写(指纹账本、核验状态、brief、数字使用记录)。
+PROGRAM_OWNED = {".stage-manifest.json", "verification.md", "brief.md", "numbers-used.json",
+                 "fulltext-lookups.md"}
+
+
 def _outside_write_scope(file_path: str) -> bool:
+    if _write_scope is not None and os.path.basename(file_path) in PROGRAM_OWNED:
+        return True
+    if _write_allowlist is not None:
+        return os.path.realpath(file_path) not in _write_allowlist
     if _write_scope is None:
         return False
     # realpath 解析 .. 与符号链接,防止 "chapter/../../idea.md" 之类绕过。
@@ -33,66 +57,86 @@ def _outside_write_scope(file_path: str) -> bool:
         return True
 
 
+def _in_references_room(file_path: str) -> bool:
+    """路径在 inbox/references/ 里?原始笔记含作者私人小节(对我的研究的启发等)与
+    整篇原文,不许 Agent 直接读;只能走 read_reference / search_reference_text。"""
+    import config
+    root_real = os.path.realpath(str(config.REFERENCES_ROOT))
+    root_abs = os.path.abspath(str(config.REFERENCES_ROOT))
+    for target, root in ((os.path.realpath(file_path), root_real),
+                         (os.path.abspath(file_path), root_abs)):   # 解析后与未解析的路径都判
+        try:
+            if os.path.commonpath([target, root]) == root:
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+_REFERENCES_REFUSAL = ("Error: inbox/references/ is not readable directly. Use "
+                       "read_reference(key) for the note and search_reference_text(key, query) "
+                       "for fulltext excerpts; keys are listed in the reference index.")
+
+
 def _rel(path: str) -> str:
-    p = path.replace("\\", "/")
-    for marker in ("/paper/", "/survey/"):
-        if marker in p:
-            after = p.split(marker, 1)[1]
-            return ("paper/" if marker == "/paper/" else "") + after
-    return p
+    return path.replace("\\", "/")
 
 
 def _log(action: str, path: str) -> None:
     print(f"[{_current_agent:<8}] {action:<10} | {_rel(path)}", flush=True)
 
 
-def _is_full_reference_index(path: str) -> bool:
-    """这个路径是不是那份全量文献索引(不该整份读进上下文)。
-
-    按文件名判断而不是拼死路径:索引在本项目里是 `references/index.md`,而在
-    survey 引擎里是 `paper/references/index.md`,两边都要挡住。
-    """
-    normalized = _rel(path).replace("\\", "/")
-    return normalized.endswith("references/index.md")
-
-
-def _index_path() -> Path:
-    """全量文献索引的位置。以 config 为准 —— 原先硬编码 `../../paper/references/`,
-    那是 survey 引擎的布局,在本项目里永远指向一个不存在的路径。"""
-    from config import REFERENCE_INDEX_PATH
-    return Path(REFERENCE_INDEX_PATH)
-
-
-def _reference_rows():
-    """索引里的 `| REF-...` 行;索引不存在时返回空列表。
-
-    本项目默认没有 index.md(引用来自 references/bibliography.md),所以缺文件是
-    正常状态而不是错误 —— 让 search_references 返回"0 行"比抛异常有用。
-    """
-    path = _index_path()
-    if not path.is_file():
-        return []
-    try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        return []
-    return [line for line in lines if line.startswith("| REF-")]
-
-
 @tool
 def read_file(file_path: str) -> str:
-    """Reads a text file and returns its content.
+    """Reads a text file and returns its content (long files are truncated).
 
     Args:
         file_path: Absolute or relative path to the file to read.
     """
     _log("read_file", file_path)
-    if _is_full_reference_index(file_path):
-        return "Use the injected reference excerpt in the task prompt, or call search_references(query, chapter) for bounded lookup. Do not read the full reference index."
+    if _in_references_room(file_path):
+        return _REFERENCES_REFUSAL
+    if os.path.basename(file_path).startswith(".env"):
+        return "Error: environment files are not readable."
     if not os.path.exists(file_path):
         return f"Error: File '{file_path}' does not exist."
-    with open(file_path, "r", encoding="utf-8") as f:
-        return f.read()
+    with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+        text = f.read(MAX_READ_CHARS + 1)
+    if len(text) > MAX_READ_CHARS:
+        return (text[:MAX_READ_CHARS]
+                + f"\n\n[TRUNCATED: file longer than {MAX_READ_CHARS} characters. "
+                  f"Use read_file_range(file_path, start_line, num_lines) to read the rest. "
+                  f"NEVER rewrite this file from a truncated read — you would drop its tail.]")
+    return text
+
+
+@tool
+def read_file_range(file_path: str, start_line: int = 1, num_lines: int = 200) -> str:
+    """Reads a line range of a text file (1-based start_line), for large files.
+
+    Args:
+        file_path: Absolute or relative path to the file to read.
+        start_line: First line to return, 1-based.
+        num_lines: How many lines to return (at most 400).
+    """
+    _log("read_range", file_path)
+    if _in_references_room(file_path):
+        return _REFERENCES_REFUSAL
+    if not os.path.exists(file_path):
+        return f"Error: File '{file_path}' does not exist."
+    start = max(1, int(start_line))
+    count = max(1, min(int(num_lines), MAX_RANGE_LINES))
+    out, total = [], 0
+    with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+        for i, line in enumerate(f, start=1):
+            total = i
+            if start <= i < start + count:
+                out.append(line)
+    body = "".join(out)
+    if len(body) > MAX_READ_CHARS:
+        body = body[:MAX_READ_CHARS] + "\n[TRUNCATED: lines too long]"
+    return (f"[lines {start}-{start + len(out) - 1} of {total}]\n" + body
+            if out else f"[no lines in range; file has {total} lines]")
 
 
 @tool
@@ -105,9 +149,9 @@ def write_file(file_path: str, content: str) -> str:
     """
     if _outside_write_scope(file_path):
         _log("DENIED", file_path)
-        return (f"Error: write refused — '{file_path}' is outside this chapter's folder "
-                f"'{_write_scope}'. Author inputs (idea.md, data/, outline.md, references/) "
-                f"are read-only; write only the chapter artifacts your task names.")
+        return (f"Error: write refused — '{file_path}' is outside what this task may write. "
+                f"Author inputs (inbox/, outline) are read-only; write only the "
+                f"artifacts your task names.")
     _log("write_file", file_path)
     dir_name = os.path.dirname(file_path)
     if dir_name:
@@ -118,144 +162,101 @@ def write_file(file_path: str, content: str) -> str:
 
 
 @tool
-def search_references(query: str, chapter: str = "") -> str:
-    """Search the global reference index and return up to 20 markdown table rows.
-
-    Args:
-        query: Keyword to search in title, tags, key use, or paths.
-        chapter: Optional chapter filter such as "03 Alignment".
-    """
-    q = (query or "").lower()
-    chapter = (chapter or "").strip()
-    max_rows = 20
-    rows = []
-    for row in _reference_rows():
-        columns = [column.strip() for column in row.strip("|").split("|")]
-        if len(columns) < 10:
-            continue
-        haystack = " ".join(columns).lower()
-        chapter_matches = not chapter or columns[4] == chapter or chapter in columns[5]
-        query_matches = not q or q in haystack
-        if chapter_matches and query_matches:
-            rows.append(row)
-        if len(rows) >= max_rows:
-            break
-    if not rows and not _index_path().is_file():
-        # 说清是"没有索引"而不是"搜不到" —— 否则 Agent 会反复换关键词重试。
-        return (f"# Reference search results\n"
-                f"No reference index at {_index_path()}. This project cites from "
-                f"references/bibliography.md; use search_literature(query) for "
-                f"leads, or work notes-free.\n")
-
-    header = [
-        f"# Reference search results",
-        f"Query: {query or '(none)'}",
-        f"Chapter filter: {chapter or '(none)'}",
-        "Rows returned: {count} (max 20)".format(count=len(rows)),
-        "",
-        "| ID | Title | Year | Evidence | Primary Chapter | Also Relevant To | Paradigm Tags | Key Use | Note Path | Full Text Path |",
-        "|---|---|---:|:---:|---|---|---|---|---|---|",
-    ]
-    return "\n".join(header + rows) + "\n"
-
-
-# 模块级引用,让测试可以直接赋值 mock(函数内 import 的话补丁打不进去)。
-try:
-    from .retrieval import two_tier_search
-except Exception:  # retrieval 不可用时工具调用会返回错误字符串而非崩溃
-    two_tier_search = None
-
-
-def _format_literature_result(query: str, result) -> str:
-    """把 two_tier_search 的返回值渲染成 Agent 可读的 Markdown。
-
-    独立函数便于测试直接传 mock 结果,无需触碰网络或真实检索模块。
-    result 不是 dict 时返回错误字符串;字段缺失的条目被防御性过滤,不 KeyError。
-    """
-    if not isinstance(result, dict):
-        return "Error: literature retrieval returned an invalid response."
-
-    raw_notes = result.get("notes", [])
-    raw_web   = result.get("web", [])
-    notes = [hit for hit in raw_notes
-             if isinstance(hit, dict) and str(hit.get("id") or "").strip()
-             ] if isinstance(raw_notes, list) else []
-    web   = [hit for hit in raw_web
-             if isinstance(hit, dict)
-             and str(hit.get("title") or "").strip()
-             and str(hit.get("url")   or "").strip()
-             ] if isinstance(raw_web, list) else []
-
-    lines = [f"# Literature search: {query}", ""]
-    lines.append("## Tier 1 — local bibliography / notes (AUTHORITATIVE)")
-    if notes:
-        lines.append("")
-        lines.append("| ID | Title | Note path | Key use |")
-        lines.append("|---|---|---|---|")
-        for hit in notes:
-            lines.append(
-                f"| {hit.get('id')} | {hit.get('title') or '(untitled)'} | "
-                f"{hit.get('note_path') or '(none)'} | {hit.get('snippet') or ''} |"
-            )
-        lines.append("")
-        lines.append("Cite these with \\cite{<ID>} — they exist in the user's bibliography.")
-    else:
-        lines.append("")
-        lines.append("(no local match — do NOT invent a \\cite key for this claim)")
-
-    # Tier 2 是补充线索,不是可引用来源:web 命中没有本地 bib 条目,插 \cite 会造成
-    # 悬空引用,编译前的引用闭合门禁会拦住。所以这里明确标注用途边界。
-    lines += ["", "## Tier 2 — web lookup (LEADS ONLY, not citable yet)"]
-    if web:
-        lines.append("")
-        for hit in web:
-            lines.append(f"- **{hit.get('title')}** — {hit.get('url')}")
-            if hit.get("snippet"):
-                lines.append(f"  - {hit.get('snippet')}")
-        lines += [
-            "",
-            "These have NO bibliography entry, so they have no \\cite key. Do not cite "
-            "them. Report them in todo.md so the user can add the ones worth keeping.",
-        ]
-    else:
-        lines.append("")
-        lines.append("(web tier disabled or no result — work from Tier 1 only)")
-    return "\n".join(lines) + "\n"
-
-
-@tool
-def search_literature(query: str, k: int = 5) -> str:
-    """Search the local bibliography and (if configured) the web for references.
-
-    Args:
-        query: What to look for, e.g. "frequency-domain channel attention".
-        k: Maximum number of hits per tier (default 5).
-    """
-    _log("search_lit", (query or "")[:60])
-    # 检索与格式化都包在同一个 try 里:工具函数的返回值会直接进 Agent 的上下文,
-    # 抛异常会打断它当前那一步的推理。宁可回一句可读的错误让它继续走,也不要
-    # 让一次检索失败把整个起草阶段带崩。
-    try:
-        search_fn = two_tier_search  # 模块级引用,测试可替换
-        if search_fn is None:
-            from .retrieval import two_tier_search as _fn
-            search_fn = _fn
-        result = search_fn(query, k)
-        return _format_literature_result(query, result)
-    except Exception as exc:
-        return f"Error: literature retrieval failed ({exc})."
-
-
-
-@tool
 def list_folder(folder_path: str) -> str:
-    """Lists all files and subdirectories in a folder.
+    """Lists files and subdirectories in a folder (long listings are truncated).
 
     Args:
         folder_path: Path to the folder to list.
     """
     _log("list_folder", folder_path)
+    if _in_references_room(folder_path):
+        return _REFERENCES_REFUSAL
     if not os.path.isdir(folder_path):
         return f"Error: '{folder_path}' is not a valid directory."
-    entries = os.listdir(folder_path)
-    return "\n".join(entries) if entries else "(empty folder)"
+    entries = sorted(os.listdir(folder_path))
+    if not entries:
+        return "(empty folder)"
+    if len(entries) > MAX_LIST_ENTRIES:
+        return ("\n".join(entries[:MAX_LIST_ENTRIES])
+                + f"\n[TRUNCATED: {len(entries)} entries, showing first {MAX_LIST_ENTRIES}]")
+    return "\n".join(entries)
+
+
+# ── 文献室受控读取 ───────────────────────────────────────────────────────
+def _index_dir() -> Path:
+    import config
+    return Path(config.INDEX_DIR)
+
+
+def _known_keys() -> set:
+    from .references import load_bib
+    import config
+    return set(load_bib(config.REFS_BIB_PATH)[0])
+
+
+def _log_lookup(key: str, query: str, paragraphs: list[int]) -> None:
+    """把原文查阅记在本章文件夹里,方便作者回头核对模型到底看了哪几段。"""
+    if not _write_scope:
+        return
+    path = Path(_write_scope) / LOOKUP_LOG_NAME
+    line = f"- [{key}] query={query!r} paragraphs={paragraphs}\n"
+    old = path.read_text(encoding="utf-8") if path.is_file() else "# Fulltext lookups\n\n"
+    path.write_text(old + line, encoding="utf-8")
+
+
+@tool
+def read_reference(key: str) -> str:
+    """Returns the filtered reading note of one cited paper (by bib key).
+
+    The note is the author's own structured summary of the paper. Prefer it over
+    the fulltext. Only keys listed in the reference index exist.
+
+    Args:
+        key: The bib key from the reference index, e.g. "he2016resnet".
+    """
+    _log("read_ref", key)
+    from .references import note_view_path
+    key = (key or "").strip()
+    if key not in _known_keys():
+        return f"Error: unknown reference key '{key}'. Use only keys from the reference index."
+    path = note_view_path(_index_dir(), key)
+    if not path.is_file():
+        return f"Reference '{key}' has no reading note; only its bibliographic entry is known. Do not describe its content."
+    text = path.read_text(encoding="utf-8", errors="replace")
+    if len(text) > MAX_READ_CHARS:
+        text = text[:MAX_READ_CHARS] + "\n[TRUNCATED]"
+    return text
+
+
+@tool
+def search_reference_text(key: str, query: str) -> str:
+    """Returns a few fulltext excerpts of one cited paper that match the query.
+
+    Use this only when the note lacks a detail you need. Excerpts are length-capped;
+    every lookup is logged for the author.
+
+    Args:
+        key: The bib key from the reference index.
+        query: Keywords describing the detail you need (e.g. "residual block depth").
+    """
+    _log("search_ref", f"{key}: {(query or '')[:60]}")
+    import json
+    from .references import search_fulltext
+    key = (key or "").strip()
+    if key not in _known_keys():
+        return f"Error: unknown reference key '{key}'. Use only keys from the reference index."
+    map_path = _index_dir() / "ref-fulltext.json"
+    try:
+        mapping = json.loads(map_path.read_text(encoding="utf-8")) if map_path.is_file() else {}
+    except (OSError, ValueError):
+        mapping = {}
+    full = mapping.get(key)
+    if not full or not Path(full).is_file():
+        return f"Reference '{key}' has no fulltext available; rely on its note."
+    text = Path(full).read_text(encoding="utf-8", errors="replace")
+    hits = search_fulltext(text, query)
+    if not hits:
+        return f"No passage of '{key}' matches '{query}'. Try other keywords or rely on the note."
+    _log_lookup(key, query, [i for i, _ in hits])
+    body = "\n\n".join(f"[paragraph {i}]\n{para}" for i, para in hits)
+    return f"# Excerpts from '{key}' for '{query}'\n\n{body}\n"

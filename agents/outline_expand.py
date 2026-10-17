@@ -261,7 +261,7 @@ def build_expand_prompt(chapters: list[dict], out_en_path: str,
     )
 
 
-def build_translate_prompt(out_zh_path: str, out_en_path: str) -> str:
+def build_translate_prompt(out_zh_path: str, out_en_path: str, old_en_path: str = "") -> str:
     """Manager 把作者改好的中文版 outline.zh.md 翻译成英文版 outline.md。
 
     只翻译语言,不动结构:章、type、小节划分、字数、小节级 type 全部逐字保留。
@@ -278,44 +278,12 @@ def build_translate_prompt(out_zh_path: str, out_en_path: str) -> str:
         f"- Keep `(~N words)` word counts and per-section `- type: X` lines VERBATIM "
         f"(do not translate `type` values or numbers).\n"
         f"- Keep the first-line HTML comment marker as-is.\n"
+        + (f"- The previous English outline is at '{old_en_path}'. For every chapter title, subsection "
+           f"title and bullet whose Chinese text did not change, REUSE its previous English wording "
+           f"exactly (chapter folder names are derived from the English titles — unchanged chapters "
+           f"must keep their titles). Translate only what the author changed.\n" if old_en_path else "") +
         f"- Write ONLY '{out_en_path}' with write_file, in exactly the outline syntax "
         f"(## chapter / type: / ### section / - bullet). No preamble or explanation.\n"
-    )
-
-
-def build_data_index_prompt(data_root: str, out_path: str, idea_path: str) -> str:
-    """Manager 生成 data-index.md 的任务。
-
-    data/ 里是作者跑出来的原始结果(CSV/JSON/日志/图),名字与结构千差万别,Agent 直接
-    读原始文件既慢又容易漏。这份索引把原始数字按三级组织——实验名 → 实验结果项 → 具体
-    数值——给 data 类章节(结果/实验/消融)导航用。Manager 只负责*忠实搬运与分组*:
-    每个数字必须能在 data/ 里找到原文,绝不补、不推断、不计算。数字门禁仍直读 data/
-    作为 ground truth,这份索引只是 Agent 的导航。
-    """
-    from .content_source import load_results_store, list_plots, render_results_summary
-    store = load_results_store(data_root)
-    plots = list_plots(data_root)
-    summary = render_results_summary(store, plots)
-    return (
-        f"You are building a NAVIGATION INDEX over the author's experiment results.\n\n"
-        f"Read '{idea_path}' first so you know which runs/metrics are the contribution "
-        f"and how the paper will name them — the index should use the SAME experiment "
-        f"names the paper will cite.\n\n"
-        f"Below is a faithful dump of everything found under '{data_root}' "
-        f"(numeric results, textual run metadata, and plot filenames). Organize it "
-        f"into a THREE-LEVEL index and write it to '{out_path}':\n\n"
-        f"Level 1 = EXPERIMENT (a run / config / ablation group)\n"
-        f"Level 2 = RESULT (a metric or measured outcome under that experiment)\n"
-        f"Level 3 = VALUE (the specific number, exactly as recorded, with its unit)\n\n"
-        f"Hard rules:\n"
-        f"- Every number in the index MUST appear verbatim in the dump below. Do not "
-        f"round, average, derive, or invent any value. If a value is missing, omit it.\n"
-        f"- Do NOT paraphrase the run metadata (hardware/dataset/hyperparameters) — "
-        f"copy it as-is under the relevant experiment.\n"
-        f"- Keep it a navigation index, not prose. One number per line is fine.\n\n"
-        f"Write ONLY '{out_path}'. If data/ is empty, write a file saying so and listing "
-        f"nothing.\n\n"
-        f"=== RAW DUMP FROM data/ ===\n{summary}\n"
     )
 
 
@@ -419,6 +387,34 @@ def validate_expansion(original: list[dict], expanded: list[dict]) -> list[str]:
     extra = sorted(set(by_number) - {c["number"] for c in original})
     if extra:
         problems.append(f"展开后多出了章节编号: {extra}")
+    return problems
+
+
+def validate_translation(zh: list[dict], en: list[dict]) -> list[str]:
+    """校验英文译本与中文版结构一致(语言不同,标题/要点不比对)。
+
+    比对:章数、章序号顺序、每章 type、小节数、每节显式字数(要点数不比,译者合并/拆分要点是合法的)。翻译失败(模型没写、
+    写了旧内容、漏章漏节)不能被"文件存在"掩盖——作者改的中文要真的反映到英文。
+    """
+    problems = []
+    if len(en) != len(zh):
+        problems.append(f"章数不一致:中文 {len(zh)} 章,英文 {len(en)} 章")
+    if [c["number"] for c in en] != [c["number"] for c in zh]:
+        problems.append(f"章序号/顺序不一致:{[c['number'] for c in zh]} → {[c['number'] for c in en]}")
+    for z, e in zip(zh, en):
+        tag = f"第 {z['number']} 章"
+        if z["type"] != e["type"]:
+            problems.append(f"{tag} type 不一致:{z['type']} → {e['type']}")
+        if len(z["sections"]) != len(e["sections"]):
+            problems.append(f"{tag} 小节数不一致:中文 {len(z['sections'])},英文 {len(e['sections'])}")
+            continue
+        for i, (zs, es) in enumerate(zip(z["sections"], e["sections"]), start=1):
+            if (zs.get("type") or "") != (es.get("type") or ""):
+                problems.append(f"{tag} 第 {i} 节 type 不一致:{zs.get('type') or '-'} → {es.get('type') or '-'}")
+            if bool(zs.get("synthetic")) != bool(es.get("synthetic")):
+                problems.append(f"{tag} 第 {i} 节的短章/普通小节形态不一致")
+            if zs.get("words_explicit") and zs.get("target_words") != es.get("target_words"):
+                problems.append(f"{tag} 第 {i} 节字数不一致:{zs.get('target_words')} → {es.get('target_words')}")
     return problems
 
 

@@ -17,7 +17,8 @@ from pathlib import Path
 
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from config import PAPER_MODE, IDEA_PATH, DATA_INDEX_PATH
+from config import IDEA_PATH, DATA_ROOT
+from .paths import data_index_path
 from .chapter_type import IDEA, DATA, MIXED
 
 # 视角随模式与章节取材源不同。用"统计显著性如何?"去审方法章,会产出它永远不会报告
@@ -41,13 +42,6 @@ MIXED_PERSPECTIVES = [
     ("Over-claim reviewer", "Which stated conclusion is stronger than the numbers support?"),
     ("Limitation reviewer", "What does the evidence NOT establish, and what is the strongest counter-reading?"),
 ]
-# 保留给综述路径(PAPER_MODE=survey)的名字。
-SURVEY_PERSPECTIVES = [
-    ("Scaling perspective", "How does this fit the parameter → compute-optimal → inference-aware line?"),
-    ("Data perspective", "What are the data-engineering claims and are they evidenced?"),
-    ("Architecture perspective", "Dense vs sparse/MoE vs hybrid — what is the actual design choice?"),
-    ("Counter-evidence perspective", "What contradicts the main claim? What is the strongest counterexample?"),
-]
 # 兼容别名:family 路由出现前的实验默认。
 EXPERIMENT_PERSPECTIVES = DATA_PERSPECTIVES
 
@@ -59,8 +53,6 @@ _FAMILY_PERSPECTIVES = {
 
 
 def perspectives_for_mode(family: str = DATA) -> list[tuple[str, str]]:
-    if PAPER_MODE != "experiment":
-        return SURVEY_PERSPECTIVES
     return _FAMILY_PERSPECTIVES.get(family, MIXED_PERSPECTIVES)
 
 
@@ -72,9 +64,9 @@ _GROUNDING_RULE = {
            "author's own wording for the design or claim you are relying on. A number "
            "from data-index.md is acceptable only as motivation, never as the "
            "explanation of why the design works."),
-    DATA: ("Ground it in a specific value from data-index.md (the three-level index "
-           "into data/), quoting the experiment, the result, and the number. Never "
-           "derive a value the index does not contain."),
+    DATA: ("Ground it in a specific value from data-index.md (the program-generated data "
+           "index), citing its `{{RES-xxx}}` id and the table/row/column. Never derive a "
+           "value the index does not contain."),
     MIXED: ("Ground it in either a quoted passage of idea.md or a specific value from "
             "data-index.md — and say which."),
 }
@@ -88,9 +80,9 @@ def _evidence_boundary(family: str) -> str:
         f"section; never restate it from memory, never paraphrase the claim.")
     if family in (DATA, MIXED):
         data_line = (
-            f" Also read '{DATA_INDEX_PATH}' — the Manager-built three-level index into "
-            f"data/ (experiment → result → specific value). Every number you cite must "
-            f"trace to an entry there.")
+            f" Also read '{data_index_path(DATA_ROOT)}' — the program-generated data index "
+            f"(one grid per result table, cells shown as `{{{{RES-xxx}}}}=value`). Every number "
+            f"you cite must trace to a cell there.")
         return idea_line + data_line
     return idea_line
 
@@ -103,15 +95,12 @@ def build_evidence_mining_prompt(section_title: str, reference_excerpt: str,
     persona_block = "\n".join(
         f"- **{name}**: {focus}" for name, focus in perspectives_for_mode(family)
     )
-    evidence_hint = reference_excerpt if PAPER_MODE != "experiment" else ""
-    grounding = (_GROUNDING_RULE.get(family, _GROUNDING_RULE[MIXED])
-                 if PAPER_MODE == "experiment"
-                 else "Ground it in a specific number, quote, or reference from the evidence.")
+    evidence_hint = ""
+    grounding = _GROUNDING_RULE.get(family, _GROUNDING_RULE[MIXED])
     family_note = (f"This is an evidence pack for a {family}-family section: "
                    f"the questions below are the ones this section's own evidence can "
-                   f"answer. Do not import criteria from another section type.\n\n"
-                   if PAPER_MODE == "experiment" else "")
-    boundary = _evidence_boundary(family) if PAPER_MODE == "experiment" else ""
+                   f"answer. Do not import criteria from another section type.\n\n")
+    boundary = _evidence_boundary(family)
     return (
         f"You are running PRE-DRAFT EVIDENCE MINING for section: \"{section_title}\".\n"
         f"Do not write prose for the paper yet. Your only output is an evidence pack.\n\n"
@@ -134,8 +123,8 @@ def build_evidence_mining_prompt(section_title: str, reference_excerpt: str,
 
 
 def build_input_material_prompt(chapter: str, brief_path: str, folder_path: str,
-                                family: str, bibliography_excerpt: str) -> str:
-    """让 Manager 读取参考文献清单 + 本章规格 + idea,生成本章 input.md。
+                                family: str, reference_index: str) -> str:
+    """让 Manager 读取文献索引 + 本章规格 + idea,生成本章 input.md。
 
     input.md 装的是"本章特有、不属于全局 idea、也不属于 data 的补充素材"——主要来自
     作者提供的参考文献:针对本章该引哪些文献、各文献对本章的关键贡献点。它不是要
@@ -148,17 +137,21 @@ def build_input_material_prompt(chapter: str, brief_path: str, folder_path: str,
         f"references you select must serve THAT contribution, not a generic one.\n"
         f"Read '{brief_path}' — this chapter's spec (its declared `type:` and the "
         f"numbered sections it must cover).\n\n"
-        f"From the author's bibliography below, assemble the source material this chapter "
-        f"needs into a new '{folder_path}/input.md':\n"
-        f"- The references most relevant to THIS chapter's sections (each with its REF-ID "
-        f"  and a one-line note on why it matters here / what claim it backs).\n"
+        f"From the author's reference index below (one row per paper; the `key` column is "
+        f"the ONLY citable key), assemble the source material this chapter needs into a new "
+        f"'{folder_path}/input.md':\n"
+        f"- The references most relevant to THIS chapter's sections: for each, its `key`, "
+        f"  one line on why it matters here / what claim it backs. Choose by the one-line "
+        f"  summary and tags; call read_reference(key) when a summary is not enough to decide. "
+        f"  Related-work style material only needs how others did it, how well, and the "
+        f"  limitation — no numbers.\n"
         f"- Any per-section pointers the drafter should reuse (which prior result to cite "
         f"  where, which comparison to draw).\n"
         f"- Keep it scoped to this chapter only; do NOT restate the contribution (it lives "
         f"  in idea.md) and do NOT list numbers (they live in data-index.md / data/).\n\n"
-        f"Write only '{folder_path}/input.md'. If the bibliography is empty or a reference "
-        f"is unmatched, leave a `> [REFERENCE NEEDED: ...]` line rather than inventing one.\n\n"
-        f"=== AUTHOR BIBLIOGRAPHY ===\n{bibliography_excerpt}\n"
+        f"Write only '{folder_path}/input.md'. If the index is empty or nothing fits, leave a "
+        f"`> [REFERENCE NEEDED: ...]` line rather than inventing a key.\n\n"
+        f"=== AUTHOR REFERENCE INDEX ===\n{reference_index}\n"
     )
 
 
@@ -174,14 +167,13 @@ def run_input_material(manager_agent, folder_path, chapter, family,
         return "skipped"
     print(f"[Manager  ] Stage 0/4  | Build chapter material (from references) "
           f"→ {folder_path}/input.md", flush=True)
-    bibliography_excerpt = ""
-    try:
-        from .retrieval import BIBLIOGRAPHY_PATH
-        if Path(BIBLIOGRAPHY_PATH).is_file():
-            bibliography_excerpt = Path(BIBLIOGRAPHY_PATH).read_text(
-                encoding="utf-8", errors="replace")
-    except Exception:
-        pass
+    # 文献索引缺失必须报错(而不是当成空文献):备料拿到空索引,input.md 又"存在即
+    # 跳过"会永久保留这份空素材。索引由 --go / --index 先行生成。
+    from config import REF_INDEX_PATH
+    if not Path(REF_INDEX_PATH).is_file():
+        raise FileNotFoundError(
+            f"文献索引不存在: {REF_INDEX_PATH}(先建索引再跑章节)")
+    bibliography_excerpt = Path(REF_INDEX_PATH).read_text(encoding="utf-8", errors="replace")
     set_agent_context("Manager")
     result = run_agent_stage(manager_agent, "Manager", build_input_material_prompt(
         chapter, os.path.join(folder_path, "brief.md"), folder_path, family,

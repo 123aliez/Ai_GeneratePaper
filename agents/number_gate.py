@@ -8,7 +8,7 @@ number). This module reads the draft, loads the ground-truth results store, and
 flags any figure in the text that looks like it is citing a metric but disagrees
 with the recorded value.
 
-Design priority (matches ``data/README.md``): *prefer a miss over a false alarm.*
+Design priority (matches README.md): *prefer a miss over a false alarm.*
 A number is only ever flagged when it can be tied to a specific result key, so
 years, layer counts, epoch counts and other incidental integers are left alone.
 
@@ -135,7 +135,7 @@ _ID_COLS = ("seed", "run", "run_id", "trial", "fold")
 
 
 class ResultsStoreError(ValueError):
-    """data/ 结果库有歧义(同一 key 多个不同取值)或有文件读不了。"""
+    """结果表有歧义(同一 key 多个不同取值)或有文件读不了。"""
 
 
 class _Tracker:
@@ -145,6 +145,7 @@ class _Tracker:
         self.sources: dict = {}
         self.duplicates: list = []   # (key, 先前来源, 本次来源)
         self.unreadable: list = []   # (path, 错误)
+        self.raw: dict = {}          # key → CSV 单元格原文(保留 76.10 这类小数位)
 
     def put(self, store: dict, key: str, value, source: str) -> None:
         if key in store and store[key] != value and (
@@ -200,8 +201,14 @@ def _flatten(obj, prefix: str, store: dict, tracker=None, source: str = "") -> N
                 _store_put(store, prefix, ":" + obj, tracker, source)
 
 
-def _load_csv(path: str, stem: str, store: dict, tracker=None) -> None:
-    with open(path, "r", newline="", encoding="utf-8", errors="replace") as f:
+def _csv_cells(path: str, stem: str):
+    """逐格枚举一个 CSV 的数值单元格。数据索引、表格渲染与结果库共用这一个枚举,
+    所以三者的 key 永远一致。
+
+    产出 dict: key / value(float) / raw(单元格原文) / label(行名或 None) / col(列名)
+    / line(文件内行号,1 起,含表头)。
+    """
+    with open(path, "r", newline="", encoding="utf-8-sig", errors="replace") as f:
         rows = [r for r in csv.reader(f) if r]
     if not rows:
         return
@@ -220,7 +227,12 @@ def _load_csv(path: str, stem: str, store: dict, tracker=None) -> None:
                 if h in ("value", "means", "mean", "result", "score")]
 
     # Long / key-value format.
-    if name_cols and val_cols:
+    others_numeric = any(
+        i not in (name_cols[:1] + val_cols[:1]) and i not in id_idx
+        and data and all(i < len(r) and (not r[i].strip() or _try_float(r[i]) is not None) for r in data)
+        and any(i < len(r) and _try_float(r[i]) is not None for r in data)
+        for i in range(len(header))) if (name_cols and val_cols) else False
+    if name_cols and val_cols and not others_numeric:      # 还有别的数值列 → 是宽表,不是长表
         ni, vi = name_cols[0], val_cols[0]
         for ri, r in enumerate(data, start=2):
             if len(r) <= max(ni, vi):
@@ -228,8 +240,8 @@ def _load_csv(path: str, stem: str, store: dict, tracker=None) -> None:
             name = r[ni].strip()
             v = _try_float(r[vi])
             if name and v is not None:
-                key = ".".join([stem, *id_parts(r), name])
-                _store_put(store, key, v, tracker, f"{path}:{ri}")
+                yield {"key": ".".join([stem, *id_parts(r), name]), "value": v,
+                       "raw": r[vi].strip(), "label": None, "col": name, "line": ri}
         return
 
     if not data:
@@ -265,7 +277,15 @@ def _load_csv(path: str, stem: str, store: dict, tracker=None) -> None:
                 key = f"{stem}.{col}.{ri}"
             else:
                 key = f"{stem}.{col}"
-            _store_put(store, key, v, tracker, f"{path}:{ri + 2}")
+            yield {"key": key, "value": v, "raw": r[ci].strip(),
+                   "label": label, "col": col, "line": ri + 2}
+
+
+def _load_csv(path: str, stem: str, store: dict, tracker=None) -> None:
+    for cell in _csv_cells(path, stem):
+        _store_put(store, cell["key"], cell["value"], tracker, f"{path}:{cell['line']}")
+        if tracker is not None:
+            tracker.raw[cell["key"]] = cell["raw"]
 
 
 def _json_load_checked(f, path: str, tracker) -> object:
@@ -283,7 +303,31 @@ def _json_load_checked(f, path: str, tracker) -> object:
     return json.load(f, object_pairs_hook=hook)
 
 
+def results_prefix(path: str) -> str:
+    """结果文件的 key 前缀:通用容器名(final_info 等)取父目录名,否则取文件名。"""
+    fn = os.path.basename(path)
+    stem = os.path.splitext(fn)[0]
+    parent = os.path.basename(os.path.dirname(path))
+    if stem.lower() in _GENERIC_STEMS and parent and parent != ".":
+        return parent
+    return stem or parent
+
+
+def is_example_file(fn: str) -> bool:
+    return ".example." in fn or fn.endswith(".example") or fn.startswith("_template")
+
+
+def load_results_raw(data_root: str) -> dict:
+    """{key: CSV 单元格原文}。只含 CSV 来源的数值(JSON 没有原文可保留)。"""
+    return _scan_results(data_root)[2].raw
+
+
 def load_results_store_report(data_root: str) -> tuple[dict, dict]:
+    store, issues, _tracker = _scan_results(data_root)
+    return store, issues
+
+
+def _scan_results(data_root: str):
     """Like load_results_store, but also report ambiguity instead of hiding it.
 
     Returns (store, issues), issues = {"duplicates": [(key, src_a, src_b)],
@@ -295,7 +339,7 @@ def load_results_store_report(data_root: str) -> tuple[dict, dict]:
     tracker = _Tracker()
     root = str(data_root)
     if not os.path.isdir(root):
-        return store, {"duplicates": [], "unreadable": []}
+        return store, {"duplicates": [], "unreadable": []}, tracker
     def _walk_error(err: OSError) -> None:
         # os.walk 默认静默跳过读不了的子目录——里面的结果会悄悄缺席。
         tracker.unreadable.append((getattr(err, "filename", "") or "?",
@@ -305,7 +349,7 @@ def load_results_store_report(data_root: str) -> tuple[dict, dict]:
         for fn in sorted(filenames):
             # I11: skip example/template files so illustrative data is never
             # treated as real experimental evidence.
-            if ".example." in fn or fn.endswith(".example") or fn.startswith("_template"):
+            if is_example_file(fn):
                 continue
             ext = os.path.splitext(fn)[1].lower()
             path = os.path.join(dirpath, fn)
@@ -341,7 +385,7 @@ def load_results_store_report(data_root: str) -> tuple[dict, dict]:
     return store, {
         "duplicates": [(k, rel(a), rel(b)) for k, a, b in tracker.duplicates],
         "unreadable": [(rel(pth), err) for pth, err in tracker.unreadable],
-    }
+    }, tracker
 
 
 def format_store_issues(issues: dict, limit: int = 20) -> str:
@@ -521,7 +565,7 @@ def check_numbers_against_results(text: str, results: dict, tol: float = 0.01) -
 
 
 # ── (4) Gate entry point ───────────────────────────────────────────────────
-def run_number_gate(draft_path: str, data_root: str, tol: float = 0.01):
+def run_number_gate(draft_path: str, data_root: str, tol: float = 0.01, exempt_values=None):
     """Read a draft, load results, cross-check. Returns (passed, messages).
 
     Missing files are handled gracefully (no exception). Each mismatch message
@@ -552,9 +596,20 @@ def run_number_gate(draft_path: str, data_root: str, tol: float = 0.01):
         # Fail closed: experiment papers must be grounded in real results. With no
         # results store, every number in the draft is unverifiable — that is a
         # blocking condition, not a "skip the check" condition.
-        return False, [f"[NUMBER-GATE] no results found under {data_root}; every number in the draft is unverifiable. Provide data/ results before drafting."]
+        return False, [f"[NUMBER-GATE] no results found under {data_root}; every number in the draft is unverifiable. Provide result tables under inbox/results/ before drafting."]
 
     report = check_numbers_against_results(text, results, tol=tol)
+    if exempt_values:
+        # 程序算出来的派生数字({{DIFF}}/{{REL}} 替换后的值)不是原始指标,不拿它去和原始结果比。
+        exempt = {round(float(v), 9) for v in exempt_values}
+        kept = []
+        for m in report["mismatches"]:
+            v = _try_float(m["claimed"])
+            if v is not None and round(v, 9) in exempt:
+                continue
+            kept.append(m)
+        report["mismatches"] = kept
+        report["ok"] = not kept
     if report["ok"]:
         return True, [
             f"[NUMBER-GATE] OK: {report['checked']} number(s) cross-checked "

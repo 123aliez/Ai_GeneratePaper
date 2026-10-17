@@ -136,15 +136,27 @@ def inputs_fingerprint(family: str, idea_path=None, data_root=None) -> dict:
         idea_path = IDEA_PATH if idea_path is None else idea_path
         data_root = DATA_ROOT if data_root is None else data_root
     inputs = {"idea": _sha256_path(idea_path)}
+    import config
+    if config.HAS_PROJECT:
+        # 文献库:bib 条目 + 一句话总结 + 有无笔记/原文都在文献索引里。(笔记正文细节变化
+        # 只影响用到它的章,目前不逐章追踪——见 TODO。)
+        notes = sorted(Path(config.INDEX_DIR, "refs").glob("*.md")) if Path(config.INDEX_DIR, "refs").is_dir() else []
+        inputs["refs"] = _sha256_text(_sha256_path(config.REF_INDEX_PATH) + "".join(
+            _sha256_file(p) for p in notes))[:16]   # 索引 + 全部过滤版笔记:任一篇变了都让已完成的章判陈旧
     if family in ("data", "mixed"):
-        from .number_gate import load_results_store
+        from .number_gate import load_results_store, load_results_raw
         store = load_results_store(str(data_root))
-        canon = json.dumps(store, sort_keys=True, ensure_ascii=False)
+        # 数值 + CSV 单元格原文(76.10 → 76.100 数值不变,但渲染出的表和正文精度会变)
+        canon = json.dumps([store, load_results_raw(str(data_root))], sort_keys=True, ensure_ascii=False)
         inputs["data"] = _sha256_text(canon)[:16]
+        inputs["settings"] = _sha256_path(Path(data_root) / config.SETTINGS_FILENAME)
+        if config.HAS_PROJECT:
+            inputs["code"] = _sha256_path(config.CODE_INDEX_PATH)
     return inputs
 
 
-_INPUT_LABELS = {"idea": "idea.md", "data": "data/ 结果库"}
+_INPUT_LABELS = {"idea": "idea.md", "data": "结果表", "refs": "文献库",
+                 "settings": "实验设置.md", "code": "代码索引"}
 
 
 def changed_inputs(folder_path: str, artifacts: list[str], inputs: dict) -> list[str]:

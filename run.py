@@ -1,38 +1,30 @@
 """
 Experiment-Paper Multi-Agent Writing Framework — Main Entry Point
 
-Content source is data/ (experiment results) when PAPER_MODE=experiment, or
-references/ notes when PAPER_MODE=survey. Chapter workspaces live under workspace/.
+一篇论文 = 一个项目文件夹;材料全部放进它的 inbox/:
 
-写一整篇论文。章节文件夹全部由 outline.md 经 `--init` 生成:
+  python run.py --new 我的论文                       # 在 projects/ 下建项目 + 模板
+  # 把 idea / 结果表 / 文献 / 代码放进 projects/我的论文/inbox/(见 inbox/说明.md)
+  python run.py --project projects/我的论文 --go     # 材料检查 → 建索引 → 展开大纲 → 停下等你审
+  # 审 projects/我的论文/outline.zh.md(改小节、要点、字数)
+  python run.py --project projects/我的论文 --go     # 逐章生成 → 整篇组装到 output/
 
-  python run.py --intake              # 可选前置:散装材料放 inbox/ → 盘点报告 + idea 转正
-                                           #   纯 Python 不调模型;报告在 var/intake/
-  python run.py --intake --idea inbox/xxx.md  #   多候选时绑定选定的 idea 文档
-  python run.py --expand               # 章节骨架 → Manager 补小节与要点 → outline.expanded.md
-                                           #   审阅它,补 (~N words),改名成 outline.md
-  python run.py --init                 # outline.md → workspace/<NN-type>/ + 跨章状态
-  python run.py --init --force         #   outline 改过之后刷新已存在的 brief.md
-  python run.py --retrieve             # 可选:按章检索文献候选 → references/candidates.md
-                                           #   读 idea+outline+data,每章生成 query,
-                                           #   过 verify_url 去重,候选清单(不进 bib)
-  python run.py --all --progress       # 按章号顺序跑全部,失败即停
-  python run.py 04-method --progress   #   也可以只跑其中一章(必须在 outline 里)
+出错 / 中断 / 手改终稿后,重跑同一条命令即可:已完成的章自动跳过,手改过的终稿只重新核验
+和组装,不重写。
 
-每章都是整篇里的第 N 章,知道前后是什么,符号沿用前章的定义(跨章状态文件
-workspace/cross-chapter-state.md 由每章跑完后自动追加),开头接上文、结尾引下文。
+分步命令(都要带 --project):
+  --check      只做材料检查(output/材料检查.md)
+  --index      只建三份索引(文献 / 数据 / 代码)
+  --expand     章节骨架 → 规划者读 idea.md 补小节与要点 → outline.zh.md + _work/outline.md
+  --init       outline → 各章工作区 + 跨章状态(--force 刷新已存在的 brief.md)
+  --all        按章号顺序跑全部章节,失败即停
+  <章节名>     只跑其中一章(必须在 outline 里)
+  --assemble   重新核验各章终稿并组装 output/(不调模型)
+  --list       列出各章状态
+  --keep-outline  idea.md / 骨架改过后,确认继续沿用旧大纲(配合 --go)
 
-  python run.py --list                 # 列出所有章节文件夹及其状态
-
-outline.md 的分工:**你定结构**(分几章、每章什么 `type:`、什么顺序),`--expand`
-让 Manager 读 idea.md 补**施工细节**(每章拆哪几节、每节写什么、边界在哪)。
-产物落在 outline.expanded.md,你审完补上字数、改名成 outline.md 再 --init。
-不想用 --expand 就自己把小节和要点写进 outline.md,--init 只认这一个文件。
-
-没有小节的章会被 --init 拒绝:那样生成的 brief 会让起草退回单段、要点为空,
-Draft 只能照章标题硬编,而流水线全程显示成功。
-
-前置条件(见 TODO.md):填 idea.md、配 .env 的三组 key;data 类章节还需要 data/。
+每章都是整篇里的第 N 章,知道前后是什么,符号沿用前章的定义(跨章状态文件由每章跑完后
+自动追加),开头接上文、结尾引下文。
 """
 import os
 import sys
@@ -47,14 +39,30 @@ sys.path.insert(0, str(Path(__file__).parent))
 # Python 仍正常执行；过滤掉只为让终端输出干净。
 warnings.filterwarnings("ignore", category=SyntaxWarning)
 
-from config import PAPER_ROOT, PAPER_MODE, get_draft_model, get_review_model, get_manager_model
-from agents import create_agents, run_4stage_via_manager, run_4stage_via_manager_stream, run_4stage_direct, run_4stage_with_progress
+
+def _early_project_env() -> None:
+    """`--project <路径>` 必须在 import config 之前放进环境变量:config 的所有路径都从
+    它派生,并且在 import 时就冻结。"""
+    argv = sys.argv[1:]
+    if "--project" in argv:
+        i = argv.index("--project")
+        if i + 1 < len(argv):
+            os.environ["PAPER_PROJECT"] = str(Path(argv[i + 1]).expanduser())
+
+
+_early_project_env()
+
+from config import PAPER_ROOT, get_draft_model, get_review_model, get_manager_model
+from agents import create_agents, run_4stage_with_progress
 
 
 def list_paper_folders():
     """列出所有章节文件夹及其状态(整篇第几章)。"""
     from agents.outline import resolve_write_mode, OutlineRouteError
     print(f"Paper root: {PAPER_ROOT}\n")
+    if not os.path.isdir(PAPER_ROOT):
+        print("  (还没有章节工作区;先 --go 或 --init)")
+        return
     for name in sorted(os.listdir(PAPER_ROOT)):
         folder = os.path.join(PAPER_ROOT, name)
         if not os.path.isdir(folder) or name.startswith("_"):
@@ -83,6 +91,8 @@ def is_chapter_folder(name: str) -> bool:
 
 def chapter_folders_in_order():
     """含 brief.md 的章节文件夹,按名字排序(`--init` 生成的 NN- 前缀即运行顺序)。"""
+    if not os.path.isdir(PAPER_ROOT):
+        return []
     return [name for name in sorted(os.listdir(PAPER_ROOT))
             if is_chapter_folder(name)]
 
@@ -111,74 +121,63 @@ def outline_chapters_in_order():
     return outline_folders, []
 
 
-def _maybe_build_data_index() -> None:
-    """--init 末尾:若 data/data-index.md 不存在,让 Manager 读 data/ 生成它。
-
-    存在则跳过(作者可能审改过,不覆盖)。data/ 为空(没有真实结果)时也跳过:
-    data-index 是 data 类章节写正文的数字导航,没数字可索引时硬造一份空索引只会误导。
-    等作者补了 data/ 结果,删掉它重跑 --init 即可重建。
-    """
-    from config import DATA_INDEX_PATH, DATA_ROOT
-    if DATA_INDEX_PATH.exists():
-        print(f"\ndata-index: {DATA_INDEX_PATH.name} 已存在,跳过(不覆盖)。"
-              f"要重建就删掉它再 --init。")
-        return
-    try:
-        from agents.content_source import data_dir_has_content
-        if not data_dir_has_content(str(DATA_ROOT)):
-            print(f"\ndata-index: data/ 是空目录,跳过 data-index 生成。")
-            print(f"补好实验结果后,删掉 {DATA_INDEX_PATH} 再跑 python run.py --init 重建。")
-            return
-    except Exception as exc:
-        print(f"\ndata-index: 扫描 data/ 失败,跳过: {str(exc)[:120]}")
-        return
-
-    from config import get_manager_model, IDEA_PATH
-    from agents import create_planner_agent
-    from agents.outline_expand import build_data_index_prompt
-    from agents.orchestrator import run_agent_stage_standalone
-
-    print(f"\ndata-index: 让 Manager 读 data/ 生成 {DATA_INDEX_PATH.name} "
-          f"(三级索引:实验 → 结果 → 数值)...")
-    DATA_INDEX_PATH.parent.mkdir(parents=True, exist_ok=True)
-    manager = create_planner_agent(get_manager_model())
-    prompt = build_data_index_prompt(str(DATA_ROOT), str(DATA_INDEX_PATH), str(IDEA_PATH))
-    run_agent_stage_standalone(manager, "Manager", prompt)
-    if DATA_INDEX_PATH.is_file():
-        print(f"data-index: 已生成 {DATA_INDEX_PATH.name}。data 类章节写正文时读它导航。")
-    else:
-        print(f"data-index: Manager 没写出 {DATA_INDEX_PATH.name};"
-              f"data 类章节将缺少导航,可重跑 --init 重试。")
-
-
 def _translate_zh_to_en() -> int:
-    """若作者改过 outline.zh.md(比 outline.md 新),用 Manager 把中文翻译成英文覆盖。
+    """若作者改过 outline.zh.md(内容指纹与上次同步时不同),用 Manager 把中文翻译成英文覆盖。
 
-    作者只维护中文版 outline.zh.md;英文版 outline.md 是 Agent 吃的结构。--init 前
-    检查:中文版更新则重新翻译覆盖英文版,保证 Agent 读到的英文始终反映作者最新修改。
+    作者只维护中文版 outline.zh.md;英文版 _work/outline.md 是 Agent 吃的结构。翻译写进
+    候选文件,结构校验(章数/顺序/type/小节数/显式字数)通过才原子替换:翻译失败时旧英文版
+    原样保留、命令报错,不会"文件存在"就当成功。同步状态用内容指纹而不是 mtime。
     返回 0=不需要翻译/成功,1=翻译失败。
     """
-    from agents.outline import OUTLINE_PATH, OUTLINE_DRAFT_PATH
-    from agents.outline_expand import ZH_EXPANDED_PATH_NAME, build_translate_prompt
-    zh_path = Path(OUTLINE_PATH.parent) / ZH_EXPANDED_PATH_NAME
-    en_path = OUTLINE_PATH
+    from agents import project
+    from agents.outline import OUTLINE_PATH, OUTLINE_ZH_PATH, OutlineRouteError, parse_outline
+    from agents.outline_expand import build_translate_prompt, validate_translation
+    zh_path, en_path = Path(OUTLINE_ZH_PATH), Path(OUTLINE_PATH)
     if not zh_path.is_file():
         return 0   # 没有中文版(--expand 没跑过),无需翻译
-    # 中文版比英文版新,或英文版不存在 → 需要重新翻译覆盖
-    if en_path.is_file() and en_path.stat().st_mtime >= zh_path.stat().st_mtime:
-        return 0   # 英文版不比中文旧,无需覆盖
-    print(f"\n检测到 {zh_path.name}(中文版)比 {en_path.name}(英文版)新,"
-          f"重新翻译英文版以反映你的修改...")
+    zh_sha = project.sha_file(zh_path)
+    state = project.load_state()
+    if en_path.is_file() and state.get("zh") == zh_sha:
+        return 0   # 英文版已反映当前中文版
+    print(f"\n检测到 {zh_path.name}(中文版)有改动,重新翻译英文版以反映你的修改...")
     from config import get_manager_model
     from agents import create_planner_agent
     from agents.orchestrator import run_agent_stage_standalone
+    en_path.parent.mkdir(parents=True, exist_ok=True)
     manager = create_planner_agent(get_manager_model())
-    prompt = build_translate_prompt(str(zh_path), str(en_path))
-    run_agent_stage_standalone(manager, "Manager", prompt)
-    if not en_path.is_file():
-        print(f"Error: Manager 没有写出英文版 {en_path.name}。")
+    candidate = en_path.with_name(en_path.name + ".candidate")
+    if candidate.exists():
+        candidate.unlink()
+    prompt = build_translate_prompt(str(zh_path), str(candidate),
+                                    str(en_path) if en_path.is_file() else "")
+    run_agent_stage_standalone(manager, "Manager", prompt, allowed_files=[candidate])
+    if not candidate.is_file():
+        print(f"Error: Manager 没有写出翻译候选文件;{en_path.name} 未改动。")
         return 1
-    print(f"翻译完成:{en_path.name} 已由 {zh_path.name} 覆盖。")
+    try:
+        problems = validate_translation(parse_outline(zh_path), parse_outline(candidate))
+    except OutlineRouteError as exc:
+        problems = [f"译本解析失败: {exc}"]
+    if not problems and en_path.is_file():
+        # 章文件夹名来自英文标题:译本把已有章的标题改了措辞,工作区就会对不上(已写好的章成孤儿)
+        try:
+            old_f = [c["folder"] for c in parse_outline(en_path)]
+            new_f = [c["folder"] for c in parse_outline(candidate)]
+            if old_f != new_f and any((Path(PAPER_ROOT) / f).is_dir() for f in old_f):
+                problems.append(f"章文件夹名会变:{old_f} → {new_f}(已有章的工作区会对不上);"
+                                f"请在中文大纲里保持已生成章的标题不变,或重新展开")
+        except OutlineRouteError as exc:
+            problems.append(f"译本解析失败: {exc}")
+    if problems:
+        print(f"Error: 英文译本与 {zh_path.name} 结构不一致,拒绝采纳({en_path.name} 未改动):")
+        for problem in problems:
+            print(f"  · {problem}")
+        print(f"候选文件留在 {candidate} 供查看;重跑会重新翻译。")
+        return 1
+    os.replace(candidate, en_path)
+    state["zh"] = zh_sha
+    project.save_state(state)
+    print(f"翻译完成:{en_path.name} 已反映 {zh_path.name}。")
     return 0
 
 
@@ -198,8 +197,7 @@ def init_workspaces(force: bool) -> int:
         return 1
     if not Path(OUTLINE_PATH).is_file():
         print(f"Error: 找不到总纲 {OUTLINE_PATH}")
-        print("先复制模板:  cp outline.example.md outline.md")
-        print("填好章节结构后再跑 python run.py --init")
+        print("先展开大纲:  python run.py --project <项目> --expand")
         return 1
 
     # 只填了表格骨架就 --init,是最容易踩的一步:章标题与 type 都对,但没有任何
@@ -256,59 +254,17 @@ def init_workspaces(force: bool) -> int:
         print("\n以下章节的 brief.md 与当前 outline.md 不一致,或不是 --init 生成的:")
         for name in result["stale"]:
             print(f"  {name}")
-        print("确认要用 outline 的新结构覆盖它们,就跑: python run.py --init --force")
-
-    # --init 末尾:若 data/data-index.md 不存在,让 Manager 读 data/ 原始结果生成它。
-    # 它是 data 类章节(结果/实验/消融)写正文时的数字导航;数字门禁仍直读 data/ 作
-    # ground truth,这份索引只供 Agent 导航。存在则跳过——作者可能审改过,不覆盖。
-    _maybe_build_data_index()
+        print("确认要用 outline 的新结构覆盖它们,就跑: python run.py --project <项目> --init --force")
 
     on_disk = set(chapter_folders_in_order())
     ready = [chapter["folder"] for chapter in skeleton
              if chapter["folder"] in on_disk]
     if ready:
-        print(f"\n下一步:跑第一章(它会先生成本章 input.md,再挖证据、起草):")
-        print(f"  python run.py \"{ready[0]}\" --progress     # 跑第一章")
-        print(f"  python run.py --all --progress            # 按 outline 顺序跑全部")
+        print(f"\n下一步:")
+        print(f"  python run.py --project <项目> \"{ready[0]}\"   # 只跑第一章")
+        print(f"  python run.py --project <项目> --all            # 按 outline 顺序跑全部")
         print(f"\n这些章都走【整篇模式】:知道自己是第几章,符号沿用前章,"
               f"跨章约定写在 {PAPER_ROOT}/cross-chapter-state.md。")
-    return 0
-
-
-def run_retrieve_cli() -> int:
-    """`--retrieve`:可选前置步骤,按章检索文献候选 → references/candidates.md(不进 bib)。
-
-    核心逻辑在 agents.retrieve.run_retrieve。这里只做终端 banner / 计数 / 下一步提示,
-    风格对齐 init_workspaces / _maybe_build_data_index。
-    """
-    from agents.retrieve import run_retrieve
-    from config import RETRIEVAL_MODEL, RETRIEVAL_API_BASE, IDEA_PATH, DATA_ROOT
-
-    print(f"\n{'='*60}")
-    print(f"文献检索(可选前置):读 idea + outline + data,按章生成检索候选")
-    print(f"{'='*60}")
-    print(f"  · Idea:      {IDEA_PATH}")
-    print(f"  · Outline:   (见 workspace 下已 init 的章节)")
-    print(f"  · Data:      {DATA_ROOT}")
-    print(f"  · 检索模型:  {RETRIEVAL_MODEL or '(未配置)'} @ {RETRIEVAL_API_BASE or '(未配置)'}")
-    print(f"  · 产物:      references/candidates.md(CAN- 前缀,不进 bib)")
-
-    code, stats = run_retrieve()
-    if code != 0:
-        return code
-
-    queries_path = stats.get("queries_path", "")
-    candidates_path = stats.get("candidates_path", "")
-    print(f"\n检索完成:")
-    print(f"  · {stats.get('chapters', 0)} 章 / {stats.get('queries', 0)} 个 query")
-    print(f"  · 原始命中 {stats.get('raw_hits', 0)} → 去重后 "
-          f"{stats.get('candidates', 0)} 条候选"
-          f"(无效/不可达 {stats.get('filtered', 0)}，重复 {stats.get('duplicates', 0)})")
-    print(f"  · per-章 query: {Path(queries_path).name}")
-    print(f"  · 候选清单:    {candidates_path}")
-    print(f"\n下一步:人工扫一眼 {Path(candidates_path).name},挑中的行复制到 "
-          f"references/bibliography.md(ID 改 REF-xxxx、补 Grade 与用途、删 Chapter/Query 列),")
-    print(f"再跑 python run.py --all --progress。候选不会自动进引用池；题名、作者与内容仍需人工核对。")
     return 0
 
 
@@ -324,11 +280,10 @@ def expand_outline() -> int:
     - `outline.md`(英文版)是喂给 Agent 的结构,--init 的输入。
     - `outline.zh.md`(中文版)给作者看/改,结构与英文版逐字一致。
     """
-    from agents.outline import (OUTLINE_DRAFT_PATH, OUTLINE_PATH,
+    from agents.outline import (OUTLINE_DRAFT_PATH, OUTLINE_PATH, OUTLINE_ZH_PATH,
                                 OutlineRouteError, parse_outline)
     from agents.outline_expand import (
-        EN_EXPANDED_MARKER, ZH_EXPANDED_MARKER,
-        EN_EXPANDED_PATH_NAME, ZH_EXPANDED_PATH_NAME,
+        EN_EXPANDED_MARKER, ZH_EXPANDED_MARKER, ZH_EXPANDED_PATH_NAME,
         build_expand_prompt, missing_word_counts, read_expanded,
         render_outline, skeleton_report, validate_expansion,
     )
@@ -337,8 +292,7 @@ def expand_outline() -> int:
     # 输入是用户填的草稿(outline_draft.md),不是定稿(outline.md)。
     if not Path(OUTLINE_DRAFT_PATH).is_file():
         print(f"Error: 找不到 {OUTLINE_DRAFT_PATH}")
-        print("先写一份章节骨架(每章两行:`## N. 标题` + `type: <类型>`)。")
-        print("类型词表见 outline.example.md。")
+        print("先写一份章节骨架表(# | 章标题 | type),模板在 templates/outline_draft.md。")
         return 1
 
     try:
@@ -348,37 +302,36 @@ def expand_outline() -> int:
         return 1
     if not chapters:
         print(f"Error: {OUTLINE_DRAFT_PATH} 里没解析出任何章节。")
-        print("每章需要一个 `## N. 标题` 标题行,下面跟一行 `type: <类型>`。")
+        print("需要一张 `# | 章标题 | type` 的表(或每章 `## N. 标题` + `type: <类型>`)。")
         return 1
 
     # idea.md 是展开的唯一依据。没有它,Manager 只能照章节标题编小节——那种
     # 结构对任何一篇论文都成立,也就对这一篇毫无价值,不如不跑。
     if not Path(IDEA_PATH).is_file():
         print(f"Error: 找不到 {IDEA_PATH}")
-        print("展开小节要从你的创新点推导。先 cp idea.example.md idea.md 并填写")
+        print("展开小节要从你的创新点推导。先填 inbox/idea.md 的")
         print("第 3 节(核心洞察)与第 4 节(方法设计),再跑 --expand。")
         return 1
 
-    en_path = Path(OUTLINE_PATH.parent) / EN_EXPANDED_PATH_NAME
-    zh_path = Path(OUTLINE_PATH.parent) / ZH_EXPANDED_PATH_NAME
+    en_path = Path(OUTLINE_PATH)
+    zh_path = Path(OUTLINE_ZH_PATH)
+    en_path.parent.mkdir(parents=True, exist_ok=True)
     # 旧产物必须先清掉。留着的话本次 Manager 写失败,下面"文件存在即成功"的判断
     # 会读到上一轮的内容并原样通过——作者拿着一份陈旧展开去 --init,而终端显示成功。
     for p in (en_path, zh_path):
         if p.exists():
             print(f"Error: {p.name} 已存在(上一轮 --expand 的产物)。")
-            print(f"审阅它并改名成 {Path(OUTLINE_PATH).name},或者删掉它再重跑 --expand。")
+            print(f"审阅 {ZH_EXPANDED_PATH_NAME} 后直接 --go;要重新展开就先删掉它们。")
             print(f"不自动覆盖:那份文件可能已经被你改过。")
             return 1
 
-    print(f"Outline: {OUTLINE_PATH}")
     print(f"Idea:    {IDEA_PATH}")
     print(f"\n你的章节骨架({len(chapters)} 章),Manager 不会改动它:")
     for line in skeleton_report(chapters):
         print(line)
     print(f"\nManager 将为每章补:小节拆分 + 每节的起草要点(含边界约束)。")
     print(f"字数不由它定 —— 展开后由你在小节标题后补 `(~N words)`。")
-    print(f"产物中英双轨:英文版 {en_path.name}(喂 Agent)+ 中文版 {zh_path.name}(给你审阅)。")
-    print(f"不动你的 {Path(OUTLINE_PATH).name}。\n")
+    print(f"产物中英双轨:英文版 {en_path}(喂 Agent)+ 中文版 {zh_path}(给你审阅)。\n")
 
     from config import get_manager_model
     from agents import create_planner_agent
@@ -389,55 +342,55 @@ def expand_outline() -> int:
 
     prompt = build_expand_prompt(chapters, str(en_path), str(zh_path),
                                  str(IDEA_PATH), len(chapters))
-    run_agent_stage_standalone(manager, "Manager", prompt)
+    run_agent_stage_standalone(manager, "Manager", prompt,
+                               allowed_files=[en_path, zh_path])
+
+    def _discard(reason_lines):
+        """展开产物不合格:删掉(它们是机器刚生成、作者还没碰过的),免得下一次 --go 把失败
+        产物当成“已审阅的大纲”继续往下跑。"""
+        for line in reason_lines:
+            print(line)
+        for p in (en_path, zh_path):
+            if p.exists():
+                p.unlink()
+        print("已删除不合格的展开产物;修好 idea.md / 骨架后重跑同一条命令会重新展开。")
+        return 1
 
     missing_files = [p.name for p in (en_path, zh_path) if not p.is_file()]
     if missing_files:
-        print(f"\nError: Manager 没有写出 {', '.join(missing_files)}。")
-        print("重跑 --expand;或者自己往 outline.md 里补小节。")
-        return 1
+        return _discard([f"\nError: 规划者没有写出 {', '.join(missing_files)}。"])
 
-    # 英文版是喂给 Agent 的结构,以它为准做结构校验。中文版是给作者的对照,
-    # 结构与英文版必须一致——Manager 被要求逐字一致,这里也校验一遍。
+    # 英文版是喂给 Agent 的结构,以它为准做结构校验;中文版是给作者的对照。两者各自
+    # 对骨架校验,再互相配对校验(章数 / 顺序 / type / 小节数 / 小节 type / 显式字数)。
     try:
         expanded_en = read_expanded(en_path)
         expanded_zh = read_expanded(zh_path)
     except OutlineRouteError as exc:
-        print(f"\nError: 展开产物解析不出章节: {exc}")
-        print(f"文件保留在原地,你可以自己修,或删掉它重跑 --expand。")
-        return 1
+        return _discard([f"\nError: 展开产物解析不出章节: {exc}"])
 
     problems = validate_expansion(chapters, expanded_en)
     if problems:
-        # 越权改结构必须拦。Manager 悄悄合并两章或改掉一个 type,--init 照样会
-        # 生成工作区,作者要到看见文件夹名不对才发现——那时 token 已经花了。
-        print(f"\nError: {en_path.name} 改动了你的章节结构,拒绝采纳:")
-        for problem in problems:
-            print(f"  · {problem}")
-        print(f"\n文件保留在 {en_path.name} 供你查看。要么手改它,"
-              f"要么删掉重跑 --expand。")
-        return 1
-
-    # 中文版的结构校验:章数、顺序、type 必须与英文版一致(只比对结构,不比对
-    # 语言内容)。Manager 被要求逐字一致,这里做兜底——若中文版漏章/改了 type,
-    # 作者改它时会把英文版的结构也带偏。
+        # 越权改结构必须拦。规划者悄悄合并两章或改掉一个 type,--init 照样会生成
+        # 工作区,作者要到看见文件夹名不对才发现——那时 token 已经花了。
+        return _discard([f"\nError: 英文大纲改动了你的章节结构,拒绝采纳:"] + [f"  · {x}" for x in problems])
     zh_problems = validate_expansion(chapters, expanded_zh)
     if zh_problems:
-        print(f"\nError: {zh_path.name} 结构与骨架不一致,拒绝采纳:")
-        for problem in zh_problems:
-            print(f"  · {problem}")
-        print(f"\n文件保留在 {zh_path.name} 供你查看。要么手改它,"
-              f"要么删掉重跑 --expand。")
-        return 1
+        return _discard([f"\nError: 中文大纲结构与骨架不一致,拒绝采纳:"] + [f"  · {x}" for x in zh_problems])
+    from agents.outline_expand import validate_translation
+    pair_problems = validate_translation(expanded_zh, expanded_en)
+    if pair_problems:
+        return _discard([f"\nError: 中英文大纲互相对不上,拒绝采纳:"] + [f"  · {x}" for x in pair_problems])
 
     # 重新序列化一遍再落盘:Manager 的原始输出可能夹带说明文字或代码围栏,
     # 而这份文件下一步要被作者改名成 outline.md,必须是干净的语法。
-    title = f"Paper outline — {Path(OUTLINE_PATH).stem}"
+    title = f"Paper outline — {Path(os.environ.get('PAPER_PROJECT', 'paper')).name}"
     en_path.write_text(render_outline(expanded_en, title, EN_EXPANDED_MARKER),
                        encoding="utf-8")
-    zh_title = f"论文大纲 — {Path(OUTLINE_PATH).stem}"
+    zh_title = f"论文大纲 — {Path(os.environ.get('PAPER_PROJECT', 'paper')).name}"
     zh_path.write_text(render_outline(expanded_zh, zh_title, ZH_EXPANDED_MARKER),
                        encoding="utf-8")
+    from agents import project
+    project.record_expansion()
 
     total_sections = sum(len(c["sections"]) for c in expanded_en)
     print(f"\n展开完成:{len(expanded_en)} 章,{total_sections} 个小节 → "
@@ -463,8 +416,8 @@ def expand_outline() -> int:
             print(f"  · 短章({short_list})在**章标题**后加字数,"
                   f"例如 `## 1. Abstract (~200 words)`;不要新增 `###` 小节。")
     print(f"\n下一步:")
-    print(f"  1. 读 {zh_path.name}(中文版),改掉不认同的小节与要点,补上字数")
-    print(f"  2. python run.py --init   # 检测到中文版更新,自动翻译成英文 outline.md 再生成工作区")
+    print(f"  1. 读 {zh_path}(中文版),改掉不认同的小节与要点,补上字数")
+    print(f"  2. python run.py --project <项目> --go   # 审完再跑:自动翻译成英文大纲 → 逐章生成")
     return 0
 
 
@@ -547,18 +500,16 @@ def run_all_chapters(draft_agent, review_agent, manager_agent) -> int:
     chapter_rows = []   # (position, name, status) 用于整篇章节汇总表
     for position, name in enumerate(folders, start=1):
         folder_path = os.path.join(PAPER_ROOT, name)
-        # experiment 模式的"已完成"还要求 Stage 5 交接凭据与当前指纹相符:改了输入、
-        # 删掉陈旧产物重跑到 Stage 4 后中断时,共享状态里还留着旧 claim,只看
-        # final.md + claim 会把该章误判完成、永远跳过新的交接。凭据不符就照常跑
-        # 这一章(前面产物都在,只会重跑 Stage 5;若产物陈旧,章内门禁会硬停)。
-        # survey 模式没有阶段指纹记账,沿用原判定。
+        # "已完成"还要求 Stage 5 交接凭据与当前指纹相符:改了输入、删掉陈旧产物重跑到
+        # Stage 4 后中断时,共享状态里还留着旧 claim,只看 final.md + claim 会把该章误判
+        # 完成、永远跳过新的交接。凭据不符就照常跑这一章(前面产物都在,只会重跑
+        # Stage 5;若产物陈旧,章内门禁会硬停)。
         from agents.orchestrator import chapter_staleness, handoff_is_current
-        experiment = PAPER_MODE == "experiment"
-        if chapter_is_complete(name) and (not experiment or handoff_is_current(folder_path)):
+        if chapter_is_complete(name) and handoff_is_current(folder_path):
             # 跳过前先验陈旧:改了 idea.md / data/ / 提示词 / outline 后,"已完成"的章
             # 是按旧输入写的。原先这里直接跳过,run_4stage 的指纹门禁根本走不到,
             # 改完 idea 再跑 --all 什么都不会发生。
-            reasons = chapter_staleness(folder_path) if experiment else []
+            reasons = chapter_staleness(folder_path)
             if reasons:
                 print(f"\n{'=' * 60}\n[{position}/{len(folders)}] {name} — 已完成但已陈旧\n{'=' * 60}")
                 for line in reasons:
@@ -618,125 +569,295 @@ def run_all_chapters(draft_agent, review_agent, manager_agent) -> int:
         for name in unverified:
             print(f"[run-all]   - {name}")
     print(f"[run-all] 各章产物在 {PAPER_ROOT}/<章节>/final.md 与 final.zh.md")
-    print(f"[run-all] 编译整篇: python latex/build.py")
     _print_paper_table(folders, chapter_rows)
     return 0
 
 
-def run_intake_cli() -> int:
-    """`--intake`:散装材料前处理(纯 Python,零模型调用)。
-
-    核心逻辑在 agents.inbox_intake.run_intake:扫 inbox/ → 角色盘点 →
-    报告与 manifest 落 var/intake/ → 把选定的 idea 候选逐字转正为 idea.md。
-    这里只做终端 banner 与下一步指引,风格对齐 run_retrieve_cli。
-    """
-    from config import INBOX_ROOT, INTAKE_STATE_DIR
-    from agents.inbox_intake import run_intake
-
-    args = sys.argv[1:]
-    forced = None
-    if "--idea" in args:
-        i = args.index("--idea")
-        if i + 1 >= len(args):
-            print("Error: --idea 需要一个路径参数:python run.py --intake --idea inbox/xxx.md")
+# ── 项目模式的新命令 ────────────────────────────────────────────────────
+def cmd_new(args: list[str]) -> int:
+    """`--new 名字 [--parent 目录]`:建项目文件夹和模板。"""
+    from agents import project
+    rest = [a for a in args if a != "--new"]
+    parent = None
+    if "--parent" in rest:
+        i = rest.index("--parent")
+        if i + 1 >= len(rest):
+            print("Error: --parent 需要一个目录参数")
             return 2
-        forced = args[i + 1]
+        parent = Path(rest[i + 1]).expanduser()
+        del rest[i:i + 2]
+    if len(rest) != 1 or rest[0].startswith("--"):
+        print("用法: python run.py --new 项目名 [--parent 目录]")
+        return 2
+    try:
+        root = project.new_project(rest[0], parent)
+    except (ValueError, FileExistsError) as exc:
+        print(f"Error: {exc}")
+        return 1
+    print(f"已建好项目: {root}")
+    print(f"""
+下一步:
+  1. 把材料放进 {root}/inbox/ (每个位置放什么见 inbox/说明.md):
+       idea.md           创新点文档(按模板填,最重要)
+       outline_draft.md  章节骨架表
+       results/          主结果.csv 等结果表 + 实验设置.md
+       references/       refs.bib + 每篇文献一个文件夹(笔记 + 原文 md)
+       code/             实验代码(可选)
+  2. python run.py --project {root} --check   # 先看材料有没有问题(不调模型)
+  3. python run.py --project {root} --go      # 展开大纲后停下,等你审 outline.zh.md
+  4. 审完再跑一次 --go,逐章生成并组装到 {root}/output/
+模型 key 填在仓库根目录的 .env(cp .env.example .env);也可以放项目里的 .env 覆盖。""")
+    return 0
 
-    print(f"\n{'='*60}")
-    print(f"inbox 盘点(可选前置):散装材料 → 报告 + idea 转正(不调模型)")
-    print(f"{'='*60}")
-    print(f"  · Inbox:     {INBOX_ROOT}")
-    print(f"  · 报告:      {INTAKE_STATE_DIR}/inbox-report.md")
 
-    code, _manifest = run_intake(forced_idea=forced)
-    if code == 0:
-        print(f"\n下一步:看报告 → 搬数据进 data/ → 写 outline_draft.md → --expand → --init")
-    return code
+def _write_report(name: str, text: str) -> Path:
+    import config
+    path = Path(config.OUTPUT_ROOT) / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def cmd_check(need_models: bool = False) -> int:
+    from agents import project
+    chk = project.check_materials(need_models=need_models)
+    path = _write_report("材料检查.md", chk.render())
+    for e in chk.errors:
+        print(f"[错误] {e}")
+    for w in chk.warnings:
+        print(f"[提醒] {w}")
+    for i in chk.info:
+        print(f"[概况] {i}")
+    print(f"\n检查报告: {path}")
+    if not chk.ok:
+        print("有必须先修的问题,修好后重跑。")
+        return 1
+    print("材料检查通过。")
+    return 0
+
+
+def _indexes_or_report():
+    """建索引;结果表有歧义时给友好提示而不是 traceback。成功返回概况,失败返回 None。"""
+    from agents import project
+    from agents.number_gate import ResultsStoreError
+    try:
+        return project.build_all_indexes()
+    except ResultsStoreError as exc:
+        print("Error: 结果表有问题,不能建数据索引:")
+        for line in str(exc).splitlines():
+            print(f"  {line}")
+        return None
+
+
+def cmd_index() -> int:
+    info = _indexes_or_report()
+    if info is None:
+        return 1
+    import config
+    print(f"索引已建在 {config.INDEX_DIR}: 文献 {info['references']} 条,结果数值 {info['results']} 个")
+    return 0
+
+
+def cmd_assemble() -> int:
+    """重新核验各章终稿(不调模型)并组装 output/。手改过终稿后用它。"""
+    from agents import project
+    from agents.orchestrator import reverify_chapter
+    from agents.outline import parse_outline, OutlineRouteError
+    import config
+    try:
+        folders = [c["folder"] for c in parse_outline()]
+    except OutlineRouteError as exc:
+        print(f"Error: 无法读 outline: {exc}")
+        return 1
+    flipped = []
+    for name in folders:
+        folder = os.path.join(config.WORKSPACE_ROOT, name)
+        before = _read_status(folder)
+        result = reverify_chapter(folder)
+        if result.get("status") in ("verified", "unverified") and result["status"] != before and before:
+            flipped.append(f"{name}: {before} → {result['status']}")
+    for line in flipped:
+        print(f"[重新核验] {line}")
+    try:
+        info = project.assemble_output()
+    except ValueError as exc:
+        print(f"Error: {exc}")
+        return 1
+    if info["missing"]:
+        print(f"[缺章] 以下章没有终稿,paper.md / LaTeX 里是占位提示: {', '.join(info['missing'])}")
+    print(f"\n已组装到 {info['out']}: {info['with_final']}/{info['chapters']} 章有终稿,"
+          f"{info['unverified']} 章未核验,{info['tables']} 张结果表,{info['figures']} 张待补图")
+    if info["latex_checks"]:
+        print("LaTeX 静态检查发现:")
+        for p in info["latex_checks"]:
+            print(f"  · {p}")
+    print("交付物: paper.md / paper.zh.md / latex/ / 待补清单.md / 图表清单.md / 数字溯源表.md")
+    return 0
+
+
+def _read_status(folder: str) -> str:
+    from agents.orchestrator import read_verification_status
+    try:
+        return read_verification_status(folder)
+    except Exception:
+        return ""
+
+
+def cmd_go(keep_outline: bool) -> int:
+    """一条命令:材料检查 → 建索引 → 展开大纲(首次停下等审) → 逐章生成 → 组装。"""
+    import config
+    from agents import project
+    from agents.outline import OUTLINE_ZH_PATH
+
+    print("== 1/5 材料检查 ==")
+    chk = project.check_materials(need_models=True)
+    report = _write_report("材料检查.md", chk.render())
+    for e in chk.errors:
+        print(f"[错误] {e}")
+    for w in chk.warnings:
+        print(f"[提醒] {w}")
+    if not chk.ok:
+        print(f"\n有必须先修的问题(详见 {report}),修好后重跑同一条命令。")
+        return 1
+
+    print("\n== 2/5 建索引 ==")
+    info = project.build_all_indexes()
+    print(f"文献 {info['references']} 条,结果数值 {info['results']} 个 → {config.INDEX_DIR}")
+
+    print("\n== 3/5 大纲 ==")
+    zh = Path(OUTLINE_ZH_PATH)
+    if not zh.is_file():
+        rc = expand_outline()
+        if rc != 0:
+            return rc
+        print(f"\n大纲已展开。请审阅并按需修改:\n  {zh}\n改完后重跑同一条命令继续。")
+        return 0
+    if not project.load_state().get("zh"):
+        print(f"{zh} 存在,但没有“展开成功”的记录(可能是上次展开失败或手工放的文件)。")
+        print(f"请删掉 {zh} 和 {config.WORK_ROOT}/outline.md 后重跑同一条命令重新展开。")
+        return 1
+    changed = project.outline_inputs_changed()
+    if changed:
+        if not keep_outline:
+            print(f"{'、'.join(changed)} 在展开大纲之后改过,大纲里的小节要点可能已和它们不一致。")
+            print("二选一:")
+            print(f"  · 删掉 {zh} 和 {config.WORK_ROOT}/outline.md,重新展开(你手改过的大纲会丢);")
+            print("  · 确认继续沿用现有大纲:重跑并加 --keep-outline。")
+            return 1
+        state = project.load_state()
+        state.update(project.input_shas())
+        project.save_state(state)
+        print(f"已确认继续沿用现有大纲({'、'.join(changed)} 的改动不再提醒)。")
+    if _translate_zh_to_en() != 0:
+        return 1
+    rc = init_workspaces(force=False)
+    if rc != 0:
+        return rc
+
+    print("\n== 4/5 逐章生成 ==")
+    print("Initializing models...")
+    manager, draft_agent, review_agent = create_agents(
+        get_draft_model(), get_review_model(), get_manager_model())
+    rc = run_all_chapters(draft_agent, review_agent, manager)
+    if rc != 0:
+        print("\n某章失败或被拦下,已停止。修好后重跑同一条命令会从这一章继续。")
+        return rc
+
+    print("\n== 5/5 核验并组装 ==")
+    return cmd_assemble()
+
+
+# ── 入口 ────────────────────────────────────────────────────────────────
+USAGE = """用法:
+  python run.py --new 项目名                          建项目 + 模板
+  python run.py --project <项目> --go                 一条命令出初稿(首次展开大纲后停下等你审)
+  python run.py --project <项目> --check | --index | --expand | --init | --all | --assemble | --list
+  python run.py --project <项目> <章节名>             只跑一章
+详见 README.md。"""
 
 
 def main():
-    # --retrieve 是独立命令,禁止与章名、--all、--init、--expand 等组合,避免参数被静默吞掉。
-    if "--retrieve" in sys.argv[1:] and sys.argv[1:] != ["--retrieve"]:
-        print("Error: --retrieve 是独立命令,不能与章名、--all、--init 或其它参数组合。")
-        print("Run: python run.py --retrieve")
+    argv = sys.argv[1:]
+    if not argv or argv[0] in ("-h", "--help"):
+        print(USAGE)
+        return
+
+    if "--new" in argv:
+        sys.exit(cmd_new(argv))
+
+    import config
+    if not config.HAS_PROJECT:
+        print("Error: 需要 --project <项目路径>(还没有项目先 `python run.py --new 项目名`)。")
+        print(USAGE)
+        sys.exit(2)
+    if not Path(config.PROJECT_ROOT).is_dir():
+        print(f"Error: 项目文件夹不存在: {config.PROJECT_ROOT}")
         sys.exit(2)
 
-    # --intake 同为独立命令,只可与 --idea <path> 组合(多候选绑定时用)。
-    if "--intake" in sys.argv[1:]:
-        rest = [a for a in sys.argv[1:] if a != "--intake"]
-        ok = (not rest) or (len(rest) == 2 and rest[0] == "--idea")
-        if not ok:
-            print("Error: --intake 是独立命令,只可与 --idea <path> 组合。")
-            print("Run: python run.py --intake [--idea inbox/xxx.md]")
+    rest = [a for a in argv if a not in ("--project", "--progress")]
+    if "--project" in argv:
+        i = argv.index("--project")
+        if i + 1 >= len(argv) or argv[i + 1].startswith("--"):
+            print("Error: --project 后面需要项目路径")
             sys.exit(2)
-        sys.exit(run_intake_cli())
+        rest = [a for j, a in enumerate(argv) if j not in (i, i + 1) and a != "--progress"]
 
-    if "--list" in sys.argv:
+    actions = ("--check", "--index", "--assemble", "--go", "--list", "--init", "--expand", "--all")
+    known = set(actions) | {"--keep-outline", "--force"}
+    unknown = [a for a in rest if a.startswith("--") and a not in known]
+    if unknown:
+        print(f"Error: 未知参数 {' '.join(unknown)}")
+        print(USAGE)
+        sys.exit(2)
+    chosen = [a for a in actions if a in rest]
+    names_given = [a for a in rest if not a.startswith("--")]
+    if len(chosen) > 1 or (chosen and names_given):
+        print(f"Error: 一次只能做一件事,收到: {' '.join(chosen + names_given)}")
+        sys.exit(2)
+    if "--keep-outline" in rest and "--go" not in rest:
+        print("Error: --keep-outline 只能和 --go 一起用")
+        sys.exit(2)
+    if "--force" in rest and "--init" not in rest:
+        print("Error: --force 只能和 --init 一起用")
+        sys.exit(2)
+
+    if "--check" in rest:
+        sys.exit(cmd_check())
+    if "--index" in rest:
+        sys.exit(cmd_index())
+    if "--assemble" in rest:
+        sys.exit(cmd_assemble())
+    if "--go" in rest:
+        sys.exit(cmd_go(keep_outline="--keep-outline" in rest))
+    if "--list" in rest:
         list_paper_folders()
         return
-
-    # --init 不调模型,单独处理并提前返回。
-    if "--init" in sys.argv:
-        sys.exit(init_workspaces(force="--force" in sys.argv))
-
-    # --expand 只调 Manager 一次,不进章节流水线,同样提前返回。
-    if "--expand" in sys.argv:
+    if "--init" in rest:
+        sys.exit(init_workspaces(force="--force" in rest))
+    if "--expand" in rest:
         sys.exit(expand_outline())
 
-    # --retrieve: 可选前置步骤。按章检索文献候选 → references/candidates.md(不进 bib)。
-    # 读 idea+outline+data,Manager 生成 per-章 query,Python 执行检索+验 URL+去重。
-    if "--retrieve" in sys.argv:
-        sys.exit(run_retrieve_cli())
-
-    run_all = "--all" in sys.argv
-
-    if not run_all and (len(sys.argv) < 2 or sys.argv[1].startswith("--")):
-        print(__doc__)
-        print("Available folders:")
+    run_all = "--all" in rest
+    names = [a for a in rest if not a.startswith("--")]
+    if not run_all and len(names) != 1:
+        print(USAGE)
+        print("\n现有章节:")
         list_paper_folders()
-        return
+        sys.exit(2)
 
-    folder_name = None if run_all else sys.argv[1]
-    use_direct = "--direct" in sys.argv
-    use_stream_raw = "--stream-raw" in sys.argv
-    use_progress = "--progress" in sys.argv
-
-    if sum([use_direct, use_stream_raw, use_progress]) > 1:
-        print("Error: --direct, --progress, --stream-raw are mutually exclusive.")
-        sys.exit(1)
-
-    if run_all and (use_direct or use_stream_raw):
-        print("Error: --all 只支持 --progress(整篇流水线需要完整的门禁与收敛循环)。")
-        sys.exit(1)
-
-    # C1: in experiment mode, only --progress runs the full mode-aware pipeline
-    # (evidence mining, content source, number gate, convergence loop). The
-    # Manager/direct/stream-raw paths are survey-only and would read the wrong
-    # files and bypass every experiment safeguard — refuse them explicitly.
-    if PAPER_MODE == "experiment" and not use_progress:
-        print("Error: experiment mode requires --progress.")
-        print("The --direct / --stream-raw / default-Manager paths are survey-only and")
-        print("would skip the content source, number gate, and convergence loop.")
-        print("Run: python run.py \"<workspace>\" --progress")
-        sys.exit(1)
-
+    folder_name = None if run_all else names[0]
     folder_path = None
     if not run_all:
         folder_path = os.path.join(PAPER_ROOT, folder_name)
-
-        # `_` 前缀是脚手架而非章节。--list 与 --all 已经排掉它们,但显式点名仍会跑。
         if folder_name.startswith("_"):
             print(f"Error: '{folder_name}' 是脚手架目录(`_` 前缀),不是可跑的章节。")
-            print("章节文件夹由 outline.md 经 --init 生成:  python run.py --init")
             sys.exit(1)
-
         if not os.path.isdir(folder_path):
             print(f"Error: folder '{folder_path}' does not exist.")
             print("现有章节:")
             list_paper_folders()
-            print("\n从 outline.md 生成章节文件夹: python run.py --init")
+            print("\n从大纲生成章节文件夹: python run.py --project <项目> --init")
             sys.exit(1)
-
         # 先确认这一章在 outline 里。不在 outline 的文件夹不是合法章节——即使它
         # 也缺 brief.md,首要错误仍是路由非法,不该报成"缺 brief"。
         from agents.outline import resolve_write_mode, OutlineRouteError
@@ -745,49 +866,26 @@ def main():
         except OutlineRouteError as exc:
             print(f"\nError: '{folder_name}' 不是合法章节: {exc}")
             sys.exit(1)
-
-        brief_path = os.path.join(folder_path, "brief.md")
-        if not os.path.exists(brief_path):
-            print(f"Error: {brief_path} not found. Create brief.md first.")
-            print("从 outline.md 生成: python run.py --init")
+        if not os.path.exists(os.path.join(folder_path, "brief.md")):
+            print(f"Error: {folder_path}/brief.md not found.")
+            print("从大纲生成: python run.py --project <项目> --init")
             sys.exit(1)
-
-        print(f"\n路由:outline.md 的第 {info['position']}/{info['total']} 章")
+        print(f"\n路由:outline 的第 {info['position']}/{info['total']} 章")
         print(f"  · 可跨章引用,符号沿用前章(见 {PAPER_ROOT}/cross-chapter-state.md)")
-        print(f"  · 跑完会把本章的术语与结论追加进跨章状态,供后续章节对齐")
 
-    print(f"Initializing models...")
-    model_draft = get_draft_model()
-    model_review = get_review_model()
-    model_manager = get_manager_model()
+    # 单章 / --all 之前也要有索引(文献索引缺失会让备料直接失败)。
+    if _indexes_or_report() is None:
+        sys.exit(1)
 
-    print(f"Creating agents...")
-    manager, draft_agent, review_agent = create_agents(model_draft, model_review, model_manager)
-
+    print("Initializing models...")
+    manager, draft_agent, review_agent = create_agents(
+        get_draft_model(), get_review_model(), get_manager_model())
     if run_all:
-        print(f"\n{'='*60}")
-        print(f"整篇模式:按 outline.md 的顺序跑完 {PAPER_ROOT} 下的各章")
-        print(f"{'='*60}")
+        print(f"\n{'=' * 60}\n整篇模式:按 outline 的顺序跑完 {PAPER_ROOT} 下的各章\n{'=' * 60}")
         sys.exit(run_all_chapters(draft_agent, review_agent, manager))
-
-    mode = "direct" if use_direct else "progress" if use_progress else "stream-raw" if use_stream_raw else "manager"
-    print(f"\n{'='*60}")
-    print(f"Running 4-stage iteration on: {folder_name}")
-    print(f"Mode: {mode}")
-    print(f"{'='*60}")
-
-    if use_progress:
-        results = run_4stage_with_progress(draft_agent, review_agent, folder_path, manager)
-        print(f"\nStages completed: {len(results)}")
-    elif use_direct:
-        results = run_4stage_direct(draft_agent, review_agent, folder_path)
-        print(f"\nStages completed: {len(results)}")
-    elif use_stream_raw:
-        events = run_4stage_via_manager_stream(manager, folder_path, raw=True)
-        print(f"\nStream events received: {len(events)}")
-    else:
-        result = run_4stage_via_manager(manager, folder_path)
-        print(f"\nManager result:\n{str(result)[:500]}")
+    print(f"\n{'=' * 60}\nRunning 4-stage iteration on: {folder_name}\n{'=' * 60}")
+    results = run_4stage_with_progress(draft_agent, review_agent, folder_path, manager)
+    print(f"\nStages completed: {len(results)}")
 
 
 if __name__ == "__main__":
