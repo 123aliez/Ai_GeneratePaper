@@ -1,6 +1,7 @@
 from smolagents import CodeAgent, Model
 
-from .tools import read_file, write_file, list_folder, search_references, search_literature
+from .tools import (read_file, read_file_range, write_file, list_folder,
+                    read_reference, search_reference_text)
 from .prompts import DRAFT_INSTRUCTIONS, REVIEW_INSTRUCTIONS, MANAGER_INSTRUCTIONS
 
 import sys
@@ -8,7 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import MAX_STEPS_AGENT, MAX_STEPS_MANAGER
 
-AUTHORIZED_IMPORTS = ["os", "json", "time", "textwrap"]
+AUTHORIZED_IMPORTS = ["json", "time", "textwrap"]  # 不含 os:os 能绕过 write_file 的写入作用域
 
 
 def create_planner_agent(model_manager: Model):
@@ -18,7 +19,7 @@ def create_planner_agent(model_manager: Model):
     根本不调它们,而三组 key 里任意一组没配好就会在这一步白报错。
     """
     return CodeAgent(
-        tools=[read_file, write_file, list_folder],
+        tools=[read_file, read_file_range, write_file, list_folder],
         model=model_manager,
         instructions=MANAGER_INSTRUCTIONS,
         additional_authorized_imports=AUTHORIZED_IMPORTS,
@@ -36,7 +37,7 @@ def create_agents(
     """Create the 3-agent hierarchy: Manager -> (Draft, Review)."""
 
     draft_agent = CodeAgent(
-        tools=[read_file, write_file, list_folder, search_references, search_literature],
+        tools=[read_file, read_file_range, write_file, list_folder, read_reference, search_reference_text],
         model=model_draft,
         name="draft_agent",
         description=(
@@ -51,7 +52,7 @@ def create_agents(
     )
 
     review_agent = CodeAgent(
-        tools=[read_file, write_file, list_folder, search_references, search_literature],
+        tools=[read_file, read_file_range, write_file, list_folder, read_reference, search_reference_text],
         model=model_review,
         name="review_agent",
         description=(
@@ -67,7 +68,7 @@ def create_agents(
     )
 
     manager_agent = CodeAgent(
-        tools=[read_file, write_file, list_folder, search_references, search_literature],
+        tools=[read_file, read_file_range, write_file, list_folder, read_reference, search_reference_text],
         model=model_manager,
         managed_agents=[draft_agent, review_agent],
         instructions=MANAGER_INSTRUCTIONS,

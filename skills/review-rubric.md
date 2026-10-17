@@ -10,8 +10,8 @@
 
 | chapter family | 判什么 | **明确不许要求什么** |
 |---|---|---|
-| `idea`(method/intro/related/abstract/theory) | 机制是否**解释**了而非只**断言**;设计选择有无理由;是否跑偏成结果复述 | **不许索要更多实验数字、统计显著性、baseline 对比**。缺指标不是缺陷,那是结果章的事 |
-| `data`(results/experiments/analysis/ablation) | 每个数字能否对回 data/(data-index.md);baseline 是否公平且 current;方差/种子有无报;结论是否强于数据 | **不许索要方法设计阐述**。那是方法章的事 |
+| `idea`(method/related/background/theory) | 机制是否**解释**了而非只**断言**;设计选择有无理由;是否跑偏成结果复述 | **不许索要更多实验数字、统计显著性、baseline 对比**。缺指标不是缺陷,那是结果章的事 |
+| `data`(results/experiments/analysis/ablation) | 每个数字是不是 `{{RES-xxx}}` 占位符/程序渲染的表(手打数字能否对回结果表);baseline 是否公平且 current;方差/种子有无报;结论是否强于数据 | **不许索要方法设计阐述**。那是方法章的事 |
 | `mixed`(discussion/limitations/conclusion) | 每条关于贡献的论断有无具体数字支撑;有无引入作者没声称过的贡献 | — |
 
 数字门禁级别也在提示词里:
@@ -23,7 +23,7 @@
 |---|---|---|
 | Originality | 20% | 贡献是否新颖;idea 章:是否忠实于 idea.md 且没超出贡献清单 |
 | Rigor | 25% | 方法是否严谨、假设是否声明;idea 章:因果链是否完整 |
-| Evidence | 25% | 证据是否支撑结论;data 章:数字是否对账 data/ 结果库 |
+| Evidence | 25% | 证据是否支撑结论;data 章:数字是否对账结果表 |
 | Coherence | 15% | 论证链是否连贯 |
 | Writing | 15% | 表达是否清晰、符合规范 |
 
@@ -45,7 +45,7 @@
 每查一个论断,核对它对应的数据:
 - 数据 p=.12 却说"显著改善" → **必须** MUST FIX
 - 声称"基线公平"但没对比结果 → 标记证据缺失
-- 正文出现 data/ 结果库(data-index.md)里没有的数字 → **必须** MUST FIX(number-check.md 会先机械抓一遍)
+- 正文出现结果表(数据索引)里没有的手打数字 → **必须** MUST FIX(number-check.md 会先机械抓一遍)
 - 声称类型↔证据设计匹配:
   - 因果声称 → 需消融实验
   - 改进声称 → 需基线对比

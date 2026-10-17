@@ -139,7 +139,8 @@ def test_part_family_splits_by_section():
     route = resolve_run_route(folder, sections)
     parts = build_stage1_parts(sections)
     families = [part_family(p, route) for p in parts]
-    check("part 1 (abstract+intro) routes to idea", families[0] == IDEA, str(families))
+    check("part 1 (abstract+intro) routes to mixed (headline results via RES placeholders)",
+          families[0] == MIXED, str(families))
     check("part 2 (related+method) routes to idea", families[1] == IDEA, str(families))
     check("part 3 (results+conclusion) is mixed", families[2] == MIXED, str(families))
     # The method part must be told the idea document is primary, not the numbers.
@@ -217,7 +218,7 @@ def test_review_criteria_follow_family():
     # 演进点②:数字可溯性从"data-index.md 逐字出现"升级为"RES 占位符"——
     # 占位符本身就是溯源凭证,评审的职责变成抓"手打字面值/未知 ID"。
     check("reviewer is told to flag literal numbers instead of RES placeholders",
-          "res-ids.md" in data_clause and "placeholder" in data_clause,
+          "data index" in data_clause and "placeholder" in data_clause,
           data_clause[:400])
 
 

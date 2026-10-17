@@ -306,8 +306,8 @@ def test_whole_paper_parts_get_different_rules():
     agent, _ = run_pipeline_in_outline(folder, make_data({"test_accuracy": 0.817}), outline)
     part_prompts = [p for p in agent.prompts if "Write only Part" in p]
     check("three part prompts were issued", len(part_prompts) == 3, str(len(part_prompts)))
-    check("part 1 (abstract+intro) is routed as an idea chapter",
-          "IDEA chapter" in part_prompts[0], part_prompts[0][:300])
+    check("part 1 (abstract+intro) is routed as a mixed chapter (may cite headline results via RES)",
+          "MIXED chapter" in part_prompts[0] and "data-index.md" in part_prompts[0], part_prompts[0][:300])
     check("part 2 (related+method) is routed as an idea chapter",
           "IDEA chapter" in part_prompts[1])
     check("part 3 (results+conclusion) is routed as a mixed chapter",

@@ -23,15 +23,16 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from config import WORKSPACE_ROOT, PROJECT_ROOT
+from config import WORKSPACE_ROOT, PROJECT_ROOT, INBOX_ROOT, WORK_ROOT
 from .chapter_type import normalize_type, route_for_type, DEFAULT_TYPE, DEFAULT_WORDS_BY_TYPE
 
-OUTLINE_PATH = Path(os.getenv("OUTLINE_PATH") or (PROJECT_ROOT / "outline.md"))
+# 英文大纲(喂 Agent)放在 _work/;中文大纲(作者审阅、修改)放在项目根。
+OUTLINE_PATH = WORK_ROOT / "outline.md"
+OUTLINE_ZH_PATH = PROJECT_ROOT / "outline.zh.md"
 
 # 用户填写的 outline 草稿(表格骨架)。--expand 读它,展开成 outline.md(定稿用)。
 # 与 OUTLINE_PATH(outline.md)分离:草稿是用户手写的骨架,定稿是展开/审查后的产物。
-OUTLINE_DRAFT_PATH = Path(os.getenv("OUTLINE_DRAFT_PATH")
-                          or (PROJECT_ROOT / "outline_draft.md"))
+OUTLINE_DRAFT_PATH = INBOX_ROOT / "outline_draft.md"
 
 # `## 4. Method` / `## 4 Method` / `## Method`(无号则按出现顺序编号)。
 # 可选尾部字数 `## 1. Abstract (~300 words)` —— 短章无 ### 小节时，作者用它钉死合成小节
@@ -276,7 +277,7 @@ def parse_outline(outline_path=None) -> list[dict]:
         raise OutlineRouteError(f"outline 路径不是文件: {path}")
 
     try:
-        text = path.read_text(encoding="utf-8", errors="replace")
+        text = path.read_text(encoding="utf-8-sig", errors="replace")
     except OSError as exc:
         raise OutlineRouteError(f"无法读取 outline: {path}: {exc}") from exc
 

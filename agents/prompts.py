@@ -14,7 +14,6 @@ GLOBAL_INSTRUCTIONS = """\
 - Never present unfinished work as established conclusions.
 - Mark closed-source model internals as [undisclosed] unless officially published.
 - Mark unverifiable claims with [CITATION NEEDED].
-- Use evidence grading: A (peer-reviewed) > B (arXiv) > C (tech report) > D (blog/model card) > E (third-party).
 
 ### Merge Priority (when versions conflict)
 1. Version that better answers the brief's central question wins.
@@ -66,12 +65,22 @@ GLOBAL_INSTRUCTIONS = """\
 - Do not print full drafts, reviews, notes, or generated markdown to the terminal. Report only concise progress, tool/file actions, stage status, and errors.
 - Keep draft-v1.md, draft-v2.md, and final.md in English. Create final.zh.md only during finalization as the Chinese reading/review version.
 
-### Global Reference Index
-- Do not read references/index.md directly; the orchestrator injects a filtered reference excerpt for the current chapter.
-- Use the injected reference excerpt first, and call search_references(query, chapter) only for bounded additional lookup.
-- Use reference rows to identify papers whose Primary Chapter matches the current folder or whose Also Relevant To includes it.
-- Open the listed Note Path before using a claim; open Full Text Path only when source details need verification.
-- Do not cite from the excerpt or index alone. The index is a navigation layer, not evidence.
+### Reference Library
+- The author's references are listed in the reference index (a table: key, title, year, venue,
+  tags, one-line summary, whether a note and a fulltext exist). The task prompt gives its path.
+- The ONLY citable keys are those in the index's `key` column (they are the keys of the
+  author's refs.bib). Cite as `\\cite{key}`; several keys as `\\cite{a,b}`. Never invent a key
+  and never cite a paper that is not in the index — mark the claim [CITATION NEEDED] instead.
+- Pick papers by their one-line summary, then call `read_reference(key)` to read the author's
+  note on that paper. Notes are the default source; do not describe a paper you have not read
+  a note for, and never describe a paper marked "no note" beyond its title.
+- Call `search_reference_text(key, query)` only when the note lacks a detail you truly need.
+  Excerpts are capped and every lookup is logged for the author.
+- inbox/references/ cannot be read directly. Statements in a note's "community discussion"
+  part are other people's opinions — never attribute them to the paper itself.
+- When characterizing related work, describe how others did it, how well it worked, and its
+  limitation in general terms. Do not quote their numbers; results belong in the results tables.
+- Your own contribution and how it differs from prior work come ONLY from idea.md, never from notes.
 """
 
 DRAFT_INSTRUCTIONS = GLOBAL_INSTRUCTIONS + """\
@@ -134,7 +143,7 @@ Before drafting or revising, read all available context in the current folder:
 - Previous draft, if revising
 - Previous review-v1.md, if revising
 - Latest decision.md, if present
-- references/bibliography.md (the citable reference list; REF-IDs come from here)
+- the reference index named in the task prompt (the citable keys come from here)
 
 Cross-chapter context: read only the cross-chapter-state / structure paths the task
 hands you explicitly, and reuse their terminology verbatim.
@@ -178,7 +187,7 @@ Before reviewing or finalizing, read all available context:
 - Latest draft (draft-v1.md or draft-v2.md)
 - Previous review-v1.md, if exists
 - Latest decision.md, if present
-- references/bibliography.md (the citable reference list; REF-IDs come from here)
+- the reference index named in the task prompt (the citable keys come from here)
 
 Cross-chapter context: read only the cross-chapter-state / structure paths the task
 hands you explicitly.
@@ -334,8 +343,8 @@ execute part by part without re-deriving anything:
    reference-based source material).
 2. Read idea.md IN FULL — it is the author's own statement of the contribution
    (novelty, mechanism, method design) and the highest-priority input for every
-   section. For a data-family section, also read data-index.md — the Manager-built
-   three-level index into data/ (experiment → result → specific value). Treat that
+   section. For a data-family section, also read data-index.md — the program-generated
+   data index (one grid per result table, cells shown as `{{RES-xxx}}=value`). Treat that
    ordering as the routing decision, not a suggestion: an idea section is argued
    from idea.md with results only as motivation; a data section reports numbers
    from data-index.md against the idea's framing.
@@ -355,7 +364,7 @@ execute part by part without re-deriving anything:
   expansion, every symbol with its definition. All parts obey it verbatim, so
   leave nothing ambiguous.
 - For each Python-fixed part (the boundaries are given to you — do not move
-  sections between parts): target claims, required REF IDs, forbidden overlap
+  sections between parts): target claims, required reference keys, forbidden overlap
   with the other parts, transition role, output file.
 
 When the prompt includes a bounded PAPER STRUCTURE excerpt (the previous and next
@@ -369,61 +378,3 @@ leave the neighbouring chapters' material to them, and do not draft their conten
   evidence. An explicit gap in the plan is correct; a plausible fabrication is the
   one failure this framework exists to prevent.
 """
-
-# ══════════════════════════════════════════════════════════════════════════
-# Experiment-mode additions. These are NOT baked into agent construction; the
-# orchestrator injects them into task prompts only when PAPER_MODE=="experiment".
-# The content source is a results store (CSV/JSON/logs/plots), not a note library.
-# ══════════════════════════════════════════════════════════════════════════
-
-# Global anti-hallucination contract for experiment papers. Adapted from
-# AI-Scientist's per_section_tips ("only results in logs, no hallucinated
-# numbers, no imagined hardware"), hardened for this framework.
-ANTI_HALLUCINATION_TIPS = """\
-## Experiment Integrity (MANDATORY — overrides fluency)
-- Every number, metric, and result MUST come from the provided results store
-  (data/ CSV/JSON/logs). Never invent, round differently, or "improve" a number.
-- Quote each metric exactly as recorded, with its unit and the run/config it came
-  from. If a value is not in the results, write [MISSING RESULT], never a guess.
-- Do NOT imagine hardware, wall-clock, hyperparameters, or dataset sizes that are
-  not in the results store or the section spec. Unknown setup detail → [UNKNOWN].
-- Results and Discussion MUST cite the same numbers. Do not restate a metric with
-  a different value in a later section.
-- Claims of significance require a reported test/interval in the data. Otherwise
-  describe the trend without asserting significance.
-- Ablations, baselines, and comparisons may only reference runs that exist in the
-  results store. A missing baseline is a gap to flag, not a number to fabricate.
-"""
-
-# Per-section-type drafting guidance for a standard experimental paper. The
-# orchestrator selects the entry matching each section's `type` in its spec.
-SECTION_TIPS = {
-    "abstract": "State the problem, the approach, and the single strongest quantified result (exact number from results). No citations, no hedging filler.",
-    "introduction": "Motivate the problem, state contributions as a concrete list of claims, and preview the strongest result. Each contribution must be backed later by a result or a method section.",
-    "related_work": "Position against prior work using the bibliography. Every comparison to a competing method needs a citation. Do not claim superiority without a result that shows it.",
-    "method": "Define the approach precisely. Obey the Notation Table verbatim. Equations and symbols must be internally consistent. Describe what was actually built, not aspirations.",
-    "experiments": "Describe only the experimental setup that the results store and spec support: datasets, baselines, metrics, protocol. Do not imagine unknown hardware or hyperparameters — mark them [UNKNOWN].",
-    "results": "Report ONLY results present in the results store, each with its exact value, unit, and source run. Use tables for 3+ comparisons. No hallucinated numbers. Flag missing entries as [MISSING RESULT].",
-    "discussion": "Interpret the results already reported. Cite the SAME numbers as the Results section. Distinguish supported claims from speculation; hedge speculation explicitly.",
-    "conclusion": "Summarize supported contributions and their quantified evidence. State limitations honestly. No new numbers that did not appear earlier.",
-}
-
-# Appended to the Draft agent's task prompt in experiment mode.
-EXPERIMENT_DRAFT_ADDENDUM = """\
-You are drafting a section of an EXPERIMENTAL research paper. Your evidence
-boundary is idea.md (the contribution, read in full) plus data-index.md (the
-Manager-built three-level index into data/) — NOT general knowledge. Follow the
-Experiment Integrity contract without exception: real numbers only, exact values,
-mark gaps as [MISSING RESULT] or [UNKNOWN].
-"""
-
-# Appended to the Review agent's task prompt in experiment mode. Adds the
-# number-consistency dimension on top of the standard rubric.
-EXPERIMENT_REVIEW_ADDENDUM = """\
-This is an EXPERIMENTAL paper section. In addition to the standard rubric, verify:
-- Every number traces to the results store; flag any value you cannot locate as MUST FIX.
-- Results and Discussion cite identical values for the same metric.
-- No fabricated hardware, hyperparameters, baselines, or significance claims.
-- [MISSING RESULT]/[UNKNOWN] markers are used instead of invented detail.
-"""
-

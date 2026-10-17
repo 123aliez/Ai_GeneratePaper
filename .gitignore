@@ -7,52 +7,9 @@ __pycache__/
 .venv/
 venv/
 
-# LaTeX build artifacts
-*.aux
-*.bbl
-*.blg
-*.log
-*.out
-*.toc
-*.lof
-*.lot
-*.fls
-*.fdb_latexmk
-*.synctex.gz
-main.pdf
-
-# workspace 是本地工作产物(brief/input/draft/final/跨章状态…)。
-# 文件夹本身用 .gitkeep 保留,但里面跑出来的东西不进版本库——它们是 --init / 流水线
-# 的产物,不是源代码。.gitkeep 例外,它让空目录能被 git 跟踪。
-workspace/**
-!workspace/.gitkeep
-
-# User experiment data is local and often large — keep the contract, not the payload.
-# Comment the next lines out if you want results committed.
-data/**
-!data/README.md
-!data/*.example.*
-
-# The idea document is the author's unpublished contribution — keep the template,
-# not the content. Comment this out if the repo is private and you want it tracked.
-idea.md
-
-# Outline 文件:草稿、中英双轨产物都是用户输入/运行时生成,不进版本库。
-# 模板 outline.example.md 进。
-outline_draft.md
-outline.md
-outline.zh.md
-
-# 文献检索候选清单(--retrieve 产物):自动检索、未经核实,不进版本库。
-# 模板与正式引用库 references/bibliography.md 仍进版本库。
-references/candidates.md
-
-# inbox 散装材料(--intake 输入区):用户本地实验材料,与 data/ 同待遇不入库。
-inbox/**
-
-# 项目状态文档(PROJECT.md / PROGRESS.md):本地开发用,不进版本库。
-PROJECT.md
-PROGRESS.md
+# 论文项目(你的材料与产物)是本地内容,不进版本库。模板在 templates/。
+projects/**
+!projects/.gitkeep
 
 # 多用户平台(server/)运行时产物：本地 SQLite、任务 run store、上传 blob、设计文档。
 # 平台代码进版本库,但跑出来的数据/状态不进。
@@ -60,3 +17,6 @@ server/var/
 var/
 multiuser_smolagents_platform_design_v1.md
 
+# 项目状态文档(PROJECT.md / PROGRESS.md):本地开发用,不进版本库。
+PROJECT.md
+PROGRESS.md
