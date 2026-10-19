@@ -148,9 +148,13 @@ def _translate_zh_to_en() -> int:
     candidate = en_path.with_name(en_path.name + ".candidate")
     if candidate.exists():
         candidate.unlink()
+    from agents.content_stage import Doc
     prompt = build_translate_prompt(str(zh_path), str(candidate),
                                     str(en_path) if en_path.is_file() else "")
-    run_agent_stage_standalone(manager, "Manager", prompt, allowed_files=[candidate])
+    docs = [Doc("outline.zh.md", zh_path)]
+    if en_path.is_file():
+        docs.append(Doc("outline.previous.md", en_path))
+    run_agent_stage_standalone(manager, "Manager", prompt, docs, [candidate.name], en_path.parent)
     if not candidate.is_file():
         print(f"Error: Manager 没有写出翻译候选文件;{en_path.name} 未改动。")
         return 1
@@ -342,8 +346,23 @@ def expand_outline() -> int:
 
     prompt = build_expand_prompt(chapters, str(en_path), str(zh_path),
                                  str(IDEA_PATH), len(chapters))
-    run_agent_stage_standalone(manager, "Manager", prompt,
-                               allowed_files=[en_path, zh_path])
+    from agents.content_stage import Doc
+    # 两份产物都由脚本写进 _work/,中文版再挪到项目根(作者在那里审阅)
+    docs = [Doc("idea.md", IDEA_PATH)]
+    # 数据索引与实验设置也交给规划者:否则它会在要点里写"数据不在 idea.md 里,标 [MISSING DATA]",
+    # 这句话原样传给每个起草阶段
+    from config import DATA_ROOT
+    from agents.paths import data_index_path, settings_path
+    if Path(data_index_path(DATA_ROOT)).is_file():
+        docs.append(Doc("data-index.md", data_index_path(DATA_ROOT)))
+    if settings_path(DATA_ROOT).is_file():
+        docs.append(Doc(settings_path(DATA_ROOT).name, settings_path(DATA_ROOT)))
+    run_agent_stage_standalone(manager, "Manager", prompt, docs,
+                               [en_path.name, zh_path.name], en_path.parent)
+    staged_zh = en_path.parent / zh_path.name
+    if staged_zh.is_file() and staged_zh != zh_path:
+        zh_path.parent.mkdir(parents=True, exist_ok=True)
+        staged_zh.replace(zh_path)
 
     def _discard(reason_lines):
         """展开产物不合格:删掉(它们是机器刚生成、作者还没碰过的),免得下一次 --go 把失败
@@ -380,6 +399,11 @@ def expand_outline() -> int:
     pair_problems = validate_translation(expanded_zh, expanded_en)
     if pair_problems:
         return _discard([f"\nError: 中英文大纲互相对不上,拒绝采纳:"] + [f"  · {x}" for x in pair_problems])
+
+    # 篇幅预算(paper.toml 的 pages):补缺、压到预算内、中英文字数对齐。脚本做,不靠模型自觉
+    from agents.outline_expand import normalize_budget
+    for note in normalize_budget(expanded_en, expanded_zh, chapters):
+        print(f"  · {note}")
 
     # 重新序列化一遍再落盘:Manager 的原始输出可能夹带说明文字或代码围栏,
     # 而这份文件下一步要被作者改名成 outline.md,必须是干净的语法。
@@ -452,6 +476,17 @@ def _verification_tag(folder_path: str) -> str:
     return "·未核验" if read_verification_status(folder_path) == "unverified" else ""
 
 
+def abstract_last(folders: list[str]) -> list[str]:
+    """运行顺序:摘要章排到最后写(它概括其他各章);其余保持大纲顺序。论文里的位置不变。"""
+    try:
+        from agents.outline import parse_outline
+        types = {c["folder"]: c.get("type", "") for c in parse_outline()}
+    except Exception:
+        return list(folders)
+    return ([f for f in folders if types.get(f) != "abstract"]
+            + [f for f in folders if types.get(f) == "abstract"])
+
+
 def _print_paper_table(folders: list[str], rows: list[tuple]) -> None:
     """打印整篇章节汇总表。rows 是 (position, name, status) 列表。
 
@@ -459,6 +494,7 @@ def _print_paper_table(folders: list[str], rows: list[tuple]) -> None:
     """
     if not rows:
         return
+    rows = sorted(rows, key=lambda r: r[0])
     width_pos = max(len(str(r[0])) for r in rows)
     width_name = max(len(r[1]) for r in rows)
     width_status = max(len(r[2]) for r in rows)
@@ -498,7 +534,11 @@ def run_all_chapters(draft_agent, review_agent, manager_agent) -> int:
 
     completed, skipped = [], []
     chapter_rows = []   # (position, name, status) 用于整篇章节汇总表
-    for position, name in enumerate(folders, start=1):
+    run_order = abstract_last(folders)
+    if run_order != folders:
+        print("运行顺序:摘要最后写(它概括其他各章),论文里的位置不变。")
+    for name in run_order:
+        position = folders.index(name) + 1
         folder_path = os.path.join(PAPER_ROOT, name)
         # "已完成"还要求 Stage 5 交接凭据与当前指纹相符:改了输入、删掉陈旧产物重跑到
         # Stage 4 后中断时,共享状态里还留着旧 claim,只看 final.md + claim 会把该章误判

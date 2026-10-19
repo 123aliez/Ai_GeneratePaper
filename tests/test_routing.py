@@ -180,8 +180,8 @@ def test_perspectives_differ_by_family():
           str(idea_names))
     check("idea perspectives do NOT ask for statistics",
           not any("Statistics" in n for n in idea_names), str(idea_names))
-    check("data perspectives ask about statistics/baselines",
-          any("Statistics" in n for n in data_names)
+    check("data perspectives ask about headline results/baselines",
+          any("Headline" in n for n in data_names)
           and any("Baseline" in n for n in data_names), str(data_names))
     check("families get different perspectives", idea_names != data_names)
 

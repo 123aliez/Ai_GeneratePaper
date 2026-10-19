@@ -8,6 +8,7 @@ import shutil
 import sys
 from pathlib import Path
 from .tools import set_agent_context
+from .content_stage import Doc
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from config import (
@@ -32,12 +33,12 @@ from .outline import (
 
 
 PROGRESS_PATTERNS = [
-    (re.compile(r"Stage\s+1|draft-v1|Stage 1", re.I), "[Manager] Stage 1/4 | Drafting draft-v1.md"),
-    (re.compile(r"Stage\s+2|review-v1|Stage 2", re.I), "[Manager] Stage 2/4 | Reviewing draft-v1.md"),
-    (re.compile(r"Stage\s+3|draft-v2|Stage 3", re.I), "[Manager] Stage 3/4 | Revising draft-v2.md"),
-    (re.compile(r"Stage\s+4|final\.md|Stage 4", re.I), "[Manager] Stage 4/4 | Finalizing final.md and final.zh.md"),
-    (re.compile(r"draft_agent", re.I), "[Manager] Agent     | Calling draft_agent"),
-    (re.compile(r"review_agent", re.I), "[Manager] Agent     | Calling review_agent"),
+    (re.compile(r"Stage\s+1|draft-v1|Stage 1", re.I), "[Manager] 阶段 1/4 | 正在起草 draft-v1.md"),
+    (re.compile(r"Stage\s+2|review-v1|Stage 2", re.I), "[Manager] 阶段 2/4 | 正在评审 draft-v1.md"),
+    (re.compile(r"Stage\s+3|draft-v2|Stage 3", re.I), "[Manager] 阶段 3/4 | 正在修订 draft-v2.md"),
+    (re.compile(r"Stage\s+4|final\.md|Stage 4", re.I), "[Manager] 阶段 4/4 | 正在定稿 final.md / final.zh.md"),
+    (re.compile(r"draft_agent", re.I), "[Manager] 调度      | 调用起草 Agent"),
+    (re.compile(r"review_agent", re.I), "[Manager] 调度      | 调用评审 Agent"),
 ]
 
 TOOL_CALL_RE = re.compile(r"\b(read_file|write_file|list_folder)\s*\([^)]*(?:file_path|folder_path)\s*=\s*['\"]([^'\"]+)['\"]", re.S)
@@ -51,7 +52,7 @@ ABS_PATH_RE = re.compile(r"[A-Za-z]:[/\\][^\s'\"),]+")
 TRANSIENT_ERROR_RE = re.compile(r"SSL:|UNEXPECTED_EOF|Connection error|ConnectError|Server disconnected|Timeout|timed out|InternalServerError", re.I)
 
 REVIEW_JSON_SCHEMA_HINT = """{
-  "scores": {"accuracy": 1-5, "completeness": 1-5, "clarity": 1-5, "structure": 1-5, "readability": 1-5, "ai_traces": 1-5, "style_consistency": 1-5, "overall": 1-5},
+  "checklist": [{"id": 1, "answer": "yes" or "no" or "na", "evidence": "one line"}, ...ten items, as in the review checklist],
   "decision": "REVISE" or "ACCEPT",
   "must_fix": [{"id": "MF1", "location": "section/paragraph", "issue": "...", "suggestion": "..."}],
   "should_fix": [{"id": "SF1", "location": "...", "issue": "...", "suggestion": "..."}],
@@ -698,7 +699,8 @@ def run_convergence_loop(draft_agent, review_agent, folder_path, folder_rel,
                          reference_excerpt, structure,
                          run_agent_stage, verify, mode_clause: str = "",
                          family: str = MIXED, res_ids_path=None,
-                         record_stage=None, skills_clause: str = ""):
+                         record_stage=None, skills_clause: str = "",
+                         docs_base=None, extra_docs=None):
     """Freeze the first review's MUST FIX list as an acceptance checklist, then
     iterate revise -> verify up to MAX_REVISION_ROUNDS. Each verify round re-checks
     ONLY the frozen checklist (no new issues). Stop when every frozen item is
@@ -712,6 +714,8 @@ def run_convergence_loop(draft_agent, review_agent, folder_path, folder_rel,
     不带这段的话,某一段在第 2 轮可能被改得不遵守跨章约定。"""
     review = read_json_artifact(folder_path, "review-v1.json")
     frozen = review.get("must_fix", []) if isinstance(review, dict) else None
+    base = list(docs_base or [])
+    extra = list(extra_docs or [])
 
     # Fallback: unparseable review or missing must_fix → single revise pass (old behaviour).
     if not isinstance(frozen, list):
@@ -719,32 +723,34 @@ def run_convergence_loop(draft_agent, review_agent, folder_path, folder_rel,
         set_agent_context("Draft")
         result = run_agent_stage(draft_agent, "Draft", (
             f"{idea_clause(family, res_ids_path)}"
-            f"Read brief.md, input.md, draft-v1.md, review-v1.md from '{folder_path}'. "
-            f"Also read '{structure}'. "
+            f"Attached: brief.md (this chapter's spec), input.md, draft-v1.md (the draft to revise) "
+            f"and review-v1.md (its review). "
             f"{mode_clause}"
-            f"Address ALL 'MUST FIX' items. Write '{folder_path}/draft-v2.md' and '{folder_path}/todo.md'. "
-            f"If major rewrite, also write '{folder_path}/decision.md'.\n\n{reference_excerpt}"
+            f"Address ALL 'MUST FIX' items and return the complete revised chapter as draft-v2.md, "
+            f"plus todo.md listing what remains.\n\n{reference_excerpt}"
             f"{skills_clause}"
-        ))
+        ), base + local_docs(folder_path, "brief.md", "input.md", "draft-v1.md", "review-v1.md") + extra,
+            ["draft-v2.md", "todo.md"])
         set_agent_context("Manager")
         return result
 
     if not frozen:
-        print("[Manager  ] converge   | no MUST FIX items; one polish pass for SHOULD FIX", flush=True)
+        print("[Manager  ] 收敛      | 没有 MUST FIX 项,只做一轮 SHOULD FIX 润色", flush=True)
         set_agent_context("Draft")
         result = run_agent_stage(draft_agent, "Draft", (
             f"{idea_clause(family, res_ids_path)}"
-            f"Read brief.md, input.md, draft-v1.md, review-v1.md from '{folder_path}'. "
-            f"Also read '{structure}'. "
+            f"Attached: brief.md (this chapter's spec), input.md, draft-v1.md (the draft to polish) "
+            f"and review-v1.md (its review). "
             f"{mode_clause}"
             f"There are no MUST FIX items. Address SHOULD FIX items where supported by evidence, "
-            f"then write a clean '{folder_path}/draft-v2.md' and '{folder_path}/todo.md'.\n\n{reference_excerpt}"
+            f"then return a clean draft-v2.md and todo.md.\n\n{reference_excerpt}"
             f"{skills_clause}"
-        ))
+        ), base + local_docs(folder_path, "brief.md", "input.md", "draft-v1.md", "review-v1.md") + extra,
+            ["draft-v2.md", "todo.md"])
         set_agent_context("Manager")
         return result
 
-    print(f"[Manager  ] converge   | frozen acceptance checklist: {len(frozen)} MUST FIX item(s)", flush=True)
+    print(f"[Manager  ] 收敛      | 已冻结验收清单:{len(frozen)} 项 MUST FIX", flush=True)
     checklist_text = json.dumps(frozen, ensure_ascii=False, indent=2)
     last_result = None
 
@@ -754,20 +760,21 @@ def run_convergence_loop(draft_agent, review_agent, folder_path, folder_rel,
         prev_draft = "draft-v1.md" if round_no == 1 else f"draft-v2.round-{round_no - 1}.md"
 
         # -- revise against the frozen checklist --
-        print(f"\n[Manager  ] Round {round_no}/{MAX_REVISION_ROUNDS} | revise → {folder_rel}/{draft_round}", flush=True)
+        print(f"\n▶ 正在修改【{os.path.basename(folder_path)}】:第 {round_no}/{MAX_REVISION_ROUNDS} 轮,按审查清单逐条改", flush=True)
         if not os.path.exists(os.path.join(folder_path, draft_round)):
             set_agent_context("Draft")
             last_result = run_agent_stage(draft_agent, "Draft", (
                 f"{idea_clause(family, res_ids_path)}"
-                f"Read brief.md, input.md, {prev_draft}, review-v1.md from '{folder_path}'. "
-                f"Also read '{structure}'. .\n\n"
+                f"Attached: brief.md (this chapter's spec), input.md, {prev_draft} (the draft to revise) "
+                f"and review-v1.md (the review). "
                 f"{mode_clause}"
                 f"Resolve EVERY item in this frozen acceptance checklist (JSON):\n{checklist_text}\n\n"
                 f"Make the concrete change at each item's location. Preserve everything already correct — "
-                f"do not rewrite unaffected paragraphs. Write the full revised draft to '{folder_path}/{draft_round}'.\n\n"
+                f"do not rewrite unaffected paragraphs. Return the full revised draft as {draft_round}.\n\n"
                 f"{reference_excerpt}"
                 f"{skills_clause}"
-            ))
+            ), base + local_docs(folder_path, "brief.md", "input.md", prev_draft, "review-v1.md") + extra,
+                [draft_round])
             set_agent_context("Manager")
             if not verify([draft_round]):
                 return last_result
@@ -775,18 +782,18 @@ def run_convergence_loop(draft_agent, review_agent, folder_path, folder_rel,
                 record_stage([draft_round], "revise")
 
         # -- verify ONLY the frozen checklist --
-        print(f"[Manager  ] Round {round_no}/{MAX_REVISION_ROUNDS} | verify → {folder_rel}/{verdict_round}", flush=True)
+        print(f"▶ 正在检查【{os.path.basename(folder_path)}】:第 {round_no}/{MAX_REVISION_ROUNDS} 轮,核对清单是否都改好了", flush=True)
         if not os.path.exists(os.path.join(folder_path, verdict_round)):
             set_agent_context("Review")
             run_agent_stage(review_agent, "Review", (
-                f"Read {draft_round} and brief.md from '{folder_path}'. .\n\n"
+                f"Attached: {draft_round} (the revised draft) and brief.md.\n\n"
                 f"VERIFY mode: check ONLY whether each item in this frozen checklist is now resolved in {draft_round}. "
                 f"Do NOT raise new issues.\n{checklist_text}\n\n"
-                f"Write '{folder_path}/{verdict_round}' with EXACTLY this schema (valid JSON only):\n"
+                f"Return {verdict_round} with EXACTLY this schema (valid JSON only):\n"
                 f"{VERIFY_JSON_SCHEMA_HINT}\n"
                 f"Set 'all_resolved' true only if every checklist item is resolved.\n\n"
                 f"{reference_excerpt}"
-            ))
+            ), base + local_docs(folder_path, draft_round, "brief.md"), [verdict_round])
             set_agent_context("Manager")
             if not verify([verdict_round]):
                 return last_result
@@ -797,7 +804,7 @@ def run_convergence_loop(draft_agent, review_agent, folder_path, folder_rel,
         all_resolved, missing, unknown, dupes = _checklist_verdict(frozen, verdict)
 
         if all_resolved:
-            print(f"[Manager  ] converge   | all {len(frozen)} item(s) resolved in round {round_no}", flush=True)
+            print(f"[Manager  ] 收敛      | 第 {round_no} 轮:{len(frozen)} 项全部解决", flush=True)
             _promote_draft(folder_path, draft_round)
             return last_result
 
@@ -810,12 +817,12 @@ def run_convergence_loop(draft_agent, review_agent, folder_path, folder_rel,
             print(f"[Manager  ] converge   | round {round_no}: verdict reported unknown id(s): {', '.join(str(x) for x in unknown[:5])}", flush=True)
         if dupes:
             print(f"[Manager  ] converge   | round {round_no}: verdict duplicated id(s): {', '.join(str(x) for x in dupes[:5])}", flush=True)
-        print(f"[Manager  ] converge   | round {round_no}: {n_open or '?'} item(s) still unresolved", flush=True)
+        print(f"[Manager  ] 收敛      | 第 {round_no} 轮:仍有 {n_open or '?'} 项未解决", flush=True)
 
     # Round cap reached with items still open → promote last round, escalate leftovers.
     _promote_draft(folder_path, f"draft-v2.round-{MAX_REVISION_ROUNDS}.md")
     _escalate_unresolved(folder_path, MAX_REVISION_ROUNDS, frozen)
-    print("[Manager  ] converge   | round cap reached; unresolved items escalated to todo.md/decision.md", flush=True)
+    print("[Manager  ] 收敛      | 已到轮数上限;未解决项转入 todo.md / decision.md", flush=True)
     return last_result
 
 
@@ -884,8 +891,8 @@ def code_clause() -> str:
     path = Path(config.CODE_INDEX_PATH)
     if not path.is_file():
         return ""
-    return (f" The author's experiment code has been statically indexed at '{path}' (parsed, "
-            f"never run). You MAY use it for setup details that the settings file does not "
+    return (f" The author's experiment code has been statically indexed in the attached document "
+            f"code-index.md (parsed, never run). You MAY use it for setup details that the settings file does not "
             f"give, but code defaults are NOT proof of what the experiments actually used: "
             f"end every sentence that relies on it with the marker `[FROM CODE — 需核对]`, "
             f"and never take a result number from code.")
@@ -909,9 +916,12 @@ REVIEW_ROUTING_CLAUSES = {
         "MUST FIX for any result number TYPED as a literal instead of a "
         "`{{RES-xxx}}` placeholder from the data index (RES catalog) (the placeholder IS the "
         "traceability), any placeholder ID that does not exist in the catalog, "
-        "missing baselines or "
-        "ablations, absent variance/seed information, and claims stronger than the "
-        "data supports. Do not ask for more exposition of the method design here."
+        "and claims stronger than the data supports. Baselines, ablations and "
+        "variance/seed information that the data does not contain are NOT defects: "
+        "the chapter reports what was measured and simply does not mention the rest. "
+        "Never ask for such absences to be stated. Raise MUST FIX only when a sentence "
+        "claims something that missing evidence would be needed for. "
+        "Do not ask for more exposition of the method design here."
     ),
     MIXED: (
         "This is a {type} chapter — it must connect the contribution to the "
@@ -991,6 +1001,70 @@ def stage_model_groups() -> dict[str, str]:
             "number-gate": "", "citation": ""}
 
 
+def _type_of(folder_path: str) -> str:
+    try:
+        return resolve_run_route(folder_path, parse_brief_sections(folder_path)).get("type", "")
+    except Exception:
+        return ""
+
+
+def other_chapter_folders(folder_path: str) -> list[str]:
+    """同一工作区里、属于大纲的其他章节目录(按大纲顺序;解析不了大纲时退回目录名排序)。"""
+    here = os.path.basename(folder_path.rstrip("/"))
+    parent = str(Path(folder_path).parent)
+    try:
+        from .outline import parse_outline
+        names = [c["folder"] for c in parse_outline()]
+    except Exception:
+        names = sorted(n for n in os.listdir(parent)
+                       if not n.startswith("_") and os.path.isdir(os.path.join(parent, n)))
+    return [os.path.join(parent, n) for n in names if n != here]
+
+
+def chapter_inputs(folder_path: str, route: dict) -> dict:
+    """本章的输入指纹。摘要最后写,它概括的是其他各章的终稿,所以额外依赖它们:
+    任何一章的终稿变了,已写好的摘要就按陈旧处理。"""
+    from .skills_registry import inputs_fingerprint
+    inputs = inputs_fingerprint(route["family"], IDEA_PATH, DATA_ROOT)
+    if route.get("type") == "abstract":
+        digest = hashlib.sha256()
+        for other in other_chapter_folders(folder_path):
+            f = Path(other, "final.md")
+            digest.update(os.path.basename(other).encode("utf-8"))
+            digest.update(f.read_bytes() if f.is_file() else b"-")
+        inputs["body"] = digest.hexdigest()[:16]
+    return inputs
+
+
+def summary_clause(folder_path: str) -> str:
+    """摘要章的写作提示:其他章都已写完,摘要只概括它们。"""
+    names = [os.path.basename(p) for p in other_chapter_folders(folder_path)]
+    listing = "\n".join(f"  - final:{n}" for n in names)
+    return (
+        "THIS CHAPTER IS WRITTEN LAST. Every other chapter is already finalized; their final "
+        "texts are attached as documents:\n" + listing + "\n"
+        "An abstract summarizes what those chapters establish: the problem, the method, the key "
+        "result, the takeaway. Every claim and every number must already appear in them (numbers "
+        "as the same `{{RES-xxx}}` placeholders). Add no claim, number or citation they do not "
+        "contain, and keep their terminology. Do not outline or promise content that is not there.\n"
+        "FORM: the abstract is ONE single paragraph of 150-250 words: no heading inside it, no "
+        "list, no section labels, no citations. Sentence order: why the problem matters; what is "
+        "missing or hard; what we introduce/compare (one sentence); the headline result, the way "
+        "computer-vision and machine-learning papers state it: one sentence with at most two "
+        "numbers, as `{{RES-xxx}}` / `{{DIFF:..}}` placeholders, that summarizes ALL compared "
+        "settings (for example the range of improvement over the baselines and the cost), not a "
+        "single pair, and says against what and on which benchmark; what it means. Describe the "
+        "mechanism in at most one sentence (details belong to Method) and do not recite table "
+        "cells or raw values of individual models. Write a unit such as GFLOPs plainly (no "
+        "spelled-out expansion in the abstract).\n")
+
+
+def abstract_prerequisites(folder_path: str) -> list[str]:
+    """摘要章开跑前必须满足:其他各章都已有终稿。返回缺终稿的章节名。"""
+    return [os.path.basename(p) for p in other_chapter_folders(folder_path)
+            if not Path(p, "final.md").is_file()]
+
+
 def stage_candidates(folder_path: str) -> list[str]:
     """参与阶段指纹校验的产物名(固定清单 + 收敛轮次 glob)。"""
     names = list(ROUTE_DEPENDENT_ARTIFACTS)
@@ -1012,7 +1086,7 @@ def stale_chapter_artifacts(folder_path: str, brief_fp: str, family: str,
     if model_groups is None:
         model_groups = stage_model_groups()
     if inputs is None:
-        inputs = inputs_fingerprint(family, IDEA_PATH, DATA_ROOT)
+        inputs = chapter_inputs(folder_path, {"family": family, "type": _type_of(folder_path)})
     return stale_stage_artifacts(
         folder_path, stage_candidates(folder_path), brief_fp, model_groups, inputs)
 
@@ -1041,7 +1115,7 @@ def chapter_staleness(folder_path: str) -> list[str]:
             return ["结果表有歧义或读不了的文件(RES 目录会拒绝生成):"
                     + format_store_issues(issues).splitlines()[0]]
         route = resolve_run_route(folder_path, parse_brief_sections(folder_path))
-        inputs = inputs_fingerprint(route["family"], IDEA_PATH, DATA_ROOT)
+        inputs = chapter_inputs(folder_path, route)
         stale = stale_chapter_artifacts(folder_path, brief_fp, route["family"], None, inputs)
         if not stale:
             return []
@@ -1072,7 +1146,7 @@ def handoff_is_current(folder_path: str) -> bool:
         route = resolve_run_route(folder_path, parse_brief_sections(folder_path))
         if stale_stage_artifacts(
                 folder_path, ["cross-chapter-draft.md"], brief_fp, stage_model_groups(),
-                inputs_fingerprint(route["family"], IDEA_PATH, DATA_ROOT)):
+                chapter_inputs(folder_path, route)):
             return False
         # 内容一致性:只比本章自己的条目(`- [<章名>] ` 开头的行)。不比整份文件——
         # 后续章节交接会改写共享状态的其他部分,整份比对会让每次 --all 都重跑所有
@@ -1214,69 +1288,31 @@ def reverify_chapter(folder_path: str) -> dict:
     return write_verification(folder_path, reasons)
 
 
-def run_agent_stage_standalone(agent, agent_name: str, prompt: str,
-                               attempts: int = 3, allowed_files=None):
-    """见 _run_agent_stage_standalone。allowed_files:运行期间 write_file 只能写这些
-    路径(--expand / 建索引 / 翻译大纲各自只该写自己的产物);None = 不限制。"""
-    from .tools import set_write_allowlist
-    set_write_allowlist(allowed_files)
-    try:
-        return _run_agent_stage_standalone(agent, agent_name, prompt, attempts)
-    finally:
-        set_write_allowlist(None)
+def run_agent_stage_standalone(agent, agent_name: str, task: str, docs, deliverables,
+                               out_dir, attempts: int = 3):
+    """在流水线之外跑一次纯内容阶段(如 `--expand` 展开大纲、中文大纲翻译)。
 
-
-def _run_agent_stage_standalone(agent, agent_name: str, prompt: str,
-                                attempts: int = 3):
-    """在流水线之外跑一次 Agent(如 `--expand` 的 outline 展开)。
-
-    与流水线内的 run_agent_stage 同样带重试与进度过滤,但不依赖章节工作区的闭包
-    变量。重试次数默认少一次:这一步没有已落盘的产物要保护,失败重跑一条命令就行。
-    永久错误（401/403/413/422）立即失败，不重跑。
+    与流水线内的 run_agent_stage 同样附材料、由脚本写产物、带重试,但不依赖章节工作区的闭包。
+    永久错误(401/403/413/422)立即失败,不重跑。返回 StageOutcome 或 {"error": ...}。
     """
+    from .tools import agent_label
     last_error = None
     for attempt in range(1, attempts + 1):
-        print(f"[{agent_name:<8.8}] running    | model request in progress "
-              f"(attempt {attempt}/{attempts})", flush=True)
+        print(f"[{agent_label(agent_name)}] 正在等待模型返回(通常需要 1-5 分钟)"
+              + (f",第 {attempt}/{attempts} 次尝试" if attempt > 1 else ""), flush=True)
         try:
-            seen_progress = set()
-            events = []
-            visible_stdout = os.sys.stdout
-            # standalone 单次调用(如 --expand)没有 Stage 表格,加心跳让用户看到
-            # Manager 还在推理,而不是长时间无输出像卡住。
-            filtered = ProgressFilteringStdout(agent_name, seen_progress,
-                                               visible_stdout, heartbeat=True)
-            with contextlib.redirect_stdout(filtered):
-                try:
-                    stream = agent.run(prompt, stream=True)
-                except TypeError:
-                    return agent.run(prompt)
-                for event in stream:
-                    events.append(event)
-                    content = getattr(event, "content", None)
-                    if content is not None:
-                        print_stream_progress(content, seen_progress, agent_name,
-                                              visible_stdout)
-            # 心跳行用 \r 覆盖,结束时清掉并换行,避免残留一行"thinking"挡住后续输出
-            if filtered._last_heartbeat > 0:
-                print("\r" + " " * 72 + "\r", end="", flush=True)
-            return events[-1] if events else None
+            return agent.run_stage(task, docs, deliverables, out_dir)
         except Exception as exc:
             last_error = exc
-            # 永久错误立即失败，不重跑（重跑只会再撞同一个永久错误）。
             if _is_permanent_failure(exc):
-                print(f"[{agent_name:<8.8}] failed     | permanent error, no retry: "
+                print(f"[{agent_label(agent_name)}] 失败 | 永久错误,不重试: "
                       f"{_safe_exc_label(exc)}", flush=True)
                 return {"error": "permanent error", "exception_type": type(exc).__name__}
-            # 安全标签：只取类名+status_code，不拼 str(exc)（防 key/prompt 泄漏到日志）
             label = _safe_exc_label(exc)
             if attempt >= attempts:
-                print(f"[{agent_name:<8.8}] failed     | {label}", flush=True)
+                print(f"[{agent_label(agent_name)}] 失败 | {label}", flush=True)
                 return {"error": label, "exception_type": type(exc).__name__}
-            kind = ("transient API/network error"
-                    if TRANSIENT_ERROR_RE.search(str(exc))
-                    else "error")
-            print(f"[{agent_name:<8.8}] retry      | {kind}: {label}", flush=True)
+            print(f"[{agent_label(agent_name)}] 重试 | {label}", flush=True)
     return {"error": _safe_exc_label(last_error) if last_error else "unknown error"}
 
 
@@ -1287,14 +1323,12 @@ def _run_agent_stage_standalone(agent, agent_name: str, prompt: str,
 # data-index.md 作为数字导航;纯论述章(related/background)只读 idea。
 def reference_clause(folder_path: str) -> str:
     """每个 stage 提示词末尾的文献提示:索引位置 + 本章已选文献所在的 input.md。"""
-    import config
     return (
-        f"\n=== REFERENCE LIBRARY ===\n"
-        f"Reference index: '{config.REF_INDEX_PATH}' (table of citable keys; open it with "
-        f"read_file_range if you need to look up a key). The references chosen for this "
-        f"chapter are listed in '{folder_path}/input.md'. Cite ONLY keys from the index: "
-        f"\\\\cite{{key}}. Read a paper's note with read_reference(key); search its fulltext "
-        f"with search_reference_text(key, query) only when the note lacks a needed detail.\n")
+        "\n<reference_library>\n"
+        "The document ref-index.md (attached) lists the citable keys. The references chosen for "
+        "this chapter are named in input.md, and the author's note for each is attached as "
+        "note:<key>. Usage rules are in the project rules above.\n"
+        "</reference_library>\n")
 
 
 def res_catalog_path() -> Path:
@@ -1323,6 +1357,78 @@ def build_data_index(res_map: dict) -> Path:
     return path
 
 
+def wants_code(route: dict, part: dict | None = None) -> bool:
+    section_types = route.get("section_types") or {}
+    scope = ([n for n in part.get("numbers", []) if n in section_types]
+             if part else sorted(section_types))
+    types = {section_types[n] for n in scope} or {route.get("type", "")}
+    return "experiments" in types
+
+
+def base_docs(folder_path: str, family: str, res_ids_path, *, code: bool = False) -> list:
+    """每个正文阶段都附的基础材料:idea、(数据章)数据索引与实验设置、文献索引、本章文献笔记。"""
+    import config
+    from .content_stage import Doc
+    from .materials import chapter_note_docs
+    from .paths import settings_path
+    docs = [Doc("idea.md", IDEA_PATH)]
+    if family in (DATA, MIXED) and res_ids_path is not None:
+        docs.append(Doc("data-index.md", data_index_path()))
+        sp = settings_path(DATA_ROOT)
+        if sp.is_file():
+            docs.append(Doc(sp.name, sp))
+    docs.append(Doc("ref-index.md", config.REF_INDEX_PATH))
+    if code and Path(config.CODE_INDEX_PATH).is_file():
+        docs.append(Doc("code-index.md", config.CODE_INDEX_PATH))
+    docs += chapter_note_docs(folder_path)
+    return docs
+
+
+def local_docs(folder_path: str, *names: str) -> list:
+    """本章文件夹里的文件(只附真实存在的)。"""
+    from .content_stage import Doc
+    return [Doc(n, Path(folder_path) / n) for n in names if Path(folder_path, n).is_file()]
+
+
+def upsert_cross_chapter(before: str, entries: str, chapter: str) -> str:
+    """把本章条目并进跨章状态:删掉本章旧条目,把新条目追加到对应小节末尾。由脚本完成,
+    模型只负责写出本章条目,碰不到别章的内容。"""
+    prefix = f"- [{chapter}] "
+    # 1) 解析模型给的条目:按三个 ## 标题分组,每条规范成 "- [chapter] ..."
+    wanted: dict[str, list[str]] = {h: [] for h in XCHAP_HEADINGS}
+    current = None
+    for line in (entries or "").splitlines():
+        stripped = line.strip()
+        if stripped in XCHAP_HEADINGS:
+            current = stripped
+            continue
+        if current and stripped.startswith(("- ", "* ")):
+            body = stripped[2:].strip()
+            body = re.sub(r"^\[[^\]]+\]\s*", "", body) if body.startswith("[") and \
+                re.match(r"^\[[0-9]{2}-[^\]]+\]\s", body) else body
+            if body:
+                wanted[current].append(prefix + body)
+    # 2) 去掉本章旧条目,再逐节插入新条目(插在该节最后一条非空内容之后)
+    lines = [ln for ln in before.splitlines() if not ln.startswith(prefix)]
+    for heading in XCHAP_HEADINGS:
+        new = wanted[heading]
+        if not new:
+            continue
+        idx = next((i for i, ln in enumerate(lines) if ln.strip() == heading), None)
+        if idx is None:
+            continue
+        end = len(lines)
+        for j in range(idx + 1, len(lines)):
+            if lines[j].startswith("## "):
+                end = j
+                break
+        last = end
+        while last > idx + 1 and not lines[last - 1].strip():
+            last -= 1
+        lines[last:last] = new
+    return "\n".join(lines).rstrip("\n") + "\n"
+
+
 def idea_clause(family: str = MIXED, res_ids_path=None) -> str:
     """注入每个正文 stage 提示词第一行:先读 idea,数据/混合章再读数据索引。
 
@@ -1332,7 +1438,7 @@ def idea_clause(family: str = MIXED, res_ids_path=None) -> str:
     不许写任何结果数字。
     """
     head = (
-        f"FIRST read idea.md in full ({IDEA_PATH}) — the author's own statement of the "
+        f"The document idea.md (attached) is the author's own statement of the "
         f"contribution (novelty, mechanism, method design). It is the highest-priority "
         f"input: write the contribution from it verbatim, do not paraphrase or water it "
         f"down, and never add a contribution the author did not make. ")
@@ -1342,11 +1448,12 @@ def idea_clause(family: str = MIXED, res_ids_path=None) -> str:
             from .paths import settings_path
             settings = settings_path(DATA_ROOT)
             head += (
-                f"THEN read '{index}' — the program-generated data index: one grid per result "
+                f"The document data-index.md (attached) is the program-generated data index: one grid per result "
                 f"table, every cell shown as `{{{{RES-xxx}}}}=value`. NUMBER RULE (hard): cite any "
                 f"result number ONLY as a `{{{{RES-xxx}}}}` placeholder copied VERBATIM from the "
-                f"index (exact token, double braces included); never type the numeric value, never "
-                f"round or restyle it. Put a unit (%, x, ...) outside the braces, e.g. "
+                f"index (exact token, double braces included). Why: the program substitutes the "
+                f"CSV value and checks the text against it, so a typed, rounded or restyled number "
+                f"is treated as an error and costs a revision round. Put a unit (%, x, ...) outside the braces, e.g. "
                 f"`{{{{RES-014}}}}%`. For the gap or relative gain between two results write "
                 f"`{{{{DIFF:RES-a,RES-b}}}}` (a−b) or `{{{{REL:RES-a,RES-b}}}}` ((a−b)/b×100, put the % "
                 f"outside) — the program computes it; do not compute it yourself. To show a whole "
@@ -1354,13 +1461,11 @@ def idea_clause(family: str = MIXED, res_ids_path=None) -> str:
                 f"<optional note>]` using a table name from the index — the program renders the "
                 f"table from the CSV, so never write table cells by hand. For a result absent "
                 f"from the index write [MISSING DATA]; do not guess. An unknown or mistyped ID "
-                f"surfaces as a visible gap, never as a fabricated number. "
-                f"(The complete ID list is '{res_catalog_path()}'; read it with read_file_range "
-                f"only if you must.) ")
+                f"surfaces as a visible gap, never as a fabricated number. ")
             if settings.is_file():
                 head += (f"The experimental setup (datasets, hardware, hyper-parameters, seeds) is "
-                         f"in '{settings}' — read it before describing the setup; never state a "
-                         f"setup detail that is not there. ")
+                         f"in the attached document {settings.name}; consult it before describing the "
+                         f"setup and never state a setup detail that is not there. ")
         else:
             head += ("There are NO experiment results in the author's results folder: do not write "
                      "any result number; write [MISSING DATA] where a result belongs. ")
@@ -1408,25 +1513,19 @@ def cross_chapter_state_preserves_others(before: str, after: str,
 
 
 def run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manager_agent=None) -> dict:
-    """章节流水线入口。运行期间把 Agent 的 write_file 限定在本章目录
-    (inbox 里的作者输入物理只读),结束后解除。"""
-    from .tools import set_write_scope
-    set_write_scope(folder_path)
-
-    try:
-        return _run_4stage_with_progress(draft_agent, review_agent, folder_path, manager_agent)
-    finally:
-        set_write_scope(None)
+    """章节流水线入口。模型没有任何写文件的能力:产物全由脚本写进本章目录,
+    inbox 里的作者输入物理上碰不到。"""
+    return _run_4stage_with_progress(draft_agent, review_agent, folder_path, manager_agent)
 
 
 def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manager_agent=None) -> dict:
     """4-stage run with fully Python-controlled, human-readable progress output.
 
-    All smolagents raw streaming is disabled; every visible line is written by this
-    function or the shared tool wrappers (read_file / write_file / list_folder).
+    Every visible line is written by this function or by content_stage.
     """
     folder_path = folder_path.replace("\\", "/")
     folder_rel = display_path(folder_path)
+    _chap = os.path.basename(os.path.normpath(folder_path))
     results = {}
     # 阶段指纹记账的输入(演进点③):experiment 分支会填真实值;survey 恒空,
     # record_stage 见空即跳过。放分支外初始化,避免 mode 分叉处名字未定义。
@@ -1525,16 +1624,25 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
         results["route_blocked"] = f"not in outline: {exc}"
         return _finish_with_table(folder_path, results)
 
-    mode_clause = build_mode_clause(chapter, cross_chapter_path=xchap)
+    if route.get("type") == "abstract":
+        missing_chapters = abstract_prerequisites(folder_path)
+        if missing_chapters:
+            print(f"[Manager  ] FAIL      | 摘要最后写:这些章还没有终稿 → {', '.join(missing_chapters)}", flush=True)
+            print(f"[Manager  ] FAIL      | 先把它们写完(`--all` 会自动把摘要排到最后),再写摘要。", flush=True)
+            results["route_blocked"] = "abstract requires all other chapters finalized"
+            return _finish_with_table(folder_path, results)
+    mode_clause = build_mode_clause(chapter, cross_chapter_path=CROSS_CHAPTER_STATE)
+    if route.get("type") == "abstract":
+        mode_clause += summary_clause(folder_path)
     mode_review_clause = build_mode_review_clause(
-        chapter, cross_chapter_path=xchap)
+        chapter, cross_chapter_path=CROSS_CHAPTER_STATE)
     # 邻章视野只给规划者:它需要知道前后章覆盖什么才能划清边界。有界——三章的
     # 标题与小节清单,不含要点正文,整篇 outline 不进任何 Agent 的上下文。
     outline_clause = build_outline_excerpt(chapter)
     cross_xchap_hint = ""
     if os.path.exists(xchap):
         cross_xchap_hint = (
-            f"\nAlso read '{xchap}': it holds the terminology decisions and "
+            f"\nThe document {CROSS_CHAPTER_STATE} (attached) holds the terminology decisions and "
             f"key claims of the chapters already written. Reuse those "
             f"definitions verbatim instead of coining new ones.\n")
     detail = f"整篇第 {info['position']}/{info['total']} 章,可跨章引用"
@@ -1604,7 +1712,7 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
     _model_groups = stage_model_groups()
     try:
         from .skills_registry import inputs_fingerprint, changed_inputs
-        _inputs_fp = inputs_fingerprint(family, IDEA_PATH, DATA_ROOT)
+        _inputs_fp = chapter_inputs(folder_path, route)
         _fingerprinted = stale_chapter_artifacts(
             folder_path, brief_fp, family, _model_groups, _inputs_fp)
         if _fingerprinted:
@@ -1634,7 +1742,13 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
 
     from .content_source import content_source_summary
     print(f"[Manager  ] content    | {content_source_summary(family)}", flush=True)
-    structure = f"{folder_path}/brief.md"
+    xchap_docs = [Doc(CROSS_CHAPTER_STATE, xchap)] if os.path.isfile(xchap) else []
+    abstract_docs = ([Doc(f"final:{os.path.basename(p)}", Path(p) / "final.md")
+                      for p in other_chapter_folders(folder_path)]
+                     if route.get("type") == "abstract" else [])
+    def chapter_base():
+        """每次取:input.md 在 Stage 0 才生成,本章文献笔记要等它出现后才能确定。"""
+        return base_docs(folder_path, family, res_ids_path, code=wants_code(route))
     routing_clause = build_routing_clause(route)
     from .skills_registry import build_skill_injection
     draft_skills = build_skill_injection("draft")
@@ -1676,58 +1790,40 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
             print(f"[Manager  ] notice     | stage fingerprint record skipped "
                   f"({stage}): {str(exc)[:120]}", flush=True)
 
-    def run_agent_stage(agent, agent_name: str, prompt: str):
-        # 4 次纯兜底（用户锁定）。注意：ResilientModel 已在 Model 层把瞬时网络错误
-        # 吃掉（每个 logical call 最多 3 次 attempt），所以走到这里的失败几乎都是
-        # TransientModelUnavailable（重试用尽）或真正的非网络异常。这里重跑整个
-        # CodeAgent.run() 是最后手段，不是主恢复路径。
-        attempts = 4
+    def run_agent_stage(agent, agent_name: str, task: str, docs, deliverables):
+        """跑一个纯内容阶段:材料附进提示词 → 模型只返回文本 → 脚本解析并写产物。
+
+        瞬时网络错误由 ResilientModel 重试;走到这里的多半是"重试用尽",整阶段再来
+        一遍是最后兜底。永久错误(401/403/413/422)立即失败。模型回复缺产物由
+        run_content_stage 带着缺哪几个追问补齐,不在这里整段重跑。
+        """
+        from .tools import agent_label
+        from .materials import lookup_for
+        attempts = 3
         last_error = None
         for attempt in range(1, attempts + 1):
-            print(f"[{agent_name:<8.8}] running    | model request in progress (attempt {attempt}/{attempts})", flush=True)
+            print(f"[{agent_label(agent_name)}] 正在等待模型返回(通常需要 1-5 分钟)"
+                  + (f",第 {attempt}/{attempts} 次尝试" if attempt > 1 else ""), flush=True)
             try:
-                seen_progress = set()
-                events = []
-                visible_stdout = os.sys.stdout
-                # 流水线内也开心跳:每步模型推理时显示"已接收 N 字",避免看似卡住。
-                filtered_stdout = ProgressFilteringStdout(agent_name, seen_progress,
-                                                          visible_stdout, heartbeat=True)
-                with contextlib.redirect_stdout(filtered_stdout):
-                    try:
-                        stream = agent.run(prompt, stream=True)
-                    except TypeError:
-                        return agent.run(prompt)
-                    for event in stream:
-                        events.append(event)
-                        content = getattr(event, "content", None)
-                        if content is not None:
-                            print_stream_progress(content, seen_progress, agent_name, visible_stdout)
-                # 心跳行用 \r 覆盖,结束时清掉并换行,避免残留一行"thinking"挡住后续输出
-                if filtered_stdout._last_heartbeat > 0:
-                    print("\r" + " " * 72 + "\r", end="", flush=True)
-                return events[-1] if events else None
+                outcome = agent.run_stage(task, docs, deliverables, folder_path,
+                                          lookup=lookup_for(folder_path))
+                if getattr(outcome, "rounds", 1) > 1 and not getattr(outcome, "missing", []):
+                    print(f"[{agent_label(agent_name)}] 第一次回复不完整,已追问 "
+                          f"{outcome.rounds - 1} 次补齐", flush=True)
+                for name in getattr(outcome, "written", []):
+                    print(f"[{agent_label(agent_name)}] 写入 | {_chap}/{name}", flush=True)
+                return outcome
             except Exception as exc:
                 last_error = exc
-                # 永久错误（401/403/413/422 等）不应重跑整个 CodeAgent——重跑只会
-                # 再次撞同一个永久错误，白白烧 token + 时间。沿异常链找根因：
-                # ResilientModel 用 raise ... from last_exc，永久错误的原始异常在
-                # __cause__/__context__ 里，status_code 落在永久集合就立即失败。
                 if _is_permanent_failure(exc):
-                    print(f"[{agent_name:<8.8}] failed     | permanent error, no retry: "
+                    print(f"[{agent_label(agent_name)}] 失败 | 永久错误,不重试: "
                           f"{_safe_exc_label(exc)}", flush=True)
                     return {"error": "permanent error", "exception_type": type(exc).__name__}
-                # 安全标签：只取类名+status_code，不拼 str(exc)（防 key/prompt 泄漏）
                 label = _safe_exc_label(exc)
                 if attempt >= attempts:
-                    print(f"[{agent_name:<8.8}] failed     | {label}", flush=True)
+                    print(f"[{agent_label(agent_name)}] 失败 | {label}", flush=True)
                     return {"error": label, "exception_type": type(exc).__name__}
-                # TransientModelUnavailable 是 ResilientModel 重试用尽抛的——重跑整个
-                # CodeAgent 是合理的最后兜底（可能换个时间段网关恢复）。其它异常也照
-                # 常重试：CodeAgent 内部解析错/执行错本身就是 AgentError，重跑可能换条路径。
-                if TRANSIENT_ERROR_RE.search(str(exc)) or "TransientModelUnavailable" in type(exc).__name__:
-                    print(f"[{agent_name:<8.8}] retry      | transient API/network error: {label}", flush=True)
-                else:
-                    print(f"[{agent_name:<8.8}] retry      | {label}", flush=True)
+                print(f"[{agent_label(agent_name)}] 重试 | {label}", flush=True)
         return {"error": _safe_exc_label(last_error) if last_error else "unknown error"}
 
     # ── Stage 0: Evidence mining (pre-draft, multi-perspective QA) ──
@@ -1756,13 +1852,12 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
         # input.md 不进 stale 候选(见 ROUTE_DEPENDENT_ARTIFACTS 注释),
         # 但照常记账:免得将来被加进候选时,已生成的文件全部误报陈旧。
         record_stage(["input.md"], "input")
-    print(f"\n[Manager  ] Stage 0/4  | Evidence mining ({family} perspectives) "
-          f"→ {folder_rel}/evidence-pack.md", flush=True)
+    print(f"\n▶ 正在为【{_chap}】梳理证据:先针对材料提问,再从材料里找出有依据的答案", flush=True)
     try:
         results["stage0_evidence"] = run_evidence_mining(
             draft_agent, folder_path, chapter,
             reference_excerpt, run_agent_stage, verify, set_agent_context,
-            family=family,
+            family=family, docs=chapter_base() + local_docs(folder_path, "brief.md", "input.md"),
         )
     except Exception as exc:
         print(f"[Manager  ] FAIL      | Stage 0 证据挖掘出错: {str(exc)[:160]}", flush=True)
@@ -1782,7 +1877,7 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
         print(f"[Manager  ] WARN       | brief.md 没解析出小节(标题行须形如 "
               f"`1. **标题** (~250 words)`);退回单段起草", flush=True)
 
-    print(f"\n[Manager  ] Stage 1/4  | Draft plan → {folder_rel}/draft-v1.plan.md", flush=True)
+    print(f"\n▶ 正在为【{_chap}】列写作提纲(分几部分写、每部分讲什么、引哪些文献)", flush=True)
     if os.path.exists(os.path.join(folder_path, "draft-v1.plan.md")):
         print("[Manager  ] skip       | draft-v1.plan.md exists", flush=True)
         results["stage1_plan"] = "skipped"
@@ -1795,22 +1890,20 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
             subject = {IDEA: "the idea and its mechanism", DATA: "the results"}.get(
                 family, "the idea and the results")
             evidence_clause = (
-                f"Also read '{folder_path}/evidence-pack.md': it contains the hard questions "
+                f"The document evidence-pack.md (attached) contains the hard questions "
                 f"each perspective posed about {subject} and the grounded answers. Use its "
-                f"grounded answers to pick target claims; treat its '## Open Gaps' as drafting "
-                f"caveats, not to be silently ignored. ")
+                f"grounded answers to pick target claims; its '## Open Gaps' tell you what NOT to "
+                f"claim — plan nothing about them (no sentences on what is absent). ")
         results["stage1_plan"] = run_agent_stage(planner, planner_name, (
             f"{idea_clause(family, res_ids_path)}"
             f"You are acting only as the planner for Stage 1. "
-            f"Read brief.md and input.md from '{folder_path}'. "
-            f"Also read '{structure}'. "
+            f"Attached: brief.md (this chapter's spec) and input.md (its source material). "
             f"{routing_clause}"
             f"{evidence_clause}"
             f"{cross_xchap_hint}"
             f"{mode_clause}"
             f"{outline_clause}"
-            f""
-            f"Write a concrete construction plan to '{folder_path}/draft-v1.plan.md' for exactly "
+            f"Return a concrete construction plan as draft-v1.plan.md for exactly "
             f"{part_count} draft part{'s' if part_count > 1 else ''}. "
             f"Use these Python-fixed part boundaries; do not move sections across parts:\n\n{stage1_plan}\n\n"
             f"Begin the plan with a '## Notation and Terminology Table' that fixes, for the whole chapter: "
@@ -1819,9 +1912,10 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
             f"All {part_count} part{'s' if part_count > 1 else ''} must obey this table verbatim, "
             f"so keep it explicit and unambiguous. "
             f"For each part, specify target claims, required reference keys, forbidden overlap, transition role, and output file. "
-            f"Also write '{folder_path}/todo.md' for known planning gaps. Do not write draft prose.\n\n"
+            f"Also return todo.md for known planning gaps. Do not write draft prose.\n\n"
             f"{reference_excerpt}"
-        ))
+        ), chapter_base() + local_docs(folder_path, "brief.md", "input.md", "evidence-pack.md")
+           + xchap_docs + abstract_docs, ["draft-v1.plan.md", "todo.md"])
         set_agent_context("Manager")
         if not verify(["draft-v1.plan.md", "todo.md"]):
             return _finish_with_table(folder_path, results)
@@ -1829,7 +1923,7 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
 
     results["stage1_parts"] = []
     for position, part in enumerate(stage1_parts):
-        print(f"\n[Manager  ] Stage 1{chr(96 + part['index'])}/4 | Draft part {part['index']} → {folder_rel}/{part['output']}", flush=True)
+        print(f"\n▶ 正在写【{_chap}】的初稿:第 {position + 1}/{len(stage1_parts)} 部分", flush=True)
         if os.path.exists(os.path.join(folder_path, part["output"])):
             print(f"[Manager  ] skip       | {part['output']} exists", flush=True)
             results["stage1_parts"].append("skipped")
@@ -1848,27 +1942,27 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
         evidence_draft_clause = ""
         if os.path.exists(os.path.join(folder_path, "evidence-pack.md")):
             evidence_draft_clause = (
-                f"If you need grounded details behind a claim, use read_file on "
-                f"'{folder_path}/evidence-pack.md' and read ONLY the Q&A for your part's topics — "
-                f"do not inline the whole pack. "
+                f"The document evidence-pack.md (attached) holds the grounded Q&A behind the "
+                f"claims; use the entries for your part's topics. "
             )
         result = run_agent_stage(draft_agent, "Draft", (
             f"{idea_clause(part_family(part, route), res_ids_path)}"
-            f"Read brief.md, input.md, and draft-v1.plan.md from '{folder_path}'. "
+            f"Attached: brief.md (this chapter's spec), input.md and draft-v1.plan.md. "
             f"{build_routing_clause(route, part_family(part, route), part)}"
             f"{mode_clause}"
             f"{evidence_draft_clause}"
-            f""
             f"Obey the 'Notation and Terminology Table' in draft-v1.plan.md verbatim: one canonical spelling per term, "
             f"fixed abbreviation expansions, fixed symbol definitions. Never redefine a term or symbol fixed by an earlier part. "
-            f"Write only Part {part['index']} to '{folder_path}/{part['output']}'. "
+            f"Write only Part {part['index']} and return it as {part['output']}. "
             f"Part boundary:\n{format_stage1_parts([part])}\n\n"
             f"{prev_context}"
             f"Follow draft-v1.plan.md for reference keys, forbidden overlap, and transitions. "
             f"Do not write other parts and do not duplicate material assigned to other parts.\n\n"
             f"{reference_excerpt}"
             f"{draft_skills}"
-        ))
+        ), base_docs(folder_path, part_family(part, route), res_ids_path, code=wants_code(route, part))
+           + local_docs(folder_path, "brief.md", "input.md", "draft-v1.plan.md", "evidence-pack.md")
+           + xchap_docs + abstract_docs, [part["output"]])
         results["stage1_parts"].append(result)
         set_agent_context("Manager")
         if not verify([part["output"]]):
@@ -1926,7 +2020,7 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
         print(f"[Manager  ] number-gate| off (chapter type: {route['type']} — prose only)", flush=True)
 
     # ── Stage 2: Review (Markdown + structured JSON checklist) ──────
-    print(f"\n[Manager  ] Stage 2/4  | Review → {folder_rel}/review-v1.md (+ review-v1.json)", flush=True)
+    print(f"\n▶ 正在审查【{_chap}】的初稿(找出必须修改的问题)", flush=True)
     if all_exist(["review-v1.md", "review-v1.json"]):
         print("[Manager  ] skip       | review-v1.md/review-v1.json exist", flush=True)
         results["stage2"] = "skipped"
@@ -1935,7 +2029,7 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
         number_check_clause = ""
         if os.path.exists(os.path.join(folder_path, "number-check.md")):
             number_check_clause = (
-                f"Also read '{folder_path}/number-check.md': it is a deterministic cross-check of "
+                f"The document number-check.md (attached) is a deterministic cross-check of "
                 f"every number in the draft against the results store. Treat each [NUMBER-MISMATCH] "
                 f"line as a MUST FIX item (the prose contradicts the recorded results). "
             )
@@ -1950,26 +2044,22 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
             getattr(type(review_agent), "_offline_test_stub", False) is True
         results["stage2"] = run_agent_stage(review_agent, "Review", (
             f"{idea_clause(family, res_ids_path)}"
-            f"Read draft-v1.md, brief.md, input.md from '{folder_path}'. "
-            f"Also read '{structure}'. "
+            f"Attached: draft-v1.md (the draft to review), brief.md (this chapter's spec) and input.md. "
             f"{build_review_routing_clause(route)}"
             f"{mode_review_clause}"
             f"{number_check_clause}"
-            f"Write a detailed review to '{folder_path}/review-v1.md' and '{folder_path}/todo.md', "
+            f"Return a detailed review as review-v1.md and the open issues as todo.md, "
             f"categorizing issues as MUST FIX / SHOULD FIX / CONSIDER.\n\n"
             + ("" if not _skip_structured else
-               f"THEN write a machine-readable '{folder_path}/review-v1.json' with EXACTLY this schema "
+               f"ALSO return a machine-readable review-v1.json with EXACTLY this schema "
                f"(valid JSON only, no trailing commas, no comments):\n{REVIEW_JSON_SCHEMA_HINT}\n"
                f"The must_fix array must list every MUST FIX issue as its own object with a stable id "
-               f"(MF1, MF2, ...), a precise location, the issue, and a concrete suggestion. "
-               f"This array becomes the frozen acceptance checklist for revision, so be exhaustive and specific. "
-               f"The needs_citation array must list every sentence that makes a factual claim "
-               f"deserving a citation but has no \\\\cite. Suggest a key from the user's bibliography "
-               f"only when you are confident it matches; otherwise set suggested_key to null (the "
-               f"framework will hand it to the user, never invent a citation).\n\n")
+               f"(MF1, MF2, ...), a precise location, the issue, and a concrete suggestion.\n\n")
             + f"{reference_excerpt}"
             + f"{review_skills}"
-        ))
+        ), chapter_base() + local_docs(folder_path, "draft-v1.md", "brief.md", "input.md", "number-check.md")
+           + xchap_docs + abstract_docs,
+           ["review-v1.md", "todo.md"] + (["review-v1.json"] if _skip_structured else []))
         set_agent_context("Manager")
         if not _skip_structured:
             _md_path = os.path.join(folder_path, "review-v1.md")
@@ -1983,9 +2073,8 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
                 from config import get_review_model
                 _review_model = get_review_model()
                 _user = (
-                    f"{idea_clause(family, res_ids_path)}"
                     f"Below is the full text of a completed human-readable review "
-                    f"(review-v1.md) of the draft in '{folder_path}'. Convert it into "
+                    f"(review-v1.md) of a chapter draft. Convert it into "
                     f"the machine-readable checklist as JSON with EXACTLY this schema "
                     f"(valid JSON only, no trailing commas, no comments):\n"
                     f"{REVIEW_JSON_SCHEMA_HINT}\n"
@@ -1997,33 +2086,19 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
                     f"object, no prose around it.\n\n"
                     f"=== review-v1.md ===\n{_md_review_text}"
                 )
-                _data = run_structured_call(
-                    _review_model, "Review", REVIEW_INSTRUCTIONS, _user,
-                    os.path.join(folder_path, "review-v1.json"),
-                    REVIEW_JSON_SCHEMA_HINT,
-                    validate=_review_json_valid)
+                _data = None
+                for _try in (1, 2):      # 转换失败(输出不是合法 JSON)再来一次,仍失败交给 verify 判失败
+                    _data = run_structured_call(
+                        _review_model, "Review", REVIEW_INSTRUCTIONS, _user,
+                        os.path.join(folder_path, "review-v1.json"),
+                        REVIEW_JSON_SCHEMA_HINT,
+                        validate=_review_json_valid)
+                    if _data is not None:
+                        break
                 _review_json_done = _data is not None
             else:
                 print("[Manager  ] notice     | review-v1.md missing/empty; "
                       "structured conversion skipped", flush=True)
-        if not _review_json_done and not _skip_structured:
-            # 转换失败的单次兜底:让 CodeAgent 基于自己刚写的 review-v1.md 补 json。
-            # 只兜"解析失败(None)",模型异常已在上面上抛,不吞。
-            print("[Manager  ] notice     | structured conversion failed; "
-                  "falling back to CodeAgent path for review-v1.json", flush=True)
-            set_agent_context("Review")
-            run_agent_stage(review_agent, "Review", (
-                f"Read your own review '{folder_path}/review-v1.md'. "
-                f"Write a machine-readable '{folder_path}/review-v1.json' with EXACTLY "
-                f"this schema (valid JSON only, no trailing commas, no comments):\n"
-                f"{REVIEW_JSON_SCHEMA_HINT}\n"
-                f"The must_fix array must faithfully list every MUST FIX issue from "
-                f"review-v1.md as its own object (stable id MF1, MF2..., a precise "
-                f"location, the issue, a concrete suggestion); map SHOULD FIX items to "
-                f"should_fix and notes to consider. Do not invent or drop issues.\n\n"
-                f"{reference_excerpt}"
-            ))
-            set_agent_context("Manager")
     if not verify(["review-v1.md", "review-v1.json"]):
         return _finish_with_table(folder_path, results)
     record_stage(["review-v1.md", "review-v1.json"], "review")
@@ -2080,16 +2155,17 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
         print(f"[Manager  ] notice     | citation insertions skipped: {str(exc)[:160]}", flush=True)
 
     # ── Stage 3: Revise with convergence loop ───────────────────────
-    print(f"\n[Manager  ] Stage 3/4  | Revise (convergence loop, max {MAX_REVISION_ROUNDS} rounds) → {folder_rel}/draft-v2.md", flush=True)
+    print(f"\n▶ 正在根据审查意见修改【{_chap}】(改完再检查,最多 {MAX_REVISION_ROUNDS} 轮)", flush=True)
     if os.path.exists(os.path.join(folder_path, "draft-v2.md")):
         print("[Manager  ] skip       | draft-v2.md exists", flush=True)
         results["stage3"] = "skipped"
     else:
         results["stage3"] = run_convergence_loop(
             draft_agent, review_agent, folder_path, folder_rel,
-            reference_excerpt, structure,
+            reference_excerpt, "brief.md",
             run_agent_stage, verify, mode_clause, family, res_ids_path,
             record_stage=record_stage, skills_clause=draft_skills,
+            docs_base=chapter_base(), extra_docs=xchap_docs + abstract_docs,
         )
     if not verify(["draft-v2.md"]):
         return _finish_with_table(folder_path, results)
@@ -2098,7 +2174,7 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
     record_stage(["draft-v2.md"], "revise")
 
     # ── Stage 4: Finalize ────────────────────────────────────────────
-    print(f"\n[Manager  ] Stage 4/4  | Finalize → {folder_rel}/final.md", flush=True)
+    print(f"\n▶ 正在润色并定稿【{_chap}】,同时生成中文对照稿", flush=True)
     final_outputs = ["final.md", "final.zh.md", "decision.md", "todo.md"]
     if all_exist(final_outputs):
         print("[Manager  ] skip       | final.md/final.zh.md/decision.md/todo.md exist", flush=True)
@@ -2107,23 +2183,24 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
         set_agent_context("Review")
         results["stage4"] = run_agent_stage(review_agent, "Review", (
             f"{idea_clause(family, res_ids_path)}"
-            f"Read draft-v2.md, review-v1.md, brief.md, input.md from '{folder_path}'. "
-            f"Also read '{structure}'. "
+            f"Attached: draft-v2.md, review-v1.md, brief.md (this chapter's spec) and input.md. "
             f"{mode_clause}"
-            f"draft-v2.md is the verified revision and the ONLY base text — do not read or "
-            f"reintroduce anything from draft-v1.md (issues fixed in revision must stay fixed). "
+            f"draft-v2.md is the verified revision and the ONLY base text — never reintroduce "
+            f"anything the review flagged (issues fixed in revision must stay fixed). "
             f"Finalize it with a light polish only: transitions, terminology consistency, "
             f"grammar. Do NOT change any claim, number, `{{{{RES-xxx}}}}` placeholder, citation, "
             f"[MISSING DATA] / [IDEA NEEDED] marker, or the meaning of any sentence, and do NOT add "
             f"new content. If you notice a remaining problem, leave the text as is and list it in "
             f"todo.md instead of fixing it yourself. "
-            f"Write '{folder_path}/final.md' (English), '{folder_path}/final.zh.md' (a faithful "
+            f"Return final.md (English), final.zh.md (a faithful "
             f"Chinese rendering of final.md for the author to review, same placeholders and markers), "
-            f"'{folder_path}/decision.md' (what was polished), and '{folder_path}/todo.md' "
+            f"decision.md (what was polished), and todo.md "
             f"(remaining issues).\n\n"
             f"{reference_excerpt}"
             f"{review_skills}"
-        ))
+        ), chapter_base() + local_docs(folder_path, "draft-v2.md", "review-v1.md", "brief.md", "input.md")
+           + xchap_docs + abstract_docs,
+           ["final.md", "final.zh.md", "decision.md", "todo.md"])
         set_agent_context("Manager")
     all_ok = verify(final_outputs)
     record_stage(["final.md", "final.zh.md"], "final")
@@ -2288,33 +2365,35 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
                       f"{display_path(xchap_path)}", flush=True)
                 set_agent_context("Review")
                 results["stage5_xchap"] = run_agent_stage(review_agent, "Review", (
-                    f"Read '{folder_path}/final.md' and '{folder_path}/todo.md', then read "
-                    f"'{xchap_path}'.\n\n"
-                    f"Prepare the complete updated contents for '{xchap_path}' so the NEXT "
-                    f"chapter can stay consistent with this one, but write the result to "
-                    f"'{candidate_path}' and do not modify '{xchap_path}'. Upsert THIS chapter's "
-                    f"entries in the three existing sections; do not "
-                    f"delete other chapters' entries and do not restructure the file. Every "
-                    f"bullet you write for this chapter MUST begin exactly `- [{chapter}] `, "
-                    f"and you must replace any existing bullets carrying that same prefix so "
-                    f"that re-running this stage is idempotent:\n"
-                    f"- '## Terminology Decisions': every term whose canonical spelling, "
-                    f"abbreviation expansion, or symbol definition this chapter fixed. Take them "
-                    f"from the Notation and Terminology Table in draft-v1.plan.md if present.\n"
-                    f"- '## Per-Chapter Key Claims': ONE sentence naming what this chapter "
-                    f"established.\n"
-                    f"- '## Unresolved Cross-Chapter Issues': only items from todo.md that a "
-                    f"LATER chapter must resolve or coordinate on. Skip anything local to this "
-                    f"chapter.\n\n"
-                    f"Keep the three `## ` headings exactly as they are — the pipeline locates "
-                    f"the sections by those titles.\n\n"
+                    f"Attached: final.md (this chapter's final text), todo.md, draft-v1.plan.md, and "
+                    f"{CROSS_CHAPTER_STATE} (the shared state written so far; read-only).\n\n"
+                    f"Write THIS chapter's entries so the NEXT chapter can stay consistent with this "
+                    f"one. Return them as cross-chapter-entries.md, containing ONLY this chapter's own "
+                    f"bullets under the three exact headings below; the pipeline merges them into the "
+                    f"shared state and replaces any earlier entries of this chapter, so never repeat "
+                    f"other chapters' entries. One bullet per line, starting with `- `:\n"
+                    f"## Terminology Decisions\n"
+                    f"every term whose canonical spelling, abbreviation expansion, or symbol definition "
+                    f"this chapter fixed (take them from the Notation and Terminology Table in "
+                    f"draft-v1.plan.md if present).\n"
+                    f"## Per-Chapter Key Claims\n"
+                    f"ONE sentence naming what this chapter established.\n"
+                    f"## Unresolved Cross-Chapter Issues\n"
+                    f"only items from todo.md that a LATER chapter must resolve or coordinate on. "
+                    f"Skip anything local to this chapter.\n\n"
                     f"Do NOT restate the contribution or the novelty claim — those live in the "
                     f"author's idea.md, which every chapter reads directly; a second copy here "
-                    f"would drift. Keep the whole file concise: it is injected into later "
-                    f"chapters' prompts, so every line costs context in every subsequent run.\n\n"
-                    f"Write the complete updated file to '{candidate_path}' with write_file."
-                ))
+                    f"would drift. Keep it concise: the shared state is injected into later "
+                    f"chapters' prompts, so every line costs context in every subsequent run."
+                ), local_docs(folder_path, "final.md", "todo.md", "draft-v1.plan.md") + xchap_docs,
+                   ["cross-chapter-entries.md"])
                 set_agent_context("Manager")
+                _entries = Path(folder_path, "cross-chapter-entries.md")
+                if _entries.is_file():
+                    # 合并由脚本完成:模型碰不到别章的条目
+                    candidate.write_text(
+                        upsert_cross_chapter(before_text, _entries.read_text(encoding="utf-8"), chapter),
+                        encoding="utf-8")
                 # 验证候选文件,通过了才原子替换。Stage 5 是章节间的唯一交接点:
                 # 它静默失败,后面每一章都会各自另立一套术语,而流水线全程显示 DONE。
                 # 让它写候选文件而不是直接写目标,是因为"它删掉了前几章的条目"这种失败

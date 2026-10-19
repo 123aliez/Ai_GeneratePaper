@@ -236,7 +236,7 @@ def _decimals(text: str) -> int:
 
 
 def _derive(kind: str, a: dict, b: dict) -> str | None:
-    """DIFF = a−b(小数位取两者较大者);REL = (a−b)/b×100(1 位小数)。b=0 → None。"""
+    """DIFF = a−b(小数位取两者较大者);REL = (a−b)/b×100(2 位小数,与结果表一致)。b=0 → None。"""
     va, vb = float(a["value"]), float(b["value"])
     if kind == "DIFF":
         places = max(_decimals(display_text(a)), _decimals(display_text(b)))
@@ -248,7 +248,7 @@ def _derive(kind: str, a: dict, b: dict) -> str | None:
             return f"{va - vb:.{places}f}"
     if vb == 0:
         return None
-    return f"{(va - vb) / abs(vb) * 100:.1f}"
+    return f"{(va - vb) / abs(vb) * 100:.2f}"
 
 
 def fill_result_refs(text: str, res_map: dict, used: list | None = None) -> tuple[str, list[str]]:

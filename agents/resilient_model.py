@@ -118,8 +118,14 @@ class ResilientModel(Model):
         # 用户就看不到 retry 信号，会以为还是卡住。诊断日志必须始终可见。
         import sys
         stream = sys.__stdout__
-        tag = f"[{self.owner:<8.8}]"
-        line = f"{tag} {action:<11} | {detail}" if detail else f"{tag} {action:<11}"
+        from .tools import agent_label
+        if action in ("model", "model-ok"):      # 逐次请求/返回只是噪音,重试与失败才需要看到
+            return
+        labels = {"model": "模型请求", "model-ok": "模型返回", "model-fail": "模型失败",
+                  "model-retry": "模型重试", "model-escalate": "模型上报"}
+        tag = f"[{agent_label(self.owner)}]"
+        shown = labels.get(action, action)
+        line = f"{tag} {shown} | {detail}" if detail else f"{tag} {shown}"
         stream.write(line + "\n")
         stream.flush()
 
@@ -152,14 +158,14 @@ class ResilientModel(Model):
         for attempt in range(1, max_attempts + 1):
             attempts_made = attempt
             attempt_start = time.time()
-            self._log("model", f"attempt {attempt}/{max_attempts} ({kind}) call={call_id}")
+            self._log("model", f"第 {attempt}/{max_attempts} 次尝试 #{call_id}")
             buffer: list[ChatMessageStreamDelta] = []
             received_chars = 0
             try:
                 if kind == "generate":
                     result = invoke(attempt)
                     elapsed = time.time() - attempt_start
-                    self._log("model-ok", f"attempt {attempt} ok ({elapsed:.1f}s) call={call_id}")
+                    self._log("model-ok", f"第 {attempt} 次成功,用时 {elapsed:.1f}s #{call_id}")
                     return result
                 # generate_stream：在 for 循环里消费底层生成器，遇到任何异常都
                 # 视为"这次 attempt 失败"，buffer 丢弃、走 except。
@@ -171,7 +177,7 @@ class ResilientModel(Model):
                 # 流正常结束（生成器耗尽且无异常）= 本次 attempt 成功。
                 elapsed = time.time() - attempt_start
                 self._log("model-ok",
-                          f"attempt {attempt} ok ({elapsed:.1f}s, {received_chars} chars) call={call_id}")
+                          f"第 {attempt} 次成功,用时 {elapsed:.1f}s,{received_chars} 字 #{call_id}")
                 # atomic：一次性把本次完整内容 yield 给上层
                 return ("__stream__", buffer)
             except Exception as exc:  # noqa: BLE001 —— 任何异常都分类，决定重试与否
@@ -183,7 +189,7 @@ class ResilientModel(Model):
                 if not last_verdict.retryable:
                     # 永久错误：不重试，原样上抛（让 CodeAgent/上层处理），保留异常链
                     self._log("model-fail",
-                              f"attempt {attempt} permanent ({log_reason}) call={call_id}")
+                              f"第 {attempt} 次遇到永久错误({log_reason}),不重试 #{call_id}")
                     raise
                 is_last = attempt >= max_attempts
                 cap_hit = (last_verdict.retry_after is not None
@@ -192,21 +198,20 @@ class ResilientModel(Model):
                     # 服务端要求等待超过 cap：fast-retry 不干等。先打 escalate 日志
                     # （避免先打"retry in 15s"再退出，造成误导），再向上抛。
                     self._log("model-escalate",
-                              f"attempt {attempt} {log_reason}; retry-after "
-                              f"{last_verdict.retry_after:.0f}s > cap "
-                              f"{self.schedule.retry_after_cap}s; escalate call={call_id}")
+                              f"第 {attempt} 次 {log_reason};服务端要求等待 "
+                              f"{last_verdict.retry_after:.0f}s,超过上限 "
+                              f"{self.schedule.retry_after_cap}s,不再干等 #{call_id}")
                     break
                 if is_last:
                     self._log("model-fail",
-                              f"attempt {attempt}/{max_attempts} {log_reason}; "
-                              f"no attempts left call={call_id}")
+                              f"第 {attempt}/{max_attempts} 次 {log_reason};已无重试次数 #{call_id}")
                     break
                 delay = self.schedule.delay_for(attempt, last_verdict.retry_after)
-                partial = f", partial {received_chars} chars discarded" if kind == "generate_stream" else ""
+                partial = f",已丢弃 {received_chars} 字不完整输出" if kind == "generate_stream" else ""
                 self._log(
                     "model-retry",
-                    f"attempt {attempt}/{max_attempts} {log_reason}{partial}; "
-                    f"retry {attempt + 1} in {delay:.1f}s call={call_id}")
+                    f"第 {attempt}/{max_attempts} 次 {log_reason}{partial};"
+                    f"{delay:.1f}s 后第 {attempt + 1} 次重试 #{call_id}")
                 retry_policy.sleep(delay)
 
         # 所有 attempt 用尽 / cap-hit 主动 break

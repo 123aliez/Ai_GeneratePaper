@@ -302,7 +302,8 @@ def assemble_output(extra_notes: list[str] | None = None) -> dict:
     if not outline:
         raise ValueError(f"没有有效的大纲({OUTLINE_PATH}),先跑 --go 展开并审阅大纲")
     meta = [{"folder": c["folder"], "title": c["title"], "type": c.get("type", ""),
-             "number": c["number"]} for c in outline]
+             "number": c["number"],
+             "sections": [x.get("title", "") for x in c.get("sections", [])]} for c in outline]
     chapters = A.load_chapters(meta, Path(config.WORKSPACE_ROOT))
     tables = {t.name: t for t in collect_tables(config.DATA_ROOT)}
     num = A.number_items(chapters)
@@ -324,6 +325,14 @@ def assemble_output(extra_notes: list[str] | None = None) -> dict:
                           Path(config.REFS_BIB_PATH))
 
     notes = list(extra_notes or [])
+    from .outline import page_budget
+    budget = page_budget()
+    if budget:
+        pages, per_page = budget
+        words = sum(len(c.en.split()) for c in chapters)
+        est = words / per_page
+        notes.append(f"篇幅:正文约 {words} 词,按每页 {per_page} 词约 {est:.1f} 页(目标 {pages} 页,不含参考文献)"
+                     + ("" if est <= pages * 1.1 else ";超出预算,投稿前需压缩"))
     notes += [f"LaTeX 静态检查: {p}" for p in latex["checks"]]
     (out / "待补清单.md").write_text(A.build_todo_report(chapters, notes, num, tables), encoding="utf-8")
     folder_titles = {c.folder: f"{c.number}. {c.title}" for c in chapters}

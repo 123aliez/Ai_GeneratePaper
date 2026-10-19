@@ -46,7 +46,6 @@ except ModuleNotFoundError:
 import agents.orchestrator as orch
 import agents.outline as ol
 import agents.skills_registry as sr
-import agents.tools as tools
 from agents.number_gate import (load_results_store, load_results_store_report,
                                 ResultsStoreError)
 from agents.result_ids import ensure_res_ids, parse_res_ids_md, parse_retired_ids
@@ -373,9 +372,9 @@ def test_checklist_status_rejects_unknown_ids():
 class MissingZhAgent(FullRunAgent):
     """定稿漏写 final.zh.md(产物不全 → RES 填充/终稿门禁不会执行)。"""
 
-    def run(self, prompt, **kwargs):
-        result = super().run(prompt, **kwargs)
-        if "final.md' (English)" in prompt:
+    def run_stage(self, task, docs, deliverables, out_dir, **kwargs):
+        result = super().run_stage(task, docs, deliverables, out_dir, **kwargs)
+        if "final.md" in deliverables and "final.zh.md" in deliverables:
             Path(self.folder, "final.zh.md").unlink(missing_ok=True)
         return result
 
@@ -455,9 +454,9 @@ def test_empty_store_retires_all_ids():
 class MismatchFinalAgent(FullRunAgent):
     """定稿里手打一个与结果库矛盾的数字(终稿门禁应抓到)。"""
 
-    def run(self, prompt, **kwargs):
-        result = super().run(prompt, **kwargs)
-        if "final.md' (English)" in prompt:
+    def run_stage(self, task, docs, deliverables, out_dir, **kwargs):
+        result = super().run_stage(task, docs, deliverables, out_dir, **kwargs)
+        if "final.md" in deliverables and "final.zh.md" in deliverables:
             Path(self.folder, "final.md").write_text(
                 "# Results\n\nOur model reaches a test accuracy of 91.2% on the benchmark.\n",
                 encoding="utf-8")
@@ -491,10 +490,10 @@ def test_clean_run_is_verified_and_prompts_are_wired():
           (results.get("verification") or {}).get("status") == "verified", str(results.get("verification")))
     check("DONE 行写明核验通过", "核验通过" in out)
 
-    final_prompts = [p for p in agent.prompts if "final.md' (English)" in p]
+    final_prompts = [p for p in agent.prompts if "Return final.md (English)" in p]
     check("发出了 Stage 4 定稿提示词", len(final_prompts) == 1, str(len(final_prompts)))
     fp = final_prompts[0]
-    check("定稿只读 draft-v2", "Read draft-v2.md, review-v1.md" in fp and "Read draft-v1.md" not in fp)
+    check("定稿只给 draft-v2", "Attached: draft-v2.md, review-v1.md" in fp and "draft-v1.md" not in fp)
     check("定稿禁止改数字/占位符", "Do NOT change any claim, number" in fp)
 
     part_prompts = [p for p in agent.prompts if "Write only Part" in p]
@@ -511,42 +510,6 @@ def test_clean_run_is_verified_and_prompts_are_wired():
     check("定稿注入 review rubric", "review-rubric.md" in fp)
     check("VERIFY 不注入 skill(只核对清单)",
           verify_prompts and not any("METHODOLOGY SKILLS" in p for p in verify_prompts))
-    check("流水线结束后写入作用域已解除", tools._write_scope is None)
-
-
-# ── 3. 写入作用域 ────────────────────────────────────────────────────────
-def _write(path, content="x"):
-    return tools.write_file(file_path=str(path), content=content)
-
-
-def test_write_scope_blocks_author_inputs():
-    root = Path(tempfile.mkdtemp())
-    chapter = root / "workspace" / "01-method"
-    chapter.mkdir(parents=True)
-    write(root / "idea.md", "original idea")
-    write(root / "data" / "r.json", '{"acc": 0.5}')
-    (chapter / "link-out").symlink_to(root / "data")
-    buf = io.StringIO()
-    tools.set_write_scope(str(chapter))
-    try:
-        with contextlib.redirect_stdout(buf):
-            ok = _write(chapter / "draft-v1.md", "draft")
-            sub = _write(chapter / "sub" / "notes.md", "n")
-            idea = _write(root / "idea.md", "tampered")
-            dotdot = _write(f"{chapter}/../../idea.md", "tampered")
-            data = _write(root / "data" / "r.json", '{"acc": 0.99}')
-            via_link = _write(chapter / "link-out" / "r.json", '{"acc": 0.99}')
-            sibling = _write(root / "workspace" / "01-method-x" / "f.md", "x")
-    finally:
-        tools.set_write_scope(None)
-    check("本章目录内可写", ok.startswith("Successfully") and sub.startswith("Successfully"))
-    for label, res in (("idea.md", idea), ("../ 绕过", dotdot), ("data/", data),
-                       ("符号链接绕过", via_link), ("前缀相同的兄弟目录", sibling)):
-        check(f"拒绝写 {label}", res.startswith("Error: write refused"), res)
-    check("idea.md 内容未被改", (root / "idea.md").read_text(encoding="utf-8") == "original idea")
-    check("data 内容未被改", (root / "data" / "r.json").read_text(encoding="utf-8") == '{"acc": 0.5}')
-    check("拒绝写入有日志", "DENIED" in buf.getvalue())
-    check("解除作用域后不受限", _write(root / "outline.md", "o").startswith("Successfully"))
 
 
 if __name__ == "__main__":
