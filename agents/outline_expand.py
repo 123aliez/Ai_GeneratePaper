@@ -104,6 +104,33 @@ def skeleton_report(chapters: list[dict]) -> list[str]:
     return lines
 
 
+def budget_clause(chapters: list[dict]) -> str:
+    """篇幅预算段:有 paper.toml 的 pages 才有。给规划者一张每章建议字数表作起点。"""
+    from .outline import page_budget, plan_chapter_words
+    budget = page_budget()
+    if not budget:
+        return ""
+    pages, per_page = budget
+    plan = plan_chapter_words(chapters, pages, per_page)
+    rows = "\n".join(
+        f"  {c['number']}. {c['title']} ({c['type']}): about {plan[c['number']]} words "
+        f"(~{plan[c['number']] / per_page:.1f} pages)" for c in chapters)
+    return (
+        f"## Page budget (you allocate it)\n"
+        f"The paper body is capped at about {pages} pages ({pages * per_page} words at "
+        f"{per_page} words per page, references excluded). Suggested allocation per chapter, "
+        f"from conference conventions:\n{rows}\n"
+        f"You decide the final split. Write `(~N words)` on EVERY `###` subsection you create "
+        f"(multiples of 25), and for a short chapter (no `###`) on its `##` heading line. Rules:\n"
+        f"- Allocate by how much real material the chapter has: the idea document and data "
+        f"index decide it. Core content (the method, the main results) gets the most words; a "
+        f"chapter with thin material gets FEWER words than the suggestion. Never pad.\n"
+        f"- Stay within about 30% of each chapter's suggestion unless the material clearly "
+        f"calls for more or less; chapter totals must add up to no more than {pages * per_page} "
+        f"words.\n"
+        f"- Split a chapter's words across its subsections by the weight of their content.\n\n")
+
+
 def build_expand_prompt(chapters: list[dict], out_en_path: str,
                         out_zh_path: str, idea_path: str, total: int) -> str:
     """Manager 的展开任务。
@@ -164,7 +191,7 @@ def build_expand_prompt(chapters: list[dict], out_en_path: str,
 
     return (
         f"You are planning the section-level structure of a paper outline.\n\n"
-        f"Read '{idea_path}' first. It states the author's contribution: the core "
+        f"The document idea.md (attached) states the author's contribution: the core "
         f"insight, the method design, the delta against prior work, and the claim "
         f"list. Everything you write must be derivable from it.\n\n"
         f"The author has fixed the chapter structure. It is NOT yours to change:\n\n"
@@ -176,10 +203,9 @@ def build_expand_prompt(chapters: list[dict], out_en_path: str,
         f"## Hard constraints\n"
         f"- Do NOT add, remove, merge, split, reorder or rename a chapter.\n"
         f"- Do NOT change any chapter's `type:` line.\n"
-        f"- Do NOT write word counts for subsections you create. Omit the "
-        f"`(~N words)` annotation entirely — length is the author's call and "
-        f"will be filled in afterwards. Where the author already wrote one, "
-        f"reproduce it verbatim.\n"
+        f"- Word counts: where the author already wrote `(~N words)`, reproduce it verbatim. "
+        f"For subsections you create, follow the Page budget section when present; without "
+        f"one, omit the annotation (length is the author's call).\n"
         f"- Where the author already wrote subsections, KEEP their titles and order "
         f"verbatim; you may only add bullets to them.\n"
         f"- Give each chapter 2 to 4 subsections. A chapter with 3+ subsections is "
@@ -194,6 +220,7 @@ def build_expand_prompt(chapters: list[dict], out_en_path: str,
         f"- Bullets not under a `###` subsection are allowed ONLY for the short "
         f"chapter types above. For every other chapter, place every bullet under a "
         f"`###` subsection.\n\n"
+        f"{budget_clause(chapters)}"
         f"## Length & structure heuristics (how to slice chapters, venue-style)\n"
         f"- Prioritise the parts most readers actually read: Abstract + Introduction "
         f"+ the headline figure. Make those subsections crisp.\n"
@@ -212,9 +239,8 @@ def build_expand_prompt(chapters: list[dict], out_en_path: str,
         f"but a Limitations subsection inside the right chapter is fine.\n"
         f"- Appendices hold hyperparameters, proofs, extra experiments; keep the main "
         f"text self-contained. You are planning the MAIN text only.\n"
-        f"- You do NOT write word counts — length is the author's call (page budget, "
-        f"venue limits). The framework fills a sensible per-type default where the "
-        f"author left it blank; the author overrides the important ones.\n\n"
+        f"- Without a Page budget section, you do not write word counts: the framework fills "
+        f"a per-type default and the author overrides the important ones.\n\n"
         f"## What a good bullet looks like\n"
         f"Bullets are instructions handed verbatim to the drafting agent. Each "
         f"subsection needs 2 to 5 of them, covering:\n"
@@ -228,20 +254,52 @@ def build_expand_prompt(chapters: list[dict], out_en_path: str,
         f"results chapter\"). Cross-chapter duplication and scope creep are the "
         f"most common failure of this pipeline and the drafter cannot judge "
         f"boundaries on its own.\n"
-        f"- WHAT TO MARK when the idea document does not supply something: "
-        f"[DESIGN DETAIL NEEDED] for a missing mechanism, [MISSING DATA] for a "
-        f"number, [CITATION NEEDED] for an unsupported claim. Never invent the "
-        f"content instead.\n\n"
+        f"- WHAT TO MARK when the subsection must state something the idea document "
+        f"does not supply: [DESIGN DETAIL NEEDED] for a missing mechanism, [MISSING DATA] "
+        f"for a number, [CITATION NEEDED] for an unsupported claim. Never invent the "
+        f"content instead, and do not add bullets whose only job is to mark an absence.\n\n"
+        f"## One owner per statement (this prevents the paper from repeating itself)\n"
+        f"Chapters are drafted separately and each drafter only follows its own bullets, so YOU "
+        f"are the only place where repetition can be prevented. Before writing bullets, decide "
+        f"for every recurring statement which single subsection OWNS it, and write it only "
+        f"there:\n"
+        f"- limitations and scope limits belong ONLY to the last chapter (Conclusion, or a "
+        f"Limitations chapter), as one short paragraph; no other subsection gets a bullet "
+        f"about limits, caveats, provenance disclaimers or what the work does not do;\n"
+        f"- do not plan subsections or bullets about what was NOT done, measured or compared "
+        f"(no 'reproducibility status', 'limits of the evidence', 'mark unavailable values'). "
+        f"The paper presents what the work did and achieved, affirmatively;\n"
+        f"- a source attribution that idea.md requires (e.g. results taken from a cited "
+        f"paper) is stated once, where the results are introduced, as a plain citation;\n"
+        f"- a definition (a term, a metric, a notation) is explained once, in the subsection that introduces it; later bullets say "
+        f"'use the term as defined in X', never 'explain again'.\n"
+        f"Bullets must not say 'make clear that ...' about a statement owned elsewhere. "
+        f"When the data index or experiment settings are attached, they are the source of the "
+        f"numbers and the setup: point the data chapters at them and never write that the "
+        f"values are unavailable.\n\n"
+        f"## Chapter shapes that top venues expect\n"
+        f"- Introduction: first subsection opens with a concrete problem (a specific example or "
+        f"phenomenon, not 'X is very important'); the LAST subsection of the introduction is the "
+        f"contribution list: 2 to 4 specific, falsifiable contributions, each pointing forward to "
+        f"the chapter that supports it. Each contribution is 2 to 3 sentences (what is done, "
+        f"where the evidence is) and never restates a point already made in the same list. No bullet about a paper roadmap ('the rest of this "
+        f"paper'); an introduction stays around one page.\n"
+        f"- Abstract: problem, gap, what we introduce, ONE headline result sentence with at most two "
+        f"numbers (data-index placeholders) that summarizes all compared settings, meaning. "
+        f"Nothing else.\n"
+        f"- Results: one subsection per claim; each opens with the finding, then the numbers, "
+        f"then what it means.\n\n"
         f"Do not write bullets about chapter transitions or terminology "
         f"consistency. The pipeline injects the writing contract and freezes a "
         f"notation table on its own; bullets about them are noise.\n\n"
         f"## Output\n"
-        f"Write the SAME chapter structure to TWO files with write_file, in exactly this "
-        f"syntax and nothing else — no preamble, no explanation, no code fences:\n\n"
-        f"1. '{out_en_path}' — ENGLISH version. Chapter titles, subsection titles, and "
+        f"Return the SAME chapter structure as TWO files, each in its own file block, in exactly this "
+        f"syntax and nothing else inside the blocks — no preamble, no explanation, no code fences:\n\n"
+        f"1. {Path(out_en_path).name} — ENGLISH version. Chapter titles, subsection titles, and "
         f"bullets all in English. This is the initial structure the drafting agent reads.\n"
-        f"2. '{out_zh_path}' — CHINESE version. Chapter titles, subsection titles, and "
-        f"bullets all in Chinese (match the idea document's language). This is what the "
+        f"2. {Path(out_zh_path).name} — CHINESE version. Subsection titles and bullets in Chinese "
+        f"(match the idea document's language). CHAPTER titles stay EXACTLY as the author wrote "
+        f"them in the skeleton (both files, verbatim) — they name the chapter folders. This is what the "
         f"author reviews and edits; when the author edits it, the English version is "
         f"re-translated to match.\n\n"
         f"The two files must be structurally IDENTICAL: same chapters, same order, same "
@@ -249,7 +307,7 @@ def build_expand_prompt(chapters: list[dict], out_en_path: str,
         f"titles and bullets differs. Reproduce every chapter in the author's order with "
         f"the author's exact title and `type:` value in BOTH files. Keep author-written "
         f"subsections (titles, order, word counts, per-section type) verbatim in BOTH "
-        f"files. Write BOTH files; report only that the files were written.\n\n"
+        f"files. Return BOTH files.\n\n"
         f"Syntax (used identically in both files, English shown here):\n\n"
         f"## 4. Method\n\n"
         f"type: method\n\n"
@@ -269,8 +327,8 @@ def build_translate_prompt(out_zh_path: str, out_en_path: str, old_en_path: str 
     """
     return (
         f"You are translating a paper outline from Chinese to English.\n\n"
-        f"Read '{out_zh_path}' — the author-reviewed Chinese outline.\n"
-        f"Translate it into English and write the result to '{out_en_path}'.\n\n"
+        f"The document outline.zh.md (attached) is the author-reviewed Chinese outline.\n"
+        f"Translate it into English and return the result as {Path(out_en_path).name}.\n\n"
         f"Hard rules:\n"
         f"- Keep the STRUCTURE byte-identical: same chapters, same order, same "
         f"`type:` values, same subsections and their boundaries.\n"
@@ -278,11 +336,12 @@ def build_translate_prompt(out_zh_path: str, out_en_path: str, old_en_path: str 
         f"- Keep `(~N words)` word counts and per-section `- type: X` lines VERBATIM "
         f"(do not translate `type` values or numbers).\n"
         f"- Keep the first-line HTML comment marker as-is.\n"
-        + (f"- The previous English outline is at '{old_en_path}'. For every chapter title, subsection "
-           f"title and bullet whose Chinese text did not change, REUSE its previous English wording "
-           f"exactly (chapter folder names are derived from the English titles — unchanged chapters "
-           f"must keep their titles). Translate only what the author changed.\n" if old_en_path else "") +
-        f"- Write ONLY '{out_en_path}' with write_file, in exactly the outline syntax "
+        + (f"- The document outline.previous.md (attached) is the previous English outline. For every "
+           f"chapter title, subsection title and bullet whose Chinese text did not change, REUSE its "
+           f"previous English wording exactly (chapter folder names are derived from the English "
+           f"titles — unchanged chapters must keep their titles). Translate only what the author "
+           f"changed.\n" if old_en_path else "") +
+        f"- Return ONLY {Path(out_en_path).name}, in exactly the outline syntax "
         f"(## chapter / type: / ### section / - bullet). No preamble or explanation.\n"
     )
 
@@ -427,6 +486,63 @@ def expanded_outline_path(outline_path=None) -> Path:
 def read_expanded(path) -> list[dict]:
     """解析展开产物。解析失败按 OutlineRouteError 上抛,由调用方决定怎么报。"""
     return parse_outline(path)
+
+
+def normalize_budget(expanded_en: list[dict], expanded_zh: list[dict],
+                     original: list[dict]) -> list[str]:
+    """脚本侧收口:规划者写的字数可能缺、可能超预算。
+
+    - 缺字数的小节:按本章计划把该章余下字数分给它们;
+    - 总量超过预算:非作者钉死的小节按比例缩小到预算内(取 25 的倍数);
+    - 英文版确定后,同位置的数字原样抄给中文版(结构已由 validate_translation 校验一致)。
+    返回给作者看的说明行(没有预算时为空)。没有 paper.toml 的 pages 时什么也不做。
+    """
+    from .outline import (page_budget, plan_chapter_words, _section_is_fixed,
+                          DEFAULT_SECTION_WORDS)
+    budget = page_budget()
+    if not budget:
+        return []
+    pages, per_page = budget
+    total = pages * per_page
+    notes = []
+    author_titles = {(c["number"], s["title"].strip())
+                     for c in original for s in c["sections"] if s.get("words_explicit")}
+
+    def pinned(chapter, section):
+        return (chapter["number"], section["title"].strip()) in author_titles \
+            or chapter["type"] in ("limitations",)
+
+    plan = plan_chapter_words(original, pages, per_page)
+    # 1) 补缺
+    for chapter in expanded_en:
+        missing = [s for s in chapter["sections"] if not s.get("words_explicit")]
+        if not missing:
+            continue
+        have = sum(s["target_words"] for s in chapter["sections"] if s.get("words_explicit"))
+        room = max(plan.get(chapter["number"], DEFAULT_SECTION_WORDS * len(missing)) - have, 100 * len(missing))
+        each = max(100, int(round(room / len(missing) / 25.0)) * 25)
+        for s in missing:
+            s["target_words"], s["words_explicit"] = each, True
+        notes.append(f"第 {chapter['number']} 章有 {len(missing)} 个小节没标字数,已按计划补上")
+    # 2) 压到预算内(短章与作者钉死的小节不动)
+    def total_words():
+        return sum(s["target_words"] for c in expanded_en for s in c["sections"])
+    now = total_words()
+    if now > total:
+        movable = [(c, s) for c in expanded_en for s in c["sections"]
+                   if not pinned(c, s) and c["type"] not in ("abstract", "conclusion", "discussion")]
+        fixed_sum = now - sum(s["target_words"] for _, s in movable)
+        base = sum(s["target_words"] for _, s in movable)
+        if movable and base > 0 and total > fixed_sum:
+            factor = (total - fixed_sum) / base
+            for _, s in movable:
+                s["target_words"] = max(100, int(factor * s["target_words"] // 25) * 25)
+            notes.append(f"规划者给的字数合计 {now} 词,超出 {pages} 页预算({total} 词),已按比例压到 {total_words()} 词")
+    # 3) 数字抄给中文版
+    for en_c, zh_c in zip(expanded_en, expanded_zh):
+        for en_s, zh_s in zip(en_c["sections"], zh_c["sections"]):
+            zh_s["target_words"], zh_s["words_explicit"] = en_s["target_words"], True
+    return notes
 
 
 def missing_word_counts(chapters: list[dict]) -> int:

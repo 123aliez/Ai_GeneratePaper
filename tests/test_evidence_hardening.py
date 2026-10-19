@@ -204,8 +204,8 @@ def test_orchestrator_blocks_on_stale_fingerprints():
         _offline_test_stub = True
         def __init__(self):
             self.prompts = []
-        def run(self, prompt, **kw):
-            self.prompts.append(prompt)
+        def run_stage(self, task, docs, deliverables, out_dir, **kw):
+            self.prompts.append(task)
             return "should not happen"
 
     agent = NoCallAgent()
@@ -273,8 +273,8 @@ def test_offline_stub_skips_structured_path():
     src = Path(ROOT, "agents", "orchestrator.py").read_text(encoding="utf-8")
     check("orchestrator 尊重 _offline_test_stub 标记",
           "_offline_test_stub" in src)
-    check("单轮直调有 CodeAgent 兜底(失败回退)",
-          "falling back to CodeAgent path" in src)
+    check("单轮直调转换失败会再试一次(不再有 CodeAgent 兜底)",
+          "for _try in (1, 2)" in src and "falling back to CodeAgent path" not in src)
 
 
 def test_record_stage_covers_all_candidates():

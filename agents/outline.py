@@ -180,6 +180,91 @@ def _slug(text: str) -> str:
     return ascii_only[:24]
 
 
+# 篇幅预算:paper.toml 的 `pages`(正文页数,不含参考文献)× `words_per_page`(双栏会议格式含
+# 表格/公式的经验值 700 词/页)。设了页数,就把"按 type 的默认字数"的小节按比例缩放到预算内;
+# 摘要/结论等短章与作者显式标过字数的小节不动。没设 pages 则保持原默认。
+WORDS_PER_PAGE = 700
+_BUDGET_FIXED_TYPES = {"abstract", "conclusion", "limitations", "discussion"}
+
+
+def page_budget() -> tuple[int, int] | None:
+    """(页数, 每页词数);没配置返回 None。"""
+    import tomllib
+    path = Path(PROJECT_ROOT) / "paper.toml"
+    if not path.is_file():
+        return None
+    try:
+        cfg = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+    pages = cfg.get("pages")
+    if not isinstance(pages, (int, float)) or isinstance(pages, bool) or pages <= 0:
+        return None
+    per_page = cfg.get("words_per_page", WORDS_PER_PAGE)
+    if not isinstance(per_page, (int, float)) or isinstance(per_page, bool) or per_page <= 0:
+        per_page = WORDS_PER_PAGE
+    return int(pages), int(per_page)
+
+
+# 弹性章节的页数权重(相对值):方法与结果是论文的内容核心,占比最大;引言、相关工作约一页上下。
+# 摘要/结论/局限/讨论是短章,字数固定,不参与缩放。
+CHAPTER_PAGE_WEIGHTS = {
+    "intro": 1.0, "related": 0.9, "background": 0.9,
+    "method": 2.2, "theory": 2.2,
+    "experiments": 1.5, "results": 2.0, "analysis": 1.2, "ablation": 1.0,
+}
+
+
+def _section_is_fixed(chapter: dict, section: dict) -> bool:
+    return bool(section.get("words_explicit")) or chapter["type"] in _BUDGET_FIXED_TYPES
+
+
+def plan_chapter_words(chapters: list[dict], pages: int, per_page: int) -> dict[int, int]:
+    """篇幅预算 → 每章建议字数 {章号: 词数}。
+
+    固定篇幅的短章与作者显式标过字数的小节保持原值,其余预算按章类型权重分给弹性章节。
+    规划者(Manager)拿到这张表作起点,可按内容多寡调整;脚本最后再归一到预算内。
+    """
+    total = pages * per_page
+
+    def sections_of(chapter):
+        # 还没展开出小节的章(展开前给规划者看计划时):用一个按 type 默认字数的占位小节
+        return chapter["sections"] or [
+            {"target_words": DEFAULT_WORDS_BY_TYPE.get(chapter["type"], DEFAULT_SECTION_WORDS)}]
+
+    fixed = 0
+    flexible: dict[int, float] = {}
+    for chapter in chapters:
+        secs = sections_of(chapter)
+        flex_here = [s for s in secs if not _section_is_fixed(chapter, s)]
+        fixed += sum(s["target_words"] for s in secs if _section_is_fixed(chapter, s))
+        if flex_here:
+            flexible[chapter["number"]] = CHAPTER_PAGE_WEIGHTS.get(chapter["type"], 1.0)
+    weight_sum = sum(flexible.values())
+    room = max(total - fixed, 0)
+    plan = {}
+    for chapter in chapters:
+        fixed_here = sum(s["target_words"] for s in sections_of(chapter)
+                         if _section_is_fixed(chapter, s))
+        share = room * flexible[chapter["number"]] / weight_sum if chapter["number"] in flexible and weight_sum else 0
+        plan[chapter["number"]] = int(round((fixed_here + share) / 25.0)) * 25
+    return plan
+
+
+def apply_page_budget(chapters: list[dict], pages: int, per_page: int) -> None:
+    """未显式标字数的小节:按章计划把字数分给该章的弹性小节(章内按原默认值比例)。"""
+    plan = plan_chapter_words(chapters, pages, per_page)
+    for chapter in chapters:
+        flex = [s for s in chapter["sections"] if not _section_is_fixed(chapter, s)]
+        if not flex:
+            continue
+        fixed_here = sum(s["target_words"] for s in chapter["sections"] if _section_is_fixed(chapter, s))
+        room = max(plan[chapter["number"]] - fixed_here, 0)
+        base = sum(s["target_words"] for s in flex)
+        for s in flex:
+            s["target_words"] = max(100, int(round(room * s["target_words"] / base / 25.0)) * 25)
+
+
 def _finalize_chapters(chapters: list[dict]) -> list[dict]:
     """补齐 family/gate/folder 与按 type 的默认字数,两种骨架语法的共用收尾逻辑。"""
     by_folder: dict[str, dict] = {}
@@ -207,6 +292,9 @@ def _finalize_chapters(chapters: list[dict]) -> list[dict]:
                 f"outline 中多个章节映射到同一文件夹 '{chapter['folder']}': "
                 f"'{previous['title']}' 与 '{chapter['title']}'。")
         by_folder[chapter["folder"]] = chapter
+    budget = page_budget()
+    if budget:
+        apply_page_budget(chapters, *budget)
     return chapters
 
 

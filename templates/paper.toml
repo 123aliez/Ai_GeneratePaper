@@ -1,3 +1,6 @@
 # 可选。LaTeX 工程的标题与作者。
 title = "Paper Title"
 authors = ["Author One", "Author Two"]
+# 正文页数预算(不含参考文献)。设了就按每页约 700 词把各小节字数缩放进预算;不设则用默认字数。
+pages = 12
+# words_per_page = 700   # 需要时覆盖:双栏会议格式含表格/公式的经验值

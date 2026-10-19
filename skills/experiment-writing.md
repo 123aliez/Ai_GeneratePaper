@@ -26,7 +26,7 @@
 ## 数字纪律(data 类章节最高优先)
 - **每个结果数字必须来自结果表**:只写 `{{RES-xxx}}` 占位符(差值/相对提升写 `{{DIFF:..}}`/`{{REL:..}}`),整张表写 `[TABLE: …]`,不手打数字
 - 引用数字必须带来源:如 `run_1_ours 的 top1_accuracy = 81.7%`
-- 缺数据标 `[MISSING DATA]`,绝不猜、绝不 extrapolate
+- 需要写的数字缺失时标 `[MISSING DATA]`,绝不猜、绝不 extrapolate;没做的实验不要专门写一句去标
 - 结果与讨论必须引**同一组数**——同一指标在不同章节值不能变
 - idea 类章节引 headline 数时同样受这条约束:不在数据索引里的数字一律不许写
 
@@ -41,10 +41,10 @@
 | Theory | `theory` | 从 idea.md 的公式出发;假设要写全 |
 | Experimental Setup | `experiments` | 只写 实验设置.md 里有的;代码细节标 `[FROM CODE — 需核对]`;都没有标 [UNKNOWN] |
 | Results | `results` | 只写结果表里的;结果表用 `[TABLE: …]`;禁幻觉;不重述方法 |
-| Ablation | `ablation` | 逐个组件对照;缺的消融标 gap 不编 |
+| Ablation | `ablation` | 逐个组件对照;只写做了的消融,没做的不提 |
 | Discussion | `discussion` | 只解释已报告的结果;同一组数;区分 supported vs suggests |
 | Limitations | `limitations` | 以 idea.md 的「已知局限」为底,加数据暴露的短板 |
-| Conclusion | `conclusion` | 只总结已 demonstrated 的;无新数字 |
+| Conclusion | `conclusion` | 只总结已 demonstrated 的;无新数字;**全文唯一**的局限段(一小段)放在这里(没有单独 Limitations 章时) |
 
 ## 与占位符/公式结合
 - 结果里的图表:按 `figure-table-placeholder.md` 写占位符 + 说明,不生成图

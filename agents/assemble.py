@@ -37,6 +37,7 @@ _MARKER_RE = re.compile(r"\[(" + "|".join(re.escape(m) for m, _ in MARKERS) + r"
 _UNKNOWN_RES_RE = re.compile(r"⟨未知结果 ([^⟩]+)⟩")
 _FIG_HEAD_RE = re.compile(r"^\[FIGURE\s+([\w\-]+)\s*:\s*(.+?)\]\s*$")
 _REF_RE = re.compile(r"\[\[(TAB|FIG):([^\]]+)\]\]")
+_SEC_RE = re.compile(r"\[\[SEC:([^\]]+)\]\]")
 _LEADING_NUM_RE = re.compile(r"^\s*\d+(?:\.\d+)*[.)、]?\s+")
 
 
@@ -53,6 +54,7 @@ class Chapter:
     reasons: list = field(default_factory=list)
     todo: str = ""
     used: list = field(default_factory=list)      # numbers-used.json 的 used 列表
+    sections: list = field(default_factory=list)  # 大纲里的小节标题(用来统一标题层级)
 
 
 @dataclass
@@ -69,6 +71,65 @@ def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
 
 
+ABSTRACT_MAX_WORDS = 250
+
+
+def unify_inline_math(text: str) -> str:
+    """行内数学统一成 $...$(模型常混用 \\(...\\)):Markdown 预览器多半不认 \\( \\)。
+    围栏代码块里的内容不动。"""
+    out, fence = [], False
+    for line in text.splitlines():
+        if line.strip().startswith(("```", "~~~")):
+            fence = not fence
+        out.append(line if fence else re.sub(r"\\\((.+?)\\\)", r"$\1$", line))
+    return "\n".join(out) + ("\n" if text.endswith("\n") else "")
+
+
+_CHAPTER_REF_RE = re.compile(r"\b(?:the|this|that)\s+(?:abstract|introduction|related[- ]work|method|methods|"
+                             r"experimental[- ]setup|experiments?|results?|conclusion)\s+(?:chapter|section)\b", re.I)
+
+
+_PART_NAMES = r"(?:Abstract|Introduction|Related Work|Method|Experimental Setup|Results|Conclusion)"
+_BARE_PART_RE = re.compile(
+    rf"\b(?:in|of|see|from|by)\s+{_PART_NAMES}\b(?!\s+(?:section|chapter))"
+    rf"|\b{_PART_NAMES}\s+(?:provides?|presents?|shows?|supports?|reports?|describes?)\b")
+
+
+def chapter_refs(text: str) -> list[str]:
+    """"the method chapter" / 裸章名("in Results")这类指向其他章的指代
+    (论文里应写 Section N,由 [[SEC:标题]] 占位符生成)。"""
+    found = {m.group(0).lower() for m in _CHAPTER_REF_RE.finditer(text)}
+    found |= {m.group(0) for m in _BARE_PART_RE.finditer(text)}
+    return sorted(found)
+
+
+_PROCESS_WORD_RE = re.compile(
+    r"\b(?:the|this|that|these|those)\s+(?:supplied|provided|attached)\b"
+    r"|\b(?:supplied|provided|attached)\s+(?:reference|data|result|material|idea|note|index|outline|"
+    r"document|information|settings?)"
+    r"|\b(?:data|reference|result)s?\s+index\b|\bevidence pack\b|\bidea\.md\b|\bthe (?:outline|brief)\b",
+    re.I)
+
+
+def process_words(text: str) -> list[str]:
+    """把写作流程(输入材料、索引、大纲)写进论文正文的用语。"""
+    return sorted({m.group(0).lower() for m in _PROCESS_WORD_RE.finditer(text)})
+
+
+def collapse_abstract(text: str) -> str:
+    """摘要只能一段:把正文里的多个段落并成一段(只做机械拼接,不改一个字)。
+    标题行、表格、代码块、公式块不动;只有一段或含这类块时原样返回。"""
+    if not text.strip():
+        return text
+    blocks = [b.strip() for b in re.split(r"\n\s*\n", text.strip()) if b.strip()]
+    heads = [b for b in blocks if re.match(r"^#{1,6}\s", b)]
+    paras = [b for b in blocks if b not in heads]
+    if len(paras) <= 1 or any(re.match(r"^(```|~~~|\||\$\$|[-*]\s|\d+[.)]\s)", b) for b in paras):
+        return text
+    merged = " ".join(" ".join(b.split()) for b in paras)
+    return "\n\n".join(heads + [merged]) + "\n"
+
+
 def load_chapters(chapters_meta: list[dict], workspace: Path) -> list[Chapter]:
     out = []
     for meta in chapters_meta:
@@ -76,7 +137,11 @@ def load_chapters(chapters_meta: list[dict], workspace: Path) -> list[Chapter]:
         ch = Chapter(folder=meta["folder"], title=meta["title"], ctype=meta.get("type", ""),
                      number=int(meta.get("number", len(out) + 1)),
                      en=_read(folder / "final.md"), zh=_read(folder / "final.zh.md"),
-                     todo=_read(folder / "todo.md"))
+                     todo=_read(folder / "todo.md"),
+                     sections=[str(x) for x in meta.get("sections", [])])
+        ch.en, ch.zh = unify_inline_math(ch.en), unify_inline_math(ch.zh)
+        if ch.ctype == "abstract":
+            ch.en, ch.zh = collapse_abstract(ch.en), collapse_abstract(ch.zh)
         vtext = _read(folder / "verification.md")
         if "Status: UNVERIFIED" in vtext:
             ch.status = "unverified"
@@ -136,7 +201,12 @@ def _strip_num(title: str) -> str:
     return _LEADING_NUM_RE.sub("", title).strip()
 
 
-def normalize_headings(text: str, chapter_title: str) -> tuple[str, list[tuple[int, str]]]:
+def _norm_title(title: str) -> str:
+    return re.sub(r"\s+", " ", _strip_num(title)).strip().lower()
+
+
+def normalize_headings(text: str, chapter_title: str,
+                       sections: list[str] | None = None) -> tuple[str, list[tuple[int, str]]]:
     """返回 (正文, [(相对层级, 标题)])。相对层级 1 = 章下一级小节。
 
     规则:最浅层级的标题恰好一个、是第一个标题、且后面还有更深的小节标题 → 它就是章标题
@@ -162,9 +232,16 @@ def normalize_headings(text: str, chapter_title: str) -> tuple[str, list[tuple[i
             heads.append((i, len(m.group(1)), m.group(2)))
     if not heads:
         return text, []
+    if sections:
+        known = {_norm_title(t) for t in sections}
+        if any(_norm_title(h[2]) in known for h in heads):
+            return _normalize_by_outline(lines, heads, chapter_title, known)
     shallow = min(h[1] for h in heads)
     top = [h for h in heads if h[1] == shallow]
     drop_first = len(top) == 1 and heads[0][1] == shallow and len(heads) > 1
+    # 整章只有一个标题且与章名相同(摘要、结论常见):不留一个同名的小节标题
+    if len(heads) == 1 and _strip_num(heads[0][2]).lower() == _strip_num(chapter_title).lower():
+        drop_first = True
     base = shallow + (1 if drop_first else 0)
     heading_idx = {h[0]: h for h in heads}
     out, collected = [], []
@@ -182,18 +259,59 @@ def normalize_headings(text: str, chapter_title: str) -> tuple[str, list[tuple[i
     return "\n".join(out), collected
 
 
+def _normalize_by_outline(lines, heads, chapter_title, known):
+    """按大纲统一层级:大纲里的小节一律是相对层级 1(模型常把同级小节写成 ## / ###
+    混用);章名标题丢弃;其余更细的标题相对于它所在小节的原层级下移。"""
+    heading_idx = {h[0]: h for h in heads}
+    out, collected = [], []
+    section_level = None
+    for i, ln in enumerate(lines):
+        if i not in heading_idx:
+            out.append(ln)
+            continue
+        _, level, title = heading_idx[i]
+        key = _norm_title(title)
+        if key == _norm_title(chapter_title) and (key not in known or len(heads) == 1):
+            continue
+        if key in known:
+            section_level, rel = level, 1
+        elif section_level is None:
+            rel = 1
+        else:
+            rel = max(2, level - section_level + 1)
+        collected.append((rel, _strip_num(title)))
+        out.append(f"\x00H{rel}\x00{_strip_num(title)}")
+    return "\n".join(out), collected
+
+
 # ── paper.md ─────────────────────────────────────────────────────────────
 @dataclass
 class Numbering:
     tables: dict = field(default_factory=dict)    # 表名 → 号
     figures: dict = field(default_factory=dict)   # 图 id → 号
     figure_list: list = field(default_factory=list)
+    sections: dict = field(default_factory=dict)  # 规范化标题 → "4" / "4.2"
+    chapter_labels: dict = field(default_factory=dict)  # 章 folder → "4"
+    section_labels: dict = field(default_factory=dict)  # (folder, 小节序号) → "4.2"
 
 
 def number_items(chapters: list[Chapter]) -> Numbering:
     """按出现顺序给表/图编号(跨章连续)。"""
     num = Numbering()
+    n_chapter = 0
     for ch in chapters:
+        if ch.en.strip() and ch.ctype != "abstract":
+            n_chapter += 1
+            num.chapter_labels[ch.folder] = str(n_chapter)
+            num.sections.setdefault(_norm_title(ch.title), str(n_chapter))
+            _, heads = normalize_headings(ch.en, ch.title, ch.sections)
+            n_sub = 0
+            for rel, title in heads:
+                if rel == 1:
+                    n_sub += 1
+                    label = f"{n_chapter}.{n_sub}"
+                    num.section_labels[(ch.folder, n_sub)] = label
+                    num.sections.setdefault(_norm_title(title), label)
         for p in rt.find_table_placeholders(ch.en):
             if p["name"] not in num.tables:
                 num.tables[p["name"]] = len(num.tables) + 1
@@ -205,7 +323,13 @@ def number_items(chapters: list[Chapter]) -> Numbering:
     return num
 
 
+def _section_ref(m, num: Numbering) -> str:
+    label = num.sections.get(_norm_title(m.group(1)))
+    return f"Section {label}" if label else f"[SEC:{m.group(1).strip()}?]"
+
+
 def _replace_refs_md(text: str, num: Numbering) -> str:
+    text = _SEC_RE.sub(lambda m: _section_ref(m, num), text)
     def sub(m):
         kind, name = m.group(1), m.group(2).strip()
         table = num.tables if kind == "TAB" else num.figures
@@ -241,7 +365,7 @@ def build_paper_md(chapters: list[Chapter], num: Numbering, tables: dict, lang: 
         if not text.strip():
             parts.append(f"## {ch.title}\n\n**[本章没有生成终稿 — 见待补清单]**\n")
             continue
-        body, _heads = normalize_headings(text, ch.title)
+        body, _heads = normalize_headings(text, ch.title, ch.sections)
         # 图占位块 → 图注块
         lines = body.splitlines()
         blocks = {b["start"]: b for b in parse_figure_blocks(body)}
@@ -257,8 +381,18 @@ def build_paper_md(chapters: list[Chapter], num: Numbering, tables: dict, lang: 
         body = "\n".join(out)
         body = _expand_tables_md(body, tables, num)
         body = _replace_refs_md(body, num)
-        body = re.sub(r"\x00H(\d)\x00(.*)", lambda m: "#" * (int(m.group(1)) + 2) + " " + m.group(2), body)
-        parts.append(f"## {ch.title}\n\n{body.strip()}\n")
+        n_sub = [0]
+
+        def heading(m, ch=ch, n_sub=n_sub):
+            rel, title = int(m.group(1)), m.group(2)
+            if rel == 1:
+                n_sub[0] += 1
+                label = num.section_labels.get((ch.folder, n_sub[0]))
+                title = f"{label} {title}" if label else title
+            return "#" * (rel + 2) + " " + title
+        body = re.sub(r"\x00H(\d)\x00(.*)", heading, body)
+        label = num.chapter_labels.get(ch.folder)
+        parts.append(f"## {label + ' ' if label else ''}{ch.title}\n\n{body.strip()}\n")
     return "\n".join(parts).strip() + "\n"
 
 
@@ -294,6 +428,8 @@ def _escape_plain(text: str) -> str:
 
 
 def _inline_to_tex(text: str, num: Numbering) -> str:
+    # 模型常把公式引用写成 $\eqref{...}$;eqref 本身就进数学模式,不该再包 $ $
+    text = re.sub(r"\$\s*(\\eqref\{[^}]+\})\s*\$", r"\1", text)
     # 交叉引用
     def ref(m):
         kind, name = m.group(1), m.group(2).strip()
@@ -303,6 +439,7 @@ def _inline_to_tex(text: str, num: Numbering) -> str:
                    ("tab:" if kind == "TAB" else "fig:") + _slug(name) + "}"
         return f"[{kind}:{name}?]"
     text = _REF_RE.sub(ref, text)
+    text = _SEC_RE.sub(lambda m: _section_ref(m, num), text)
     # 标记 → \todo
     text = _MARKER_RE.sub(lambda m: "\x01" + m.group(1) + "\x02", text)
     text = _UNKNOWN_RES_RE.sub(lambda m: "\x01unknown result " + m.group(1) + "\x02", text)
@@ -360,6 +497,9 @@ def _guard_block(chunk: list[str], env: str | None = None) -> list[str]:
     if (env is not None and env not in _SAFE_ENVS) or _DANGEROUS_RE.search(text):
         safe = [ln.replace(r"\end{verbatim}", r"\end {verbatim}") for ln in chunk]
         return [r"\todo{unsafe LaTeX block shown verbatim}", r"\begin{verbatim}", *safe, r"\end{verbatim}"]
+    if chunk and chunk[0] == r"\[" and chunk[-1] == r"\]" and r"\label{" in text:
+        # 带 \label 的公式必须是带编号的环境:\[ \] 里的 \label 没有编号,\eqref 会解析成 ??
+        return [r"\begin{equation}", *chunk[1:-1], r"\end{equation}"]
     return list(chunk)
 
 
@@ -538,7 +678,7 @@ def build_latex(chapters: list[Chapter], num: Numbering, tables: dict, out_dir: 
         old.unlink()
     inputs, abstract_tex, files = [], "", []
     for idx, ch in enumerate(chapters, start=1):
-        body_md, _ = normalize_headings(ch.en, ch.title)
+        body_md, _ = normalize_headings(ch.en, ch.title, ch.sections)
         if not ch.en.strip():
             tex = rf"\todo{{chapter {_escape_plain(ch.title)}: no final text}}" + "\n"
         else:
@@ -620,7 +760,7 @@ def static_checks(latex_dir: Path, bib_path: Path) -> list[str]:
                     len(re.findall(rf"\\end\{{{re.escape(env)}\}}", stripped)):
                 problems.append(f"{f.name}: 环境 {env} 的 begin/end 不配对")
     for f in sorted(latex_dir.rglob("*.tex")):
-        for ref in re.findall(r"\\ref\{([^}]+)\}", f.read_text(encoding="utf-8", errors="replace")):
+        for ref in re.findall(r"\\(?:eq)?ref\{([^}]+)\}", f.read_text(encoding="utf-8", errors="replace")):
             if ref not in labels:
                 problems.append(f"{f.name}: \\ref{{{ref}}} 没有对应的 \\label")
     return problems
@@ -637,6 +777,21 @@ def collect_markers(text: str) -> list[tuple[str, str]]:
         s = max(0, m.start() - 60)
         found.append(("未知结果", text[s:m.end() + 40].replace("\n", " ").strip()))
     return found
+
+
+_BRITISH_FORMS = [
+    "analyse", "analysed", "analysing", "modelling", "modelled", "centre", "centred", "summarise",
+    "summarised", "summarising", "organise", "organised", "behaviour", "colour", "generalise",
+    "generalised", "optimise", "optimised", "recognise", "recognised", "normalise", "normalised",
+    "characterise", "characterised", "utilise", "emphasise", "emphasised", "favour", "labelled",
+    "labelling", "neighbour", "regularise", "regularisation", "visualise", "initialise",
+]
+
+
+def british_spellings(text: str) -> list[str]:
+    """正文里出现的英式拼写(全文统一用美式)。"""
+    words = set(re.findall(r"[A-Za-z]+", re.sub(r"\\[a-zA-Z]+\{[^}]*\}", " ", text)))
+    return sorted(w for w in words if w.lower() in _BRITISH_FORMS)
 
 
 def build_todo_report(chapters: list[Chapter], extra_notes: list[str], num: Numbering,
@@ -676,6 +831,24 @@ def build_todo_report(chapters: list[Chapter], extra_notes: list[str], num: Numb
                 items.append(f"派生数字 {u['placeholder']} = {u['text']} 为负,检查正文措辞(提升 / 下降)")
         if not c.en.strip():
             items.append("本章没有终稿(流程失败或尚未生成)")
+        refs = chapter_refs(c.en)
+        if refs:
+            items.append("口语式指代其他章(应改成 Section N): " + "; ".join(refs))
+        for m in _SEC_RE.finditer(c.en):
+            if _norm_title(m.group(1)) not in num.sections:
+                items.append(f"章节引用 `{m.group(0)}` 找不到对应的标题")
+        pw = process_words(c.en)
+        if pw:
+            items.append("正文出现工作流用语(应直接陈述事实): " + "; ".join(pw))
+        brit = british_spellings(c.en)
+        if brit:
+            items.append("英式拼写(全文应统一美式): " + ", ".join(brit))
+        if not c.en.strip():
+            pass
+        elif c.ctype == "abstract":
+            words = len(re.sub(r"^#.*$", "", c.en, flags=re.M).split())
+            if words > ABSTRACT_MAX_WORDS:
+                items.append(f"摘要 {words} 词,超过 {ABSTRACT_MAX_WORDS} 词,投稿前需压缩")
         todo_lines = [ln for ln in c.todo.splitlines() if ln.strip().startswith("-")]
         for ln in todo_lines[:30]:
             if "No outstanding" not in ln:

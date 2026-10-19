@@ -165,35 +165,22 @@ def test_stale_artifact_warning():
           orch.warn_stale_route_artifacts(tempfile.mkdtemp(), "ws/x", "old", "new") == [])
 
 
-def test_all_three_agents_get_search_literature():
-    """三个 Agent 的 tools 列表都必须含 search_literature。
-
-    审查指出原测试的问题:用 except Exception 兜住断言失败,再退回"源码里出现过
-    search_literature"这个宽松检查——而它只需要出现一次就通过,所以 Review 和
-    Manager 漏接线时测试依然是绿的。这里换成替换 CodeAgent 捕获三个 tools 列表,
-    断言失败就是失败,没有 fallback。
-    """
+def test_roles_are_toolless_content_agents():
+    """三个角色 = 模型 + 系统提示词,没有任何工具:读写文件由脚本完成。"""
     import agents.agents as ag_mod
-
-    class CaptureAgent:
-        def __init__(self, *args, **kwargs):
-            self.tools = kwargs.get("tools", [])
-
-    original = ag_mod.CodeAgent
-    try:
-        ag_mod.CodeAgent = CaptureAgent
-        manager, draft, review = ag_mod.create_agents(object(), object(), object())
-    finally:
-        ag_mod.CodeAgent = original
-
-    for label, agent in (("manager", manager), ("draft", draft), ("review", review)):
-        names = {getattr(t, "name", getattr(t, "__name__", "")) for t in agent.tools}
-        check(f"{label}_agent 持有文献受控读取工具",
-              {"read_reference", "search_reference_text"} <= names, str(names))
-        check(f"{label}_agent 持有读取护栏工具且原有工具未丢",
-              {"read_file", "read_file_range", "write_file", "list_folder"} <= names, str(names))
-        check(f"{label}_agent 不再有联网/旧索引检索工具",
-              not ({"search_literature", "search_references"} & names), str(names))
+    from agents.content_stage import ContentAgent
+    from agents.prompts import DRAFT_INSTRUCTIONS, REVIEW_INSTRUCTIONS, MANAGER_INSTRUCTIONS
+    manager, draft, review = ag_mod.create_agents(object(), object(), object())
+    for label, agent, instr in (("manager", manager, MANAGER_INSTRUCTIONS),
+                                ("draft", draft, DRAFT_INSTRUCTIONS),
+                                ("review", review, REVIEW_INSTRUCTIONS)):
+        check(f"{label} 是 ContentAgent", isinstance(agent, ContentAgent))
+        check(f"{label} 带自己的系统提示词", agent.instructions == instr)
+        check(f"{label} 没有 tools", not hasattr(agent, "tools"))
+        check(f"{label} 提示词不再提读写文件工具",
+              not any(w in agent.instructions for w in
+                      ("read_file", "write_file", "list_folder", "read_reference(", "final_answer")))
+    check("planner 只带 Manager", ag_mod.create_planner_agent(object()).instructions == MANAGER_INSTRUCTIONS)
 
 
 if __name__ == "__main__":

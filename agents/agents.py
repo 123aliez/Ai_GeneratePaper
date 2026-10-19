@@ -1,81 +1,27 @@
-from smolagents import CodeAgent, Model
+"""三个角色(Manager / Draft / Review)= 模型 + 系统提示词。
 
-from .tools import (read_file, read_file_range, write_file, list_folder,
-                    read_reference, search_reference_text)
+角色没有工具、没有步数循环:读什么、写什么、校验和重试都由脚本在 content_stage 里完成,
+模型只负责产出内容(见 content_stage.py 的说明)。
+"""
+
+from smolagents import Model
+
+from .content_stage import ContentAgent
 from .prompts import DRAFT_INSTRUCTIONS, REVIEW_INSTRUCTIONS, MANAGER_INSTRUCTIONS
 
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent))
-from config import MAX_STEPS_AGENT, MAX_STEPS_MANAGER
 
-AUTHORIZED_IMPORTS = ["json", "time", "textwrap"]  # 不含 os:os 能绕过 write_file 的写入作用域
-
-
-def create_planner_agent(model_manager: Model):
-    """只装一个 Manager,不带 managed_agents —— 给 `--expand` 这类纯规划步骤用。
+def create_planner_agent(model_manager: Model) -> ContentAgent:
+    """只装一个 Manager —— 给 `--expand` 这类纯规划步骤用。
 
     不复用 create_agents 是因为那会连带初始化 Draft/Review 两个模型:展开 outline
     根本不调它们,而三组 key 里任意一组没配好就会在这一步白报错。
     """
-    return CodeAgent(
-        tools=[read_file, read_file_range, write_file, list_folder],
-        model=model_manager,
-        instructions=MANAGER_INSTRUCTIONS,
-        additional_authorized_imports=AUTHORIZED_IMPORTS,
-        max_steps=MAX_STEPS_MANAGER,
-        verbosity_level=0,
-        stream_outputs=True,
-    )
+    return ContentAgent(model_manager, MANAGER_INSTRUCTIONS, "Manager")
 
 
-def create_agents(
-    model_draft: Model,
-    model_review: Model,
-    model_manager: Model,
-):
-    """Create the 3-agent hierarchy: Manager -> (Draft, Review)."""
-
-    draft_agent = CodeAgent(
-        tools=[read_file, read_file_range, write_file, list_folder, read_reference, search_reference_text],
-        model=model_draft,
-        name="draft_agent",
-        description=(
-            "Drafts paper sections from brief and input materials. "
-            "Input: the folder path containing brief.md and input.md."
-        ),
-        instructions=DRAFT_INSTRUCTIONS,
-        additional_authorized_imports=AUTHORIZED_IMPORTS,
-        max_steps=MAX_STEPS_AGENT,
-        verbosity_level=0,
-        stream_outputs=True,
-    )
-
-    review_agent = CodeAgent(
-        tools=[read_file, read_file_range, write_file, list_folder, read_reference, search_reference_text],
-        model=model_review,
-        name="review_agent",
-        description=(
-            "Reviews paper drafts and produces detailed feedback. "
-            "For finalization, merges all versions into final.md. "
-            "Input: the folder path containing the draft."
-        ),
-        instructions=REVIEW_INSTRUCTIONS,
-        additional_authorized_imports=AUTHORIZED_IMPORTS,
-        max_steps=MAX_STEPS_AGENT,
-        verbosity_level=0,
-        stream_outputs=True,
-    )
-
-    manager_agent = CodeAgent(
-        tools=[read_file, read_file_range, write_file, list_folder, read_reference, search_reference_text],
-        model=model_manager,
-        managed_agents=[draft_agent, review_agent],
-        instructions=MANAGER_INSTRUCTIONS,
-        additional_authorized_imports=AUTHORIZED_IMPORTS,
-        max_steps=MAX_STEPS_MANAGER,
-        verbosity_level=0,
-        stream_outputs=True,
-    )
-
+def create_agents(model_draft: Model, model_review: Model, model_manager: Model):
+    """返回 (manager, draft_agent, review_agent)。"""
+    draft_agent = ContentAgent(model_draft, DRAFT_INSTRUCTIONS, "Draft")
+    review_agent = ContentAgent(model_review, REVIEW_INSTRUCTIONS, "Review")
+    manager_agent = ContentAgent(model_manager, MANAGER_INSTRUCTIONS, "Manager")
     return manager_agent, draft_agent, review_agent
