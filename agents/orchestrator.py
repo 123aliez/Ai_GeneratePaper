@@ -202,7 +202,7 @@ def _is_permanent_failure(exc: BaseException) -> bool:
     若不在这里识别，``run_agent_stage`` 会对永久错误重跑 4 次 CodeAgent.run()，每次
     撞同一个 401，白白烧 token。沿异常链找根因的 status_code，落在永久集合就立即失败。
     """
-    from .retry_policy import PERMANENT_STATUS
+    from .retry_policy import ModelCallError, PERMANENT_STATUS
     seen = set()
     cur: BaseException | None = exc
     depth = 0
@@ -210,6 +210,8 @@ def _is_permanent_failure(exc: BaseException) -> bool:
         if id(cur) in seen:
             break
         seen.add(id(cur))
+        if isinstance(cur, ModelCallError):
+            return not cur.retryable
         status = getattr(cur, "status_code", None)
         if isinstance(status, int) and status in PERMANENT_STATUS:
             return True
@@ -226,6 +228,7 @@ def _safe_exc_label(exc: BaseException) -> str:
     这里沿异常链找一个 status_code，输出 ``TransientModelUnavailable(status=503)`` 这种
     固定结构；链里没有 status_code 就只给类名。
     """
+    from .retry_policy import ModelCallError
     name = type(exc).__name__
     # 沿链找 status_code（与 _is_permanent_failure 同样的遍历）
     seen = set()
@@ -235,6 +238,9 @@ def _safe_exc_label(exc: BaseException) -> str:
         if id(cur) in seen:
             break
         seen.add(id(cur))
+        if isinstance(cur, ModelCallError):
+            # 仅输出适配器自己生成的安全提示，诊断 stdout/stderr 不进入日志。
+            return cur.user_message
         status = getattr(cur, "status_code", None)
         if isinstance(status, int):
             return f"{name}(status={status})"
@@ -986,7 +992,7 @@ ROUTE_DEPENDENT_ARTIFACT_GLOBS = [
 
 
 def stage_model_groups() -> dict[str, str]:
-    """{阶段: provider/model}。阶段指纹的模型维;配置读取失败时返回空表(两侧同口径)。"""
+    """{阶段: provider/model}。只用于产物来源记录，不参与阶段指纹。"""
     try:
         from config import (DRAFT_PROVIDER, DRAFT_MODEL, REVIEW_PROVIDER,
                             REVIEW_MODEL, MANAGER_PROVIDER, MANAGER_MODEL)
@@ -1121,7 +1127,7 @@ def chapter_staleness(folder_path: str) -> list[str]:
             return []
         changed = changed_inputs(folder_path, stale, inputs)
         why = f"作者输入已变化: {', '.join(changed)}" if changed else \
-            "输入/提示词/skill/模型指纹不符"
+            "输入/提示词/skill 指纹不符"
         return [f"{why};陈旧产物: {', '.join(stale)}"]
     except Exception as exc:
         return [f"无法确认是否陈旧({type(exc).__name__}: {str(exc)[:120]})"]
@@ -1129,7 +1135,7 @@ def chapter_staleness(folder_path: str) -> list[str]:
 
 def handoff_is_current(folder_path: str) -> bool:
     """Stage 5 交接凭据是否与当前指纹相符(cross-chapter-draft.md 存在且已按当前
-    brief/输入/模型记账)。
+    brief/输入/提示词记账)。
 
     `--all` 判断"已完成"只看 final.md + 共享状态里的 claim;但改了输入、删掉陈旧
     产物重跑到 Stage 4 后中断时,共享状态里还留着旧 claim,章节会被误判完成而
@@ -1515,7 +1521,15 @@ def cross_chapter_state_preserves_others(before: str, after: str,
 def run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manager_agent=None) -> dict:
     """章节流水线入口。模型没有任何写文件的能力:产物全由脚本写进本章目录,
     inbox 里的作者输入物理上碰不到。"""
-    return _run_4stage_with_progress(draft_agent, review_agent, folder_path, manager_agent)
+    from .retry_policy import ModelCallError
+    try:
+        return _run_4stage_with_progress(draft_agent, review_agent, folder_path, manager_agent)
+    except ModelCallError as exc:
+        if exc.retryable:
+            raise
+        # 包括 Review 的结构化旁路；永久 CLI 错误必须中止整章，不能借已有文件继续跑。
+        print(f"[Manager  ] 停止 | {exc.user_message}", flush=True)
+        return _finish_with_table(folder_path, {"model_error": exc.user_message})
 
 
 def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manager_agent=None) -> dict:
@@ -1703,13 +1717,15 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
         results["route_blocked"] = f"res-ids catalog error: {str(exc)[:120]}"
         return _finish_with_table(folder_path, results)
 
-    # ── 演进点③:阶段指纹缓存。brief 指纹之上再叠 prompt/skill/模型指纹 ──
-    # 「文件存在即跳过」只认 brief 指纹——改了 prompts.py / skills/*.md /
-    # 模型组之后,旧产物仍被静默复用。跑之前把"存在但指纹不符/未记账"的产物
+    # ── 阶段指纹缓存：校验输入/prompt/skill，模型组只记录来源 ──
+    # 改了 prompts.py / skills/*.md / 作者输入之后，旧产物不能静默复用。
+    # 跑之前把"存在但指纹不符/未记账"的产物
     # 挑出来硬停(不删文件,语义与 warn_stale_route_artifacts 一致:是否作废
     # 由使用者定)。本次改造前生成的老产物没有 manifest 记账,一律视为陈旧——
     # 宁可重跑,不让旧提示词的产物冒充新跑。
     _model_groups = stage_model_groups()
+    if manager_agent is None:
+        _model_groups["plan"] = _model_groups.get("draft", "")
     try:
         from .skills_registry import inputs_fingerprint, changed_inputs
         _inputs_fp = chapter_inputs(folder_path, route)
@@ -1723,7 +1739,7 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
             if _changed:
                 print(f"[Manager  ] FAIL      | 作者输入已变化: {', '.join(_changed)}"
                       f" —— 旧产物是按旧输入写的", flush=True)
-            print(f"[Manager  ] FAIL      | 下列产物生成时的输入/prompt/skill/模型指纹与当前不符,", flush=True)
+            print(f"[Manager  ] FAIL      | 下列产物生成时的输入/prompt/skill 指纹与当前不符,", flush=True)
             print(f"[Manager  ] FAIL      | 「存在即跳过」会把它们当成本次结果静默复用:", flush=True)
             for name in _fingerprinted:
                 print(f"[Manager  ] STALE      |   {folder_rel}/{name}", flush=True)
@@ -1767,23 +1783,43 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
     def all_exist(expected: list[str]) -> bool:
         return all(os.path.exists(os.path.join(folder_path, name)) for name in expected)
 
-    def record_stage(artifacts: list[str], stage: str) -> None:
+    def record_stage(artifacts: list[str], stage: str, model_group: str | None = None) -> None:
         """演进点③:产物生成后向 .stage-manifest.json 记指纹。
 
         brief_fp 为空(survey 模式/异常路径)时跳过——没有 brief 指纹就无从
         计算 stage 指纹,而 stale 检查同样在 experiment 分支内,survey 产物
-        不会被校验。模型组按阶段取 _model_groups;缺项(配置读取失败等)
-        以空串参与指纹,stale 检查用同一张表,两侧一致。
+        不会被校验。模型组按阶段取 _model_groups，仅记生成来源，不参与陈旧判定。
         """
         if not brief_fp:
             return
         try:
-            from .skills_registry import record_stage_fingerprint
+            from .skills_registry import load_manifest, record_stage_fingerprint
+            manifest = load_manifest(folder_path)
             for name in artifacts:
                 if os.path.exists(os.path.join(folder_path, name)):
+                    # 统一由记账层比较内容哈希和当前指纹；脚本重建的文件也必须刷新条目。
+                    source_group = model_group if model_group is not None else _model_groups.get(stage, "")
+                    if model_group is None and stage == "final" and isinstance(manifest.get(name), dict):
+                        # RES 替换只更新文件内容，终稿的生成来源仍来自刚写出或被复用的模型稿。
+                        source_group = manifest[name].get("model_group", source_group)
+                    # 拼接和晋升由脚本完成；来源沿用组成它的模型产物，避免把旧轮次归给新模型。
+                    sources = []
+                    if name == "draft-v1.md":
+                        sources = sorted(n for n in manifest if n.startswith("draft-v1.part-"))
+                    elif name == "draft-v2.md":
+                        body = Path(folder_path, name).read_text(encoding="utf-8")
+                        sources = [n for n in manifest if n.startswith("draft-v2.round-")
+                                   and Path(folder_path, n).is_file()
+                                   and Path(folder_path, n).read_text(encoding="utf-8") == body][-1:]
+                    elif name == "cross-chapter-draft.md":
+                        sources = ["cross-chapter-entries.md"]
+                    source_models = sorted({manifest[n].get("model_group", "") for n in sources
+                                            if isinstance(manifest.get(n), dict)})
+                    if source_models:
+                        source_group = ", ".join(source_models)
                     record_stage_fingerprint(
                         folder_path, name, brief_fp, stage,
-                        _model_groups.get(stage, ""), _inputs_fp)
+                        source_group, _inputs_fp)
         except Exception as exc:
             # 记账失败会让"存在但未记账"的产物在下次运行被判陈旧硬停(保守失败,
             # 不会冒充新跑),所以这里 notice 即可,不上抛。
@@ -1799,6 +1835,13 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
         """
         from .tools import agent_label
         from .materials import lookup_for
+        from .retry_policy import ModelCallError
+        from .skills_registry import _stage_of
+
+        def on_write(name):
+            owner_stage = {"Draft": "draft", "Review": "review", "Manager": "input"}[agent_name]
+            record_stage([name], _stage_of(name), _model_groups.get(owner_stage, ""))
+
         attempts = 3
         last_error = None
         for attempt in range(1, attempts + 1):
@@ -1806,16 +1849,20 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
                   + (f",第 {attempt}/{attempts} 次尝试" if attempt > 1 else ""), flush=True)
             try:
                 outcome = agent.run_stage(task, docs, deliverables, folder_path,
-                                          lookup=lookup_for(folder_path))
+                                          lookup=lookup_for(folder_path), on_write=on_write)
                 if getattr(outcome, "rounds", 1) > 1 and not getattr(outcome, "missing", []):
                     print(f"[{agent_label(agent_name)}] 第一次回复不完整,已追问 "
                           f"{outcome.rounds - 1} 次补齐", flush=True)
                 for name in getattr(outcome, "written", []):
+                    # todo 和跨章条目也记来源；它们不因此成为陈旧检查候选。
+                    on_write(name)
                     print(f"[{agent_label(agent_name)}] 写入 | {_chap}/{name}", flush=True)
                 return outcome
             except Exception as exc:
                 last_error = exc
                 if _is_permanent_failure(exc):
+                    if isinstance(exc, ModelCallError):
+                        raise
                     print(f"[{agent_label(agent_name)}] 失败 | 永久错误,不重试: "
                           f"{_safe_exc_label(exc)}", flush=True)
                     return {"error": "permanent error", "exception_type": type(exc).__name__}
@@ -1836,11 +1883,14 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
     # 前置阶段失败即停:备料/证据挖掘没产出就继续起草,等于在缺材料的情况下
     # 花四五次模型调用写一章,而终稿的核验状态还可能不体现这个缺口。
     from .evidence_mining import run_input_material, run_evidence_mining
+    from .retry_policy import ModelCallError
     try:
         if manager_agent is not None:
             results["stage0_input"] = run_input_material(
                 manager_agent, folder_path, chapter, family,
                 run_agent_stage, set_agent_context, verify)
+    except ModelCallError:
+        raise
     except Exception as exc:
         print(f"[Manager  ] FAIL      | Stage 0 备料出错: {str(exc)[:160]}", flush=True)
         results["stage0_input"] = {"error": str(exc)[:160]}
@@ -1859,6 +1909,8 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
             reference_excerpt, run_agent_stage, verify, set_agent_context,
             family=family, docs=chapter_base() + local_docs(folder_path, "brief.md", "input.md"),
         )
+    except ModelCallError:
+        raise
     except Exception as exc:
         print(f"[Manager  ] FAIL      | Stage 0 证据挖掘出错: {str(exc)[:160]}", flush=True)
         results["stage0_evidence"] = {"error": str(exc)[:160]}
@@ -2141,6 +2193,7 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
                     text, insertions, allowed_keys=citable_keys())
                 if applied:
                     Path(draft_path).write_text(new_text, encoding="utf-8")
+                    record_stage(["draft-v1.md"], "draft")
                 report_lines = [f"- applied \\cite to {applied} sentence(s)",
                                 f"- {len(skipped)} left to human:"]
                 for s in skipped[:20]:
@@ -2169,8 +2222,7 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
         )
     if not verify(["draft-v2.md"]):
         return _finish_with_table(folder_path, results)
-    # 收敛循环内部的 round 产物由循环自行记账;这里记最终晋升的 draft-v2.md
-    # (无论本轮是 skip 还是新跑,文件与当前指纹相符才走到这,直接记)。
+    # 收敛循环内部的 round 产物自行记账；复用最终稿时保留原来的模型来源。
     record_stage(["draft-v2.md"], "revise")
 
     # ── Stage 4: Finalize ────────────────────────────────────────────
@@ -2259,6 +2311,7 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
                 tmp = fpath.with_suffix(fpath.suffix + ".tmp")
                 tmp.write_text(new_text, encoding="utf-8")
                 os.replace(tmp, fpath)
+                record_stage([fname], "final")
         # 交付物里不允许再出现占位符语法(填充后残留 = 上面置了 all_ok=False,
         # 或填充器有 bug)。
         for fname in ("final.md", "final.zh.md"):

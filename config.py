@@ -56,7 +56,7 @@ CODE_INDEX_PATH = INDEX_DIR / "code-index.md"             # 代码静态索引
 PAPER_ROOT = str(WORKSPACE_ROOT)
 
 # ── Per-agent model config (provider + model + key + base, each independent) ─
-# 模型调用框架：OpenAI 走 smolagents OpenAIModel，Claude 走 AnthropicModel 直连 /v1/messages。
+# 模型调用框架：openai/anthropic 走 API，claude_cli 走本机订阅登录（忽略该组 key/base）。
 # provider 由显式字段决定，不再靠 model_id 前缀推断；reasoning_level 统一 6 档语义，
 # 由 agents.model_capabilities 按模型能力翻译成 provider 原生参数（不支持则显式报错）。
 DRAFT_PROVIDER = os.getenv("DRAFT_PROVIDER", "anthropic")
@@ -83,7 +83,7 @@ MANAGER_REASONING_LEVEL = os.getenv("MANAGER_REASONING_LEVEL", "high")
 #   smolagents retryer   = OFF（ApiModel retry=False）
 #   ResilientModel       = ON（唯一瞬时重试 owner，见 LLM_RETRY_*）
 #   run_agent_stage      = 最后兜底（只对 TransientModelUnavailable 重跑，4 次纯兜底）
-MODEL_TIMEOUT = os.getenv("MODEL_TIMEOUT")  # 留空 → 按 provider 默认（OpenAI 300 / Claude 600）
+MODEL_TIMEOUT = os.getenv("MODEL_TIMEOUT")  # API 单请求 / CLI 整个子进程期限；默认 300 / 600 秒
 MODEL_MAX_RETRIES = int(os.getenv("MODEL_MAX_RETRIES", "0"))
 
 # ResilientModel 的瞬时重试计划：网关对长流式不稳，断了就在 Model 层快速重连，

@@ -100,6 +100,9 @@ def supported_levels(provider: str, model_id: str) -> frozenset:
     ``claude``）。查不到返回保守默认。
     """
     provider = (provider or "").strip().lower()
+    if provider == "claude_cli":
+        # CLI 接受模型别名，能力由本机 CLI 校验，不套用 API 模型前缀表。
+        return frozenset({LOW, MEDIUM, HIGH, XHIGH, MAX})
     slug = _strip_gateway_prefix((model_id or "").strip().lower())
     best_key = None
     best_len = -1
@@ -150,7 +153,9 @@ def map_reasoning(provider: str, model_id: str, level: str) -> dict:
         if level == OFF:
             return {"thinking": {"type": "disabled"}}
         return {"output_config": {"effort": _CLAUDE_EFFORT[level]}}
-    raise ValueError(f"未知 provider={provider!r}，合法值：'openai' / 'anthropic'")
+    if provider == "claude_cli":
+        return {"effort": level}
+    raise ValueError(f"未知 provider={provider!r}，合法值：'openai' / 'anthropic' / 'claude_cli'")
 
 
 def _strip_gateway_prefix(model_id: str) -> str:

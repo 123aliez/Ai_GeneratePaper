@@ -152,7 +152,7 @@ def run_content_stage(agent: ContentAgent, task: str, docs: list[Doc],
                       deliverables: list[str], out_dir, *, rounds: int = 3,
                       lookup: Callable[[str, str], str] | None = None,
                       max_lookup_rounds: int = 2, max_lookups: int = 4,
-                      label: str = "") -> StageOutcome:
+                      label: str = "", on_write: Callable[[str], None] | None = None) -> StageOutcome:
     """跑一个纯内容阶段并把产物写进 out_dir。
 
     模型调用异常原样上抛(ResilientModel 是唯一的瞬时重试 owner)。
@@ -178,6 +178,9 @@ def run_content_stage(agent: ContentAgent, task: str, docs: list[Doc],
         for name, body in got.items():
             _write_atomic(out / name, body)
             outcome.written.append(name)
+            if on_write is not None:
+                # 每个完整产物立即记账，避免后续追问耗尽额度时丢失已完成文件的来源。
+                on_write(name)
         pending = [n for n in pending if n not in got]
         if not pending:
             break

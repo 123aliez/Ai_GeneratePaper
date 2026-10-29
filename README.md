@@ -186,7 +186,7 @@ references/
 | **结果表由程序渲染** | 正文写 `[TABLE: 表名 \| caption: … \| note: …]`,表里所有数字来自 CSV,按 ↑/↓ 加粗最优 |
 | **数字门禁** | 手打进正文的数字对回结果库(定稿前后各查一次) |
 | **引用白名单** | 只认 `refs.bib` 的 key;评审提出的“缺引用”建议里的 key 不在库里就不插入;定稿里的未知 `\cite` 进核验原因 |
-| **阶段指纹** | 提示词 / skill / 模型 / idea.md / 结果表变了再跑,旧产物按陈旧硬停,不静默复用 |
+| **阶段指纹** | 提示词 / skill / idea.md / 结果表变了再跑,旧产物按陈旧硬停;换 provider/model 继续复用已完成内容,模型来源另记账 |
 | **模型只写内容** | 模型没有任何工具:读什么(材料附进提示词)、写什么(脚本解析 `<file>` 块后落盘)、校验、重试、合并跨章状态全由脚本完成;模型写不了 inbox / outline / 程序专属文件,读不了 `inbox/references/` 的原始笔记 |
 | **核验状态** | “生成完成”不等于“核验通过”:数字缺口、未知引用、未知表名、MUST FIX 没清空,都标 `未核验`,在待补清单里列出 |
 | **缺口如实** | 缺数据 `[MISSING DATA]`、缺引用 `[CITATION NEEDED]`、缺设计细节 `[DESIGN DETAIL NEEDED]`、代码细节 `[FROM CODE — 需核对]`;允许带显式缺口的初稿,不允许把它报成全部通过 |
@@ -206,8 +206,20 @@ references/
 | **评审者** Review | 审稿 | GPT-5.x / Claude Opus | 评审、验改、定稿、跨章交接 |
 
 三者**平级**,只通过读写文件协作。推进、门禁、断点续跑、重试全是确定性的 Python 代码。
-三个 Agent 的 provider / model / key 各自独立(OpenAI 走 `OpenAIModel`,Claude 走原生
-`/v1/messages`,可任意混搭),见 `.env.example`。
+三个 Agent 的 provider / model / key 各自独立：`openai` 走 OpenAI 兼容接口，`anthropic`
+走原生 `/v1/messages`，`claude_cli` 走本机原版 Claude Code CLI、使用自己的订阅登录，可任意混搭。
+例如先在终端运行 `claude` 完成登录，再在 `.env` 设置 `DRAFT_PROVIDER=claude_cli`、
+`DRAFT_MODEL=sonnet`、`DRAFT_REASONING_LEVEL=high`；该组 API_KEY/API_BASE 被忽略。
+CLI 支持 `low/medium/high/xhigh/max`（不支持 off），模型别名或完整名原样传入；
+可用 `CLAUDE_CLI_PATH` 指定程序路径，`MODEL_TIMEOUT` 限制整个子进程（默认600秒）。
+超时或中断会终止整个进程组，额外回收等待最多0.2秒；非JSON对象输出（含退出码0）先检查stdout/stderr的额度与登录文案，命中则给中文提示且不重试，其余按暂态重试。
+参数发起前检查UTF-8字节大小，单项上限128KiB（含结尾空字节），总量受系统ARG_MAX限制。
+CLI 在空临时目录中禁用工具与项目定制，不持久化会话；多轮历史由脚本重新附上。
+订阅额度耗尽立即停止：等恢复后重跑同一命令，或把对应 provider 改成 `openai/anthropic`
+并配置该组 model/key/base 后重跑，已完成内容会续上。旧版阶段账本保守判陈旧一次；
+新版账本的 `model_group` 记录原始生成来源，`content_sha256` 记录文件内容哈希；
+内容及阶段指纹都未变化时保留原条目，脚本或模型重建后变化则刷新，缺哈希旧条目在记账时重记。
+完整示例见 `.env.example`。
 
 ---
 

@@ -18,6 +18,7 @@
 """
 import sys
 import time
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -525,6 +526,94 @@ def test_permanent_detected_in_chain():
     check("503 不算永久", _is_permanent_failure(wrapped2) is False)
 
 
+def test_cli_quota_is_not_retried():
+    from agents.claude_cli_model import ClaudeSubscriptionQuotaExceeded
+    quota = ClaudeSubscriptionQuotaExceeded(status_code=429, owner="Draft")
+    for streaming in (False, True):
+        base = FakeBaseModel()
+        if streaming:
+            base.set_stream([quota])
+        else:
+            base.set_generate([quota])
+        rm = ResilientModel(base, _schedule(), provider="claude_cli")
+        try:
+            list(rm.generate_stream([])) if streaming else rm.generate([])
+            check("CLI 额度错误必须上抛", False)
+        except ClaudeSubscriptionQuotaExceeded as exc:
+            check("CLI 额度错误不包装、不重试", exc is quota and base.call_count == 1)
+    check("CLI 429 覆盖通用 API 429 的重试策略", not classify_error(quota).retryable)
+
+
+def test_cli_transient_is_retried():
+    from agents.claude_cli_model import ClaudeCliError
+    for error in (ClaudeCliError("CLI 超时", retryable=True),
+                  ClaudeCliError("服务异常", retryable=True, status_code=501)):
+        base = FakeBaseModel()
+        base.set_stream([error, [ChatMessageStreamDelta(content="recovered")]])
+        rm = ResilientModel(base, _schedule(), provider="claude_cli")
+        check("CLI 暂态重试后成功", "".join(d.content for d in rm.generate_stream([])) == "recovered"
+              and base.call_count == 2)
+
+
+def test_stage_quota_stops_immediately():
+    import contextlib
+    import io
+    from unittest.mock import patch
+    from agents.claude_cli_model import ClaudeCliError, ClaudeSubscriptionQuotaExceeded
+    import agents.orchestrator as orch
+    from test_pipeline_routing import IDEA_TEXT, make_ws_in_outline, make_data, set_idea
+    import agents.outline as ol
+
+    class QuotaAgent:
+        _offline_test_stub = True
+        calls = 0
+
+        def run_stage(self, *args, **kwargs):
+            self.calls += 1
+            raise ClaudeSubscriptionQuotaExceeded(status_code=429, owner="Draft")
+
+    for error in (ClaudeSubscriptionQuotaExceeded(status_code=429), ClaudeCliError("不支持参数")):
+        check("无 HTTP 状态的永久 CLI 错误也能被阶段识别", orch._is_permanent_failure(error))
+    agent = QuotaAgent()
+    with tempfile.TemporaryDirectory() as folder, contextlib.redirect_stdout(io.StringIO()) as log:
+        result = orch.run_agent_stage_standalone(agent, "Draft", "t", [], ["out.md"], folder)
+    check("独立阶段额度错误只调一次", agent.calls == 1 and result.get("error") == "permanent error")
+    check("独立阶段显示中文额度及处理方法", "Claude 订阅额度已用尽" in log.getvalue()
+          and "已完成的内容会续上" in log.getvalue())
+
+    set_idea(IDEA_TEXT)
+    folder, outline, _ = make_ws_in_outline("type: method\n\n1. **Framework** (~200 words)\n- 机制")
+    agent = QuotaAgent()
+    with patch.object(ol, "OUTLINE_PATH", Path(outline)), \
+            patch.object(orch, "DATA_ROOT", make_data({"test_accuracy": 0.817})), \
+            contextlib.redirect_stdout(io.StringIO()) as log:
+        result = orch.run_4stage_with_progress(agent, agent, folder, agent)
+    check("章节额度错误中止整章且不重试", agent.calls == 1 and bool(result.get("model_error")), str(result))
+    check("章节额度错误给出续跑提示", "Claude 订阅额度已用尽" in log.getvalue()
+          and "已完成的内容会续上" in log.getvalue())
+
+
+def test_run_all_quota_stops_even_with_existing_final():
+    import contextlib
+    import io
+    from unittest.mock import patch
+    import run
+
+    with tempfile.TemporaryDirectory() as workspace:
+        for chapter in ("first", "second"):
+            Path(workspace, chapter).mkdir()
+        Path(workspace, "first", "final.md").write_text("existing", encoding="utf-8")
+        with patch.object(run, "PAPER_ROOT", workspace), \
+                patch.object(run, "outline_chapters_in_order", return_value=(["first", "second"], None)), \
+                patch.object(run, "abstract_last", side_effect=lambda folders: folders), \
+                patch.object(run, "chapter_is_complete", return_value=False), \
+                patch.object(run, "run_4stage_with_progress", return_value={"model_error": "Claude 订阅额度已用尽"}) as stage, \
+                contextlib.redirect_stdout(io.StringIO()) as log:
+            code = run.run_all_chapters(object(), object(), object())
+    check("--all 遇额度错误立即退出且不跑下一章", code == 1 and stage.call_count == 1)
+    check("--all 显示额度错误", "Claude 订阅额度已用尽" in log.getvalue())
+
+
 tests = [
     test_t1_normal, test_t2_503_then_success, test_t3_connection_reset,
     test_t4_midstream_no_leak, test_t5_all_fail, test_t6_permanent_401,
@@ -540,6 +629,8 @@ tests = [
     test_cap_hit_attempts_count, test_no_log_leak,
     test_build_model_retry_disabled, test_build_model_retry_enabled_wraps,
     test_build_model_sdk_retries_forced_zero, test_permanent_detected_in_chain,
+    test_cli_quota_is_not_retried, test_cli_transient_is_retried, test_stage_quota_stops_immediately,
+    test_run_all_quota_stops_even_with_existing_final,
 ]
 
 
