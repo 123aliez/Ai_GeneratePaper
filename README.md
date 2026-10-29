@@ -209,12 +209,29 @@ references/
 三个 Agent 的 provider / model / key 各自独立：`openai` 走 OpenAI 兼容接口，`anthropic`
 走原生 `/v1/messages`，`claude_cli` 走本机原版 Claude Code CLI、使用自己的订阅登录，可任意混搭。
 例如先在终端运行 `claude` 完成登录，再在 `.env` 设置 `DRAFT_PROVIDER=claude_cli`、
-`DRAFT_MODEL=sonnet`、`DRAFT_REASONING_LEVEL=high`；该组 API_KEY/API_BASE 被忽略。
-CLI 支持 `low/medium/high/xhigh/max`（不支持 off），模型别名或完整名原样传入；
+`DRAFT_MODEL=claude-opus-4-6`、`DRAFT_REASONING_LEVEL=high`；该组 API_KEY/API_BASE 被忽略。
+型号别名或完整 ID 原样传 `--model`；`sonnet/opus/fable` 别名指向该系列最新版，
+指定版本用完整 ID。PM 在 CLI 2.1.312、Pro 订阅下实测 `claude-opus-4-6` 成功，
+`modelUsage` 确认为该型号；`opus-4.6` 这类简写 CLI 不认，返回 `is_error=true`、
+`api_error_status=404`；`sonnet` 实际解析为 `claude-sonnet-5-5`。
+
+CLI effort 五档为 `low/medium/high/xhigh/max`（不支持 off）；medium 及以下由模型自行决定
+是否思考，早先 sonnet + medium 起草请求的思考 token 为 0。本地只校验五档名称，某档是否
+被该型号支持由 CLI 处理；API provider 仍按能力表显式拒绝不支持的档位。
+同一道数学题实测 `claude-opus-4-6` 的 low/xhigh/max 思考 token 分别为 0/73/95，
+`sonnet` + max 为 88；CLI 接受 Opus 4.6 + xhigh 且未报错，是否内部降档无法确认。
+
 可用 `CLAUDE_CLI_PATH` 指定程序路径，`MODEL_TIMEOUT` 限制整个子进程（默认600秒）。
 超时或中断会终止整个进程组，额外回收等待最多0.2秒；非JSON对象输出（含退出码0）先检查stdout/stderr的额度与登录文案，命中则给中文提示且不重试，其余按暂态重试。
 参数发起前检查UTF-8字节大小，单项上限128KiB（含结尾空字节），总量受系统ARG_MAX限制。
-CLI 在空临时目录中禁用工具与项目定制，不持久化会话；多轮历史由脚本重新附上。
+
+每次 CLI 调用是新的独立进程，不带 `--continue/--resume`，不带入 CLI 的历史对话；
+`--no-session-persistence` 不写会话，`--safe-mode` 不加载 CLAUDE.md、记忆或 CLI skills，
+工具禁用，工作目录是用后删除的临时空目录。上述实测在项目目录、`~/.claude/projects`、
+`~/.claude.json` 均未留下本次调用的会话记录。
+上下文全部来自流水线显式附上的系统提示词、材料与当前阶段消息；与 API 路径一致，
+每个阶段新建对话，跨阶段靠文件衔接，同一阶段的缺产物追问或代查历史由脚本重新附上。
+
 订阅额度耗尽立即停止：等恢复后重跑同一命令，或把对应 provider 改成 `openai/anthropic`
 并配置该组 model/key/base 后重跑，已完成内容会续上。旧版阶段账本保守判陈旧一次；
 新版账本的 `model_group` 记录原始生成来源，`content_sha256` 记录文件内容哈希；
