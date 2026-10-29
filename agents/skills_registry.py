@@ -11,7 +11,7 @@
 - 固定注册表 SKILL_REGISTRY:角色 → 允许的 skill 文件名白名单;
 - load_skills() 读 skills/ 下的白名单文件,返回 (注入文本, SHA256 指纹);
 - run_manifest:每个"存在即跳过"产物在生成时记录指纹 = brief outline 指纹
-  + 阶段名 + prompts.py/skills 哈希 + 模型组名。重跑时指纹不匹配 → 视为
+  + 阶段名 + prompts.py/skills 哈希 + 作者输入。模型组仅记录来源，不参与指纹。重跑时不匹配 → 视为
   陈旧,硬停并列出(不删文件,沿用 warn_stale_route_artifacts 的语义)。
 
 指纹存 workspace/<章>/.stage-manifest.json: {artifact: {"fingerprint": ..., "mtime": ...}}。
@@ -29,6 +29,7 @@ SKILLS_DIR = PROJECT_ROOT / "skills"
 PROMPTS_PATH = Path(__file__).resolve().parent / "prompts.py"
 
 MANIFEST_FILENAME = ".stage-manifest.json"
+FINGERPRINT_VERSION = 2
 
 # 阶段提示词版本。prompts.py 已按内容哈希进指纹,但各阶段的任务提示词写在
 # orchestrator.py / evidence_mining.py 里——哈希整个代码文件会让任何无关改动都
@@ -206,12 +207,24 @@ def record_stage_fingerprint(folder_path: str, artifact: str,
                              brief_fingerprint: str, stage: str,
                              model_group: str = "",
                              inputs: dict | None = None) -> None:
-    """产物生成后记账。brief_fingerprint 是 brief.md 的 outline 指纹;
-    inputs 是 inputs_fingerprint() 的结果(同时原样存一份,供硬停时说明原因)。"""
+    """按当前文件内容与阶段指纹记账；两者都未变时保留原条目及模型来源。
+
+    缺少内容哈希的旧条目需要重记；内容哈希只用于记账，不改变手改终稿的核验流程。
+    """
     manifest = load_manifest(folder_path)
+    fingerprint = stage_fingerprint(brief_fingerprint, stage, model_group, inputs)
+    content_sha256 = _sha256_file(Path(folder_path) / artifact)
+    previous = manifest.get(artifact)
+    if isinstance(previous, dict) and previous.get("content_sha256") == content_sha256 \
+            and previous.get("fingerprint") == fingerprint \
+            and previous.get("fingerprint_version") == FINGERPRINT_VERSION:
+        return
     manifest[artifact] = {
-        "fingerprint": stage_fingerprint(brief_fingerprint, stage, model_group, inputs),
+        "fingerprint": fingerprint,
+        "content_sha256": content_sha256,
+        "fingerprint_version": FINGERPRINT_VERSION,
         "stage": stage,
+        "model_group": model_group,
         "inputs": dict(inputs or {}),
     }
     save_manifest(folder_path, manifest)
@@ -220,15 +233,14 @@ def record_stage_fingerprint(folder_path: str, artifact: str,
 def stage_fingerprint(brief_fingerprint: str, stage: str,
                       model_group: str = "", inputs: dict | None = None) -> str:
     """阶段指纹 = brief 指纹 + 阶段名 + prompt/skill 内容指纹 + 阶段提示词版本
-    + 模型组 + 作者输入(idea.md / data/)指纹。
+    + 作者输入(idea.md / data/)指纹。
 
-    model_group 传 provider/model 的组合串(如同 "openai/gpt-x" 与
-    "anthropic/claude-y"):换模型重写是合理诉求,旧产物不该冒充新模型写的。
-    inputs 缺了它,改完 idea.md 或 data/ 再跑,旧稿会被"存在即跳过"静默复用。
+    model_group 参数保留调用兼容性，但不进入指纹；换模型可继续复用已完成内容。
+    生成来源另记 manifest.model_group，跳过旧产物时不改写其来源。
     """
     inputs_part = json.dumps(inputs or {}, sort_keys=True)
     payload = "|".join([brief_fingerprint, stage, skills_fingerprint(),
-                        f"pv{STAGE_PROMPT_VERSION}", model_group, inputs_part])
+                        f"pv{STAGE_PROMPT_VERSION}", inputs_part])
     return _sha256_text(payload)[:16]
 
 
@@ -238,21 +250,21 @@ def stale_stage_artifacts(folder_path: str, artifacts: list[str],
                           inputs: dict | None = None) -> list[str]:
     """列出"存在但指纹不符/未记账"的产物。
 
-    model_groups: {stage: model_group}。缺省时阶段用 "" 占位(不校验模型维)。
+    model_groups 参数保留调用兼容性，不参与陈旧判定。
+    旧版账本没有独立保存模型来源，无法安全剥离其哈希中的模型维，保守判陈旧一次。
     inputs: inputs_fingerprint() 的结果,必须与记账时同口径。
     返回陈旧文件名列表;不存在或指纹相符的产物不在列表里。
     """
     manifest = load_manifest(folder_path)
-    model_groups = model_groups or {}
     stale = []
     for name in artifacts:
         full = Path(folder_path) / name
         if not full.is_file():
             continue
         entry = manifest.get(name)
-        expected = stage_fingerprint(brief_fingerprint, _stage_of(name),
-                                     model_groups.get(_stage_of(name), ""), inputs)
-        if not isinstance(entry, dict) or entry.get("fingerprint") != expected:
+        expected = stage_fingerprint(brief_fingerprint, _stage_of(name), inputs=inputs)
+        if not isinstance(entry, dict) or entry.get("fingerprint_version") != FINGERPRINT_VERSION \
+                or entry.get("fingerprint") != expected:
             stale.append(name)
     return stale
 
@@ -277,6 +289,7 @@ def _stage_of(artifact_name: str) -> str:
         "final.md": "final",
         "final.zh.md": "final",
         "cross-chapter-draft.md": "xchap",
+        "cross-chapter-entries.md": "xchap",
     }
     if name.startswith("draft-v1.part-"):
         return "draft"

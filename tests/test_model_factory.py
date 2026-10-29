@@ -1,4 +1,4 @@
-"""模型调用框架（双协议 + reasoning 映射）的离线验证。
+"""模型调用框架（三种 provider + reasoning 映射）的离线验证。
 
 不调任何 API、不发网络。覆盖：
   1. provider 路由：openai → smolagents OpenAIModel；anthropic → AnthropicModel
@@ -146,11 +146,60 @@ def test_opus46_xhigh_rejected():
         check("claude-opus-4-6 + xhigh 显式报错（避免服务端 400）", True)
 
 
+def test_router_claude_cli_without_credentials():
+    from unittest.mock import patch
+    with patch("agents.claude_cli_model.subprocess.Popen") as popen, \
+            patch("agents.claude_cli_model.tempfile.TemporaryDirectory") as temporary, \
+            patch.dict("os.environ", {"CLAUDE_CLI_PATH": "/fake/claude"}):
+        m = build_model("claude_cli", "sonnet", "", "", "max", owner="Draft")
+        check("CLI 外层仍是 ResilientModel", type(m).__name__ == "ResilientModel")
+        check("CLI 无 key/base 也能构造", type(m.base).__name__ == "ClaudeCliModel")
+        check("CLI 默认总超时 600 秒", m.base.timeout == 600.0)
+        check("CLI effort 与可执行路径传入", m.base.effort == "max" and m.base.cli_path == "/fake/claude")
+        direct = build_model("claude_cli", "full/model-id", "ignored", "https://ignored", "low",
+                             timeout=123, retry_enabled=False)
+        check("CLI 可关闭包装且保留模型原文", type(direct).__name__ == "ClaudeCliModel"
+              and direct.model_id == "full/model-id" and direct.timeout == 123)
+        check("CLI 构造无子进程及临时目录副作用", not popen.called and not temporary.called)
+
+
+def test_claude_cli_effort_mapping():
+    for model in ("sonnet", "opus", "fable", "claude-opus-4-6"):
+        check(f"CLI {model} 支持全部五档", supported_levels("claude_cli", model)
+              == frozenset({LOW, MEDIUM, HIGH, XHIGH, MAX}))
+        for level in (LOW, MEDIUM, HIGH, XHIGH, MAX):
+            check(f"CLI {model}/{level} → effort", map_reasoning("claude_cli", model, level)
+                  == {"effort": level})
+    for level in (OFF, "ultra", ""):
+        try:
+            build_model("claude_cli", "sonnet", "", "", level)
+            check(f"CLI 拒绝档位 {level!r}", False)
+        except ValueError:
+            check(f"CLI 拒绝档位 {level!r}", True)
+
+
+def test_all_role_getters_can_use_claude_cli():
+    import config
+    from unittest.mock import patch
+    for prefix, getter in (("DRAFT", config.get_draft_model), ("REVIEW", config.get_review_model),
+                           ("MANAGER", config.get_manager_model)):
+        with patch.multiple(config, **{f"{prefix}_PROVIDER": "claude_cli", f"{prefix}_MODEL": "sonnet",
+                                       f"{prefix}_API_KEY": "", f"{prefix}_API_BASE": "",
+                                       f"{prefix}_REASONING_LEVEL": "high", "MODEL_TIMEOUT": "",
+                                       "LLM_RETRY_ENABLED": True}), \
+                patch("agents.claude_cli_model.subprocess.Popen") as popen:
+            model = getter()
+            check(f"{prefix} getter 路由到 CLI", type(model.base).__name__ == "ClaudeCliModel"
+                  and model.base.owner.upper() == prefix and model.base.timeout == 600.0)
+            check(f"{prefix} getter 不启动 CLI", not popen.called)
+
+
 tests = [
     test_levels_complete, test_openai_mapping, test_anthropic_mapping,
     test_unsupported_raises, test_router_openai, test_router_anthropic,
     test_router_unknown_provider, test_timeout_defaults, test_capability_lookup,
-    test_opus46_xhigh_rejected,
+    test_opus46_xhigh_rejected, test_router_claude_cli_without_credentials,
+    test_claude_cli_effort_mapping, test_all_role_getters_can_use_claude_cli,
 ]
 
 if __name__ == "__main__":

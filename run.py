@@ -568,6 +568,12 @@ def run_all_chapters(draft_agent, review_agent, manager_agent) -> int:
         result = run_4stage_with_progress(
             draft_agent, review_agent, folder_path, manager_agent)
 
+        if result.get("model_error"):
+            # 订阅额度、登录等永久错误不能因已有 final.md 而继续下一章。
+            chapter_rows.append((position, name, "[失败] 模型调用停止"))
+            print(f"\n[run-all] 停止:{result['model_error']}")
+            _print_paper_table(folders, chapter_rows)
+            return 1
         if result.get("route_blocked"):
             # 门禁硬停(陈旧产物/数据歧义/brief 过期等):原因已在上方日志打印。
             # 单独处理,免得 final.md 已在时被误报成"跨章交接未完成"。
@@ -925,6 +931,8 @@ def main():
         sys.exit(run_all_chapters(draft_agent, review_agent, manager))
     print(f"\n{'=' * 60}\nRunning 4-stage iteration on: {folder_name}\n{'=' * 60}")
     results = run_4stage_with_progress(draft_agent, review_agent, folder_path, manager)
+    if results.get("model_error"):
+        sys.exit(1)
     print(f"\nStages completed: {len(results)}")
 
 
