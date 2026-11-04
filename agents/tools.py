@@ -245,6 +245,15 @@ def search_reference_text(key: str, query: str) -> str:
     key = (key or "").strip()
     if key not in _known_keys():
         return f"Error: unknown reference key '{key}'. Use only keys from the reference index."
+    # C 级只有一句话总结,原文不可查。登记文件缺失时不拦截:C 级本来就不在全文映射里。
+    levels_path = _index_dir() / "ref-levels.json"
+    try:
+        levels = json.loads(levels_path.read_text(encoding="utf-8")) if levels_path.is_file() else {}
+    except (OSError, ValueError):
+        levels = {}
+    if isinstance(levels, dict) and levels.get(key) == "C":
+        return (f"Reference '{key}' is C-level (general background): its fulltext is not available. "
+                f"Cite it using only its one-line summary.")
     map_path = _index_dir() / "ref-fulltext.json"
     try:
         mapping = json.loads(map_path.read_text(encoding="utf-8")) if map_path.is_file() else {}

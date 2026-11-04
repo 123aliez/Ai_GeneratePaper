@@ -175,8 +175,8 @@ def test_section_override_beats_title():
 def test_perspectives_differ_by_family():
     idea_names = [n for n, _ in perspectives_for_mode(IDEA)]
     data_names = [n for n, _ in perspectives_for_mode(DATA)]
-    check("idea perspectives ask about mechanism/novelty",
-          any("Mechanism" in n for n in idea_names) and any("Novelty" in n for n in idea_names),
+    check("idea perspectives ask about mechanism and stated differences",
+          any("Mechanism" in n for n in idea_names) and any("Positioning" in n for n in idea_names),
           str(idea_names))
     check("idea perspectives do NOT ask for statistics",
           not any("Statistics" in n for n in idea_names), str(idea_names))

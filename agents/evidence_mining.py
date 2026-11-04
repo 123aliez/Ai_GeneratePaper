@@ -25,10 +25,22 @@ from .chapter_type import IDEA, DATA, MIXED
 # 的统计问题;用"为什么这个设计是对的?"去审结果章,会产出它无法从数字回答的问题。
 # 每个取材源拿"自己的证据真正能回答的"那组问题。
 IDEA_PERSPECTIVES = [
-    ("Novelty reviewer", "What exactly is new here, and what is the closest prior work it must be distinguished from?"),
+    ("Positioning reviewer",
+     "Using ONLY idea.md section 5, which prior works must this chapter distinguish the "
+     "contribution from, and what difference does the author state? Do not judge whether "
+     "the contribution is novel."),
     ("Mechanism reviewer", "WHY should this work? What is the causal story from design choice to expected effect?"),
     ("Precision reviewer", "Is every component, input, output, and symbol defined precisely enough to reimplement?"),
     ("Design-alternative reviewer", "Which alternative designs were possible, and why is this one chosen over them?"),
+]
+# 方法/理论章不问"和谁比"。只问采用了哪些基础技术、各自能否用一句引用交代清楚。
+METHOD_PERSPECTIVES = [
+    ("Attribution reviewer",
+     "Which base techniques does the design adopt from prior work, and can each be credited "
+     "with one citation and one clause without describing that work's own innovations?"),
+    IDEA_PERSPECTIVES[1],   # Mechanism reviewer
+    IDEA_PERSPECTIVES[2],   # Precision reviewer
+    IDEA_PERSPECTIVES[3],   # Design-alternative reviewer
 ]
 DATA_PERSPECTIVES = [
     ("Statistics reviewer", "Are the reported gains real? Significance, variance, seeds, confidence intervals?"),
@@ -54,6 +66,13 @@ _FAMILY_PERSPECTIVES = {
 
 def perspectives_for_mode(family: str = DATA) -> list[tuple[str, str]]:
     return _FAMILY_PERSPECTIVES.get(family, MIXED_PERSPECTIVES)
+
+
+def perspectives_for_route(family: str, types: list[str]) -> list[tuple[str, str]]:
+    """本章覆盖的类型全部是方法/理论时用 Attribution 视角;否则按 family。"""
+    if types and set(types) <= {"method", "theory"}:
+        return METHOD_PERSPECTIVES
+    return perspectives_for_mode(family)
 
 
 # "把答案锚定在证据上"对每个取材源含义不同:idea 答案锚定在作者自己的设计陈述,
@@ -88,12 +107,13 @@ def _evidence_boundary(family: str) -> str:
 
 
 def build_evidence_mining_prompt(section_title: str, reference_excerpt: str,
-                                 folder_path: str, family: str = DATA) -> str:
+                                 folder_path: str, family: str = DATA,
+                                 types: list[str] | None = None) -> str:
     """让 Draft Agent 跑一轮有界、多视角的问答,写出 evidence-pack.md。
 
     每个答案必须引用所依据的证据,或明确声明这个空——绝不猜测。"""
     persona_block = "\n".join(
-        f"- **{name}**: {focus}" for name, focus in perspectives_for_mode(family)
+        f"- **{name}**: {focus}" for name, focus in perspectives_for_route(family, types or [])
     )
     evidence_hint = ""
     grounding = _GROUNDING_RULE.get(family, _GROUNDING_RULE[MIXED])
@@ -123,7 +143,8 @@ def build_evidence_mining_prompt(section_title: str, reference_excerpt: str,
 
 
 def build_input_material_prompt(chapter: str, brief_path: str, folder_path: str,
-                                family: str, reference_index: str) -> str:
+                                family: str, reference_index: str,
+                                reference_rule: str = "") -> str:
     """让 Manager 读取文献索引 + 本章规格 + idea,生成本章 input.md。
 
     input.md 装的是"本章特有、不属于全局 idea、也不属于 data 的补充素材"——主要来自
@@ -137,14 +158,16 @@ def build_input_material_prompt(chapter: str, brief_path: str, folder_path: str,
         f"references you select must serve THAT contribution, not a generic one.\n"
         f"Read '{brief_path}' — this chapter's spec (its declared `type:` and the "
         f"numbered sections it must cover).\n\n"
+        f"{reference_rule}"
         f"From the author's reference index below (one row per paper; the `key` column is "
         f"the ONLY citable key), assemble the source material this chapter needs into a new "
         f"'{folder_path}/input.md':\n"
-        f"- The references most relevant to THIS chapter's sections: for each, its `key`, "
-        f"  one line on why it matters here / what claim it backs. Choose by the one-line "
-        f"  summary and tags; call read_reference(key) when a summary is not enough to decide. "
-        f"  Related-work style material only needs how others did it, how well, and the "
-        f"  limitation — no numbers.\n"
+        f"- The references this chapter needs, as a table with the header "
+        f"`| key | level | section(s) | use in this chapter |`. For an A-level paper, the `use` cell "
+        f"names the specific method / formula / experiment / limitation points this chapter will draw "
+        f"on (call read_reference(key) to get them); for a B-level paper, the one point this chapter "
+        f"needs; for a C-level paper, the one-line reason it is cited. Choose by the one-line summary, "
+        f"tags and level, and obey the REFERENCE RULES FOR THIS CHAPTER above.\n"
         f"- Any per-section pointers the drafter should reuse (which prior result to cite "
         f"  where, which comparison to draw).\n"
         f"- Keep it scoped to this chapter only; do NOT restate the contribution (it lives "
@@ -156,7 +179,7 @@ def build_input_material_prompt(chapter: str, brief_path: str, folder_path: str,
 
 
 def run_input_material(manager_agent, folder_path, chapter, family,
-                       run_agent_stage, set_agent_context, verify) -> str:
+                       run_agent_stage, set_agent_context, verify, route: dict | None = None) -> str:
     """生成本章 input.md(本章局部素材,由 Manager 从参考文献组织)。返回 agent 结果。
 
     input.md 已存在则跳过(它可能含作者手填内容,绝不覆盖)。这是 Stage 0 的第一步,
@@ -174,10 +197,12 @@ def run_input_material(manager_agent, folder_path, chapter, family,
         raise FileNotFoundError(
             f"文献索引不存在: {REF_INDEX_PATH}(先建索引再跑章节)")
     bibliography_excerpt = Path(REF_INDEX_PATH).read_text(encoding="utf-8", errors="replace")
+    from .chapter_contract import build_contract_reference_rule
+    reference_rule = build_contract_reference_rule(route) if route else ""
     set_agent_context("Manager")
     result = run_agent_stage(manager_agent, "Manager", build_input_material_prompt(
         chapter, os.path.join(folder_path, "brief.md"), folder_path, family,
-        bibliography_excerpt))
+        bibliography_excerpt, reference_rule=reference_rule))
     set_agent_context("Manager")
     verify(["input.md"])
     return result
@@ -185,7 +210,7 @@ def run_input_material(manager_agent, folder_path, chapter, family,
 
 def run_evidence_mining(draft_agent, folder_path, section_title,
                         reference_excerpt, run_agent_stage, verify, set_agent_context,
-                        family: str = DATA):
+                        family: str = DATA, types: list[str] | None = None):
     """执行一轮证据挖掘。可续跑:evidence-pack.md 存在即跳过。返回 agent 结果或 "skipped"。
 
     调用前须保证 input.md 已存在(先跑 run_input_material)。idea 全文与 data-index
@@ -196,7 +221,7 @@ def run_evidence_mining(draft_agent, folder_path, section_title,
         return "skipped"
     set_agent_context("Draft")
     result = run_agent_stage(draft_agent, "Draft", build_evidence_mining_prompt(
-        section_title, reference_excerpt, folder_path, family))
+        section_title, reference_excerpt, folder_path, family, types=types))
     set_agent_context("Manager")
     verify(["evidence-pack.md"])
     return result

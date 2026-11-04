@@ -1207,6 +1207,9 @@ def reverify_chapter(folder_path: str) -> dict:
             Path(folder_path, "number-check.md").write_text(report, encoding="utf-8")
         except Exception as exc:
             reasons.append(f"终稿数字门禁执行出错,数字未核验: {str(exc)[:120]}")
+    # 手改终稿后重算契约粗检。提示不进 reasons:粗检不改变核验状态(D13)。
+    from .chapter_contract import scope_types, write_contract_check
+    write_contract_check(folder_path, "final.md", scope_types(route))
     try:
         reasons.extend(checklist_status(folder_path))
     except Exception as exc:
@@ -1294,7 +1297,8 @@ def reference_clause(folder_path: str) -> str:
         f"read_file_range if you need to look up a key). The references chosen for this "
         f"chapter are listed in '{folder_path}/input.md'. Cite ONLY keys from the index: "
         f"\\\\cite{{key}}. Read a paper's note with read_reference(key); search its fulltext "
-        f"with search_reference_text(key, query) only when the note lacks a needed detail.\n")
+        f"with search_reference_text(key, query) only when the note lacks a needed detail. "
+        f"Each paper's level (A/B/C) is in the index; follow the level rules in your instructions.\n")
 
 
 def res_catalog_path() -> Path:
@@ -1528,6 +1532,13 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
     mode_clause = build_mode_clause(chapter, cross_chapter_path=xchap)
     mode_review_clause = build_mode_review_clause(
         chapter, cross_chapter_path=xchap)
+    # 章节契约拼在写作契约后面:1a、1b、修订三处、定稿都读 mode_clause,评审读
+    # mode_review_clause,所以这一个拼接就覆盖全部改写正文的阶段。VERIFY 轮不读
+    # 这两段,只核冻结清单,不许提新问题。
+    from .chapter_contract import (build_contract_clause, build_contract_review_clause,
+                                   scope_types, write_contract_check)
+    mode_clause = mode_clause + build_contract_clause(route)
+    mode_review_clause = mode_review_clause + build_contract_review_clause(route)
     # 邻章视野只给规划者:它需要知道前后章覆盖什么才能划清边界。有界——三章的
     # 标题与小节清单,不含要点正文,整篇 outline 不进任何 Agent 的上下文。
     outline_clause = build_outline_excerpt(chapter)
@@ -1744,7 +1755,7 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
         if manager_agent is not None:
             results["stage0_input"] = run_input_material(
                 manager_agent, folder_path, chapter, family,
-                run_agent_stage, set_agent_context, verify)
+                run_agent_stage, set_agent_context, verify, route=route)
     except Exception as exc:
         print(f"[Manager  ] FAIL      | Stage 0 备料出错: {str(exc)[:160]}", flush=True)
         results["stage0_input"] = {"error": str(exc)[:160]}
@@ -1762,7 +1773,7 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
         results["stage0_evidence"] = run_evidence_mining(
             draft_agent, folder_path, chapter,
             reference_excerpt, run_agent_stage, verify, set_agent_context,
-            family=family,
+            family=family, types=scope_types(route),
         )
     except Exception as exc:
         print(f"[Manager  ] FAIL      | Stage 0 证据挖掘出错: {str(exc)[:160]}", flush=True)
@@ -1881,6 +1892,8 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
         return _finish_with_table(folder_path, results)
     # draft-v1.md 由 Python 拼接各 part,同一指纹下重拼结果不变,照常记账。
     record_stage(["draft-v1.md"], "draft")
+    # 契约粗检:只提示,不进指纹,不改核验状态。每次重算。
+    write_contract_check(folder_path, "draft-v1.md", scope_types(route))
 
     # ── Deterministic number gate (experiment mode) ─────────────────
     # Cross-check every number in draft-v1 against the results store BEFORE the
@@ -1939,6 +1952,14 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
                 f"every number in the draft against the results store. Treat each [NUMBER-MISMATCH] "
                 f"line as a MUST FIX item (the prose contradicts the recorded results). "
             )
+        _contract_check = os.path.join(folder_path, "contract-check.md")
+        if os.path.isfile(_contract_check):
+            _contract_text = Path(_contract_check).read_text(encoding="utf-8", errors="replace")
+            if "Status: OK" not in _contract_text:
+                number_check_clause += (
+                    f"Also read '{folder_path}/contract-check.md': deterministic hints about the "
+                    f"chapter contract; judge each, false positives are possible. "
+                )
         # 演进点①(修正版,Codex 审查 E1/E3):review-v1.md(散文评审)先走
         # CodeAgent——它需要 read_file 多轮读草稿;review-v1.json(结构化清单)
         # 再由单轮直调把已成文的评审**转换**成 JSON:单轮模型没有读取循环,
@@ -2239,6 +2260,10 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
         except Exception as exc:
             print(f"[Manager  ] FAIL      | final number gate error: {str(exc)[:160]}", flush=True)
             verification_reasons.append(f"终稿数字门禁执行出错,数字未核验: {str(exc)[:120]}")
+
+    # 契约粗检对着终稿重算。只进待补清单,不进 verification_reasons(D13)。
+    if os.path.isfile(os.path.join(folder_path, "final.md")):
+        write_contract_check(folder_path, "final.md", scope_types(route))
 
     if os.path.exists(os.path.join(folder_path, "final.md")):
         if gate != OFF and not final_gate_attempted:
