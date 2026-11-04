@@ -151,7 +151,7 @@ def test_method_chapter_runs_without_data():
     check("the author's idea is named in the prompt chain (idea.md pointed to)",
           "idea.md" in text, text[:800])
     check("idea perspectives are used for evidence mining",
-          "Novelty reviewer" in text, text[:200])
+          "Attribution reviewer" in text, text[:200])
     check("statistics perspectives are NOT used for a method chapter",
           "Statistics reviewer" not in text)
     check("drafter is told idea.md is primary (idea chapter)",
@@ -241,7 +241,7 @@ def test_results_chapter_runs_with_data():
     check("data perspectives are used for evidence mining",
           "Statistics reviewer" in text, text[:200])
     check("novelty perspectives are NOT used for a results chapter",
-          "Novelty reviewer" not in text)
+          "Attribution reviewer" not in text and "Positioning reviewer" not in text)
     check("drafter is told the results are primary", "DATA chapter" in text)
     check("data chapter prompts point at data-index.md for numbers",
           "data-index.md" in text, text[:600])
@@ -351,7 +351,7 @@ class FullRunAgent(RecordingAgent):
     """
 
     ARTIFACTS = (
-        "evidence-pack.md", "draft-v1.plan.md", "todo.md",
+        "input.md", "evidence-pack.md", "draft-v1.plan.md", "todo.md",
         "draft-v1.part-1.md", "draft-v1.part-2.md", "draft-v1.part-3.md",
         "review-v1.md", "draft-v2.md", "decision.md",
         "final.md", "final.zh.md",

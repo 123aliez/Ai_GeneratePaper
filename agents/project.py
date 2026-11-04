@@ -26,7 +26,7 @@ INBOX_README = """# inbox/ —— 你的全部材料放这里(系统只读)
 | `idea.md` | 创新点文档(按模板填;最重要) |
 | `outline_draft.md` | 章节骨架表(几章、每章叫什么、什么 type) |
 | `results/` | 每个 CSV 是论文里的一张结果表 + `实验设置.md`。第一列是方法名,`X_std` 列是 X 的标准差,列名带 ↑/↓ 表示越大/越小越好;**表头会原样出现在论文里,建议用英文** |
-| `references/` | `refs.bib`(总 bib)+ 每篇文献一个文件夹(笔记 md + 原文 md,笔记按 `笔记模板.md` 写) |
+| `references/` | `refs.bib`(总 bib)+ A/ B/ C/ 三个级别文件夹:每篇一份笔记(按 `笔记模板.md` 写),可直接放 md,也可一篇一个子文件夹(笔记 md + 可选原文 md) |
 | `code/` | 实验代码(整个文件夹拖进来;只做静态解析,不执行) |
 | `latex-template/` | 可选。会议模板(含 `main.tex`,正文位置写一行 `% PAPER_BODY`);不放则用内置模板 |
 
@@ -60,6 +60,8 @@ def new_project(name: str, parent: Path | None = None) -> Path:
         shutil.copy2(f, inbox / "results" / f.name)
     for f in (TEMPLATES / "references").iterdir():
         shutil.copy2(f, inbox / "references" / f.name)
+    for lv in ("A", "B", "C"):
+        (inbox / "references" / lv).mkdir(exist_ok=True)
     shutil.copy2(TEMPLATES / "paper.toml", root / "paper.toml")
     (inbox / "说明.md").write_text(INBOX_README, encoding="utf-8")
     return root
@@ -218,7 +220,9 @@ def check_materials(need_models: bool = False) -> Check:
     lib = scan_library(config.REFERENCES_ROOT, config.REFS_BIB_PATH)
     chk.errors.extend(f"文献室: {e}" for e in lib.errors)
     chk.warnings.extend(f"文献室: {w}" for w in lib.warnings)
-    chk.info.append(f"文献: refs.bib {len(lib.entries)} 条,配到笔记 {len(lib.records)} 篇")
+    counts = lib.level_counts()
+    chk.info.append(f"文献: refs.bib {len(lib.entries)} 条,配到笔记 {len(lib.records)} 篇"
+                    f"(A {counts['A']} / B {counts['B']} / C {counts['C']})")
 
     # 代码 / 模板 / paper.toml
     code = Path(config.CODE_ROOT)

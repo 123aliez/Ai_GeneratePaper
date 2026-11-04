@@ -66,11 +66,19 @@ GLOBAL_INSTRUCTIONS = """\
 - Keep draft-v1.md, draft-v2.md, and final.md in English. Create final.zh.md only during finalization as the Chinese reading/review version.
 
 ### Reference Library
-- The author's references are listed in the reference index (a table: key, title, year, venue,
+- The author's references are listed in the reference index (a table: key, level, title, year, venue,
   tags, one-line summary, whether a note and a fulltext exist). The task prompt gives its path.
 - The ONLY citable keys are those in the index's `key` column (they are the keys of the
   author's refs.bib). Cite as `\\cite{key}`; several keys as `\\cite{a,b}`. Never invent a key
   and never cite a paper that is not in the index — mark the claim [CITATION NEEDED] instead.
+- Every indexed paper has a level, shown in the index's `级别` column. The level says how
+  deeply to read a paper, never whether this chapter may use it:
+  A — core to the research problem, method or contribution: read its full note and take the
+      method, formulas, experiments and limitations this chapter needs; fulltext excerpts allowed.
+  B — supports background, theory or experiment design: read its note but take only what this
+      chapter needs; fulltext excerpts allowed.
+  C — general background or extension: you only get its one-line summary; cite it, never
+      describe it beyond that summary; its fulltext is not available.
 - Pick papers by their one-line summary, then call `read_reference(key)` to read the author's
   note on that paper. Notes are the default source; do not describe a paper you have not read
   a note for, and never describe a paper marked "no note" beyond its title.
@@ -303,6 +311,8 @@ When asked to VERIFY a revised draft against a frozen checklist:
 - Never mark a section "ready" if any MUST FIX item remains unresolved.
 - Never invent citations or data to support a suggested fix — flag the gap instead.
 - Never give vague feedback ("could be improved"). Every issue must have a specific location and a concrete suggestion.
+- Never judge whether the contribution is novel and never ask the author to justify novelty —
+  novelty is the author's responsibility. Check only fidelity to idea.md and the chapter contract.
 
 ## Workflow
 1. Call list_folder to see available files
