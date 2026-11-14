@@ -1,0 +1,47 @@
+\section{Method}
+
+\subsection{Squeeze: Global Channel Descriptors}
+
+The SE block uses global channel statistics to recalibrate feature responses. We adopt the SE block of Hu et al. \cite{hu2018squeeze}, beginning with global average pooling over each feature channel.
+
+Let $U\in\mathbb{R}^{C\times H\times W}$ be the input feature tensor to the SE block, where $C$ is the number of channels and $H$ and $W$ are the feature-map height and width. For channel index $c$ and spatial indices $i$ and $j$, $u_c(i,j)$ denotes the feature value at position $(i,j)$. The channel descriptor $z\in\mathbb{R}^{C}$ contains one component $z_c$ for each channel:
+
+\[
+z_c=\frac{1}{HW}\sum_{i=1}^{H}\sum_{j=1}^{W}u_c(i,j).
+\]
+
+Each descriptor component averages one channel over all spatial positions. Together, the components organize global feature-map statistics by channel and serve as input to channel gating.
+
+\subsection{Excitation and Channel Scaling}
+
+Excitation converts the channel descriptor into gates that determine the relative weighting of feature channels. Each gate can depend on statistics from multiple channels, allowing the block to model nonlinear channel dependencies.
+
+The excitation operation uses two fully connected layers with a rectified linear unit (ReLU) between them and a sigmoid gate at the output. Let $r$ be the reduction ratio, with default value $r=16$. The first layer has weights $W_1\in\mathbb{R}^{(C/r)\times C}$ and reduces the descriptor dimension from $C$ to $C/r$. The second layer has weights $W_2\in\mathbb{R}^{C\times(C/r)}$ and restores the channel dimension. The resulting channel gate vector $s\in\mathbb{R}^{C}$ is
+
+\[
+s=\sigma\!\left(W_2\delta(W_1z)\right),
+\]
+
+where $\delta$ denotes ReLU and $\sigma$ denotes the sigmoid function. The reduction ratio controls the bottleneck width; the default choice balances accuracy and parameter count.
+
+The first layer combines descriptor components in the bottleneck, and ReLU introduces a nonlinearity before the second layer computes the channel gates. A gate can therefore depend on the global statistics of multiple channels. The two layers learn how those statistics contribute to each gate, producing weights conditioned on the input feature tensor.
+
+The sigmoid gate allows multiple channels to receive high weights simultaneously. Each component $s_c$ lies between zero and one, so the gates adjust the relative prominence of channels. Channels assigned higher weights retain more of their responses, while channels assigned lower weights are suppressed more strongly.
+
+Channel-wise scaling applies these gates to the input features. Let $\widetilde X$ denote the recalibrated feature tensor and $\widetilde X_c$ its channel $c$. The scaling operation is
+
+\[
+\widetilde X=s\odot U,
+\qquad
+\widetilde X_c=s_c\cdot u_c,
+\]
+
+where $\odot$ denotes channel-wise multiplication with spatial broadcasting. Each scalar gate $s_c$ multiplies every spatial position in its corresponding channel. The output $\widetilde X$ retains the spatial dimensions and channel organization of $U$, with responses recalibrated according to the learned gates.
+
+\subsection{Integration into Residual Networks}
+
+We use ResNet backbones with shortcut connections \cite{he2016resnet} and insert an SE block into each residual branch. Each branch first transforms its input into residual features, which the SE block then recalibrates. The recalibrated features are added to the shortcut output to produce the block output.
+
+This placement makes channel recalibration operate on the residual features before they are combined with the shortcut. For an identity shortcut, the identity mapping carries the branch input directly to the addition. At dimension changes, the shortcut uses a projection to match the dimensions required for addition.
+
+The same integration rule defines each SE-ResNet variant from its corresponding backbone. SE-ResNet-50 incorporates SE blocks into the residual branches of ResNet-50, SE-ResNet-101 uses ResNet-101, and SE-ResNet-152 uses ResNet-152. Each pair shares its backbone depth, with the SE variant adding channel recalibration to the residual branches. The training objective is \todo{DESIGN DETAIL NEEDED}.

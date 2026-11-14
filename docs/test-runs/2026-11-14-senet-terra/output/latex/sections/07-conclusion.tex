@@ -1,0 +1,7 @@
+\section{Conclusion}
+
+Channel recalibration with SE blocks lowers ImageNet-1K top-1 and top-5 error across all three matched-depth ResNet comparisons, with small increases in forward-pass computation. The comparisons quantify the error--compute trade-off under a shared training setting.
+
+SE-ResNet-50 gives the largest top-1 error reduction, at 1.51 percentage points, alongside a 0.86 percentage-point reduction in top-5 error. Its forward-pass cost increases by 0.01 GFLOPs relative to ResNet-50. The corresponding increases are 0.02 GFLOPs for SE-ResNet-101 and 0.02 GFLOPs for SE-ResNet-152. Across these depths, SE channel recalibration consistently lowers both error metrics at a small additional computational cost.
+
+The figures come from the original paper rather than a new reproduction. The evaluation is limited to ImageNet-1K single-scale, single-crop classification.
