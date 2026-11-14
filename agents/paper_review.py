@@ -113,8 +113,11 @@ def run_paper_review(model, chapters: list[dict], workspace, out_path, *,
     out_path = Path(out_path)
     sha = finals_fingerprint(chapters, workspace)
     if not force and out_path.is_file():
-        m = _SHA_RE.search(out_path.read_text(encoding="utf-8", errors="replace"))
-        if m and m.group(1) == sha:
+        old_text = out_path.read_text(encoding="utf-8", errors="replace")
+        m = _SHA_RE.search(old_text)
+        # 只有模型评审真正跑成("Status: done")才算完成。额度用完/网关失败时只留下
+        # 确定性结果,下次运行必须重试模型那一半,不能因为终稿没变就跳过。
+        if m and m.group(1) == sha and "\nStatus: done " in old_text:
             return {"status": "skipped", "findings": read_paper_review(out_path), "path": out_path}
     texts = {}
     for meta in chapters:

@@ -214,6 +214,43 @@ def test_single_turn_chapter_end_to_end():
           "Status: OK" in Path(folder, "polish-check.md").read_text(encoding="utf-8"))
 
 
+def test_resume_after_quota_stop_only_translates():
+    """润色写完、翻译前额度用完 → 续跑只补 final.zh.md,其余阶段全部跳过。"""
+    set_idea(IDEA_TEXT)
+    folder, outline, _ = make_ws_in_outline(
+        "type: method\n\n1. **Framework** (~40 words)\n- 机制", "02-method")
+    data = make_data({"test_accuracy": 0.817})
+    agent = SingleTurnAgent(folder)
+    real_generate = agent.model.generate
+
+    def quota_on_translation(messages, **kw):
+        if "Required files, in this order: final.zh.md." in messages[-1].content:
+            raise RuntimeError("quota exhausted")
+        return real_generate(messages, **kw)
+    agent.model.generate = quota_on_translation
+    agent.run = lambda prompt, **kw: (
+        FullRunAgent.run(agent, prompt, **kw) if "final.zh.md" not in prompt
+        or "NEXT chapter" in prompt
+        else (_ for _ in ()).throw(RuntimeError("quota exhausted")))
+    old = config.get_review_model
+    config.get_review_model = lambda: agent.model
+    try:
+        first, _ = run_chapter(agent, folder, outline, data)
+        check("第一次停在缺中文版", Path(folder, "final.md").is_file()
+              and not Path(folder, "final.zh.md").exists())
+        agent.model.generate = real_generate
+        agent.run = lambda prompt, **kw: FullRunAgent.run(agent, prompt, **kw)
+        before = len(agent.model.users)
+        second, out = run_chapter(agent, folder, outline, data)
+    finally:
+        config.get_review_model = old
+    new_calls = agent.model.users[before:]
+    check("续跑只调了翻译(Stage 5 走 Agent)",
+          len(new_calls) == 1 and "final.zh.md." in new_calls[0], str(len(new_calls)))
+    check("续跑后核验通过", (second.get("verification") or {}).get("status") == "verified",
+          str(second.get("verification")) + out[-1500:])
+
+
 # ── 3/8. Agent 路径:分段起草给全文 ──────────────────────────────────────
 def test_later_part_sees_full_earlier_parts():
     set_idea(IDEA_TEXT)
@@ -262,6 +299,20 @@ def test_paper_review_duplicates_and_skip():
     check("模型发现与确定性发现都进清单",
           first["status"] == "done" and len(read_paper_review(out)) == 2, str(read_paper_review(out)))
     check("终稿未变 → 不再调模型", second["status"] == "skipped" and len(model.calls) == 1)
+
+    class _Quota:
+        calls = 0
+
+        def generate(self, messages, **kw):
+            _Quota.calls += 1
+            raise RuntimeError("quota exhausted")
+    out2 = ws / "paper-review-2.md"
+    with contextlib.redirect_stdout(buf):
+        failed = run_paper_review(_Quota(), meta, ws, out2)
+        retried = run_paper_review(model, meta, ws, out2)
+    check("模型没跑成 → 续跑会重试,不被跳过",
+          failed["status"] == "deterministic-only" and retried["status"] == "done"
+          and _Quota.calls == 1, str(retried["status"]))
 
 
 # ── 6. 润色保真 ──────────────────────────────────────────────────────────

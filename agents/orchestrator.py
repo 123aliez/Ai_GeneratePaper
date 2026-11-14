@@ -2391,8 +2391,14 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
             # 单轮路径拆成两次:① 润色定稿 + decision + todo;② 把 final.md 忠实译成中文。
             # 一次调用同时产出英文定稿与整章中文版,输出长度翻倍、容易撞上限,两者还会
             # 互相牵扯(为了好译改英文)。todo.md 以现有内容为底继承,不丢前面阶段的条目。
-            _todo_path = os.path.join(folder_path, "todo.md")
-            _r1 = prose_stage(review_agent, "Review", (
+            # 续跑:上次润色(final.md + decision.md)已落盘、只差中文版就停了(额度用完等),
+            # 这次只补翻译,不重新润色一遍。
+            _polished = all_exist(["final.md", "decision.md", "todo.md"]) and \
+                not all_exist(["final.zh.md"])
+            if _polished:
+                print("[Manager  ] resume     | final.md exists; only final.zh.md is missing",
+                      flush=True)
+            _r1 = "single-turn" if _polished else prose_stage(review_agent, "Review", (
                 _finalize_prompt.replace(
                     f"'{folder_path}/final.zh.md' (a faithful Chinese rendering of final.md for "
                     f"the author to review, same placeholders and markers), ", "")
