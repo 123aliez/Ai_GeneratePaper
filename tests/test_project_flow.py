@@ -91,7 +91,7 @@ def make_project(tmp: Path, name="demo") -> Path:
     (inbox / "references" / "refs.bib").write_text(
         "@inproceedings{he2016resnet, title={Deep Residual Learning for Image Recognition}, "
         "booktitle={CVPR}, year={2016}, doi={10.1109/CVPR.2016.90}}\n", encoding="utf-8")
-    ref = inbox / "references" / "resnet"
+    ref = inbox / "references" / "B" / "resnet"
     ref.mkdir()
     (ref / "笔记.md").write_text(NOTE, encoding="utf-8")
     (ref / "paper.md").write_text("# ResNet\n\nWe use residual blocks.\n\nDepth up to 152 layers.\n", encoding="utf-8")

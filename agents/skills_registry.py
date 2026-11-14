@@ -27,6 +27,9 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SKILLS_DIR = PROJECT_ROOT / "skills"
 PROMPTS_PATH = Path(__file__).resolve().parent / "prompts.py"
+# 章节契约文本与 prompts.py 同等对待:改了它,旧产物作废。函数体内按名字读这个
+# 模块级常量,不能做成默认参数(测试要临时替换它)。
+CONTRACT_PATH = Path(__file__).resolve().parent / "chapter_contract.py"
 
 MANIFEST_FILENAME = ".stage-manifest.json"
 FINGERPRINT_VERSION = 2
@@ -36,8 +39,9 @@ FINGERPRINT_VERSION = 2
 # 作废全部产物,所以改用手动版本号:**修改阶段任务提示词时把它加 1**,旧产物
 # 随之判陈旧。
 #   1 → 2:Stage 4 定稿改为只基于 draft-v2(不再与 draft-v1 合并)。
-#   2 → 3:正面写法(不写没做什么,局限只在最后一章);证据挖掘视角改为找亮点。
-STAGE_PROMPT_VERSION = 3  # top-venue-craft.md 进白名单后由 skills 哈希自动作废旧产物
+#   2 → 3:正面写法与证据亮点视角。
+#   3 → 4:合入文献分级、章节契约、按类型证据视角与创新性评审边界。
+STAGE_PROMPT_VERSION = 4
 
 # 各角色允许装载的 Skill 白名单。不在白名单里的 skills/ 文件编排器不注入,
 # Agent 的自助 read_file 仍可用(向后兼容),但指纹只覆盖白名单文件。
@@ -71,7 +75,7 @@ def skills_fingerprint(roles: tuple[str, ...] = ("draft", "review", "manager")) 
     文件缺失不影响计算(空内容哈希),registry 变更同理不在此捕获——
     registry 是代码,改它必然改这个文件,自身就在指纹里。
     """
-    parts = [_sha256_file(PROMPTS_PATH)]
+    parts = [_sha256_file(PROMPTS_PATH), _sha256_file(CONTRACT_PATH)]
     for role in roles:
         for name in SKILL_REGISTRY.get(role, ()):
             path = SKILLS_DIR / name

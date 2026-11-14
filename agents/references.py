@@ -4,19 +4,22 @@
 
     inbox/references/
     ├── refs.bib                 ← 总 bib(唯一的引用 key 来源)
-    ├── <任意文件夹名>/          ← 每篇一个文件夹,名字随意
-    │   ├── <笔记>.md           ← 固定模板笔记(YAML 头 + "## 一句话总结" 等小节)
-    │   ├── <原文>.md           ← 论文原文(md)
-    │   └── assets/            ← 笔记里的图片(忽略)
+    ├── 笔记模板.md              ← 模板,放在根目录,扫描忽略
+    ├── A/  B/  C/               ← 级别文件夹,名字只认大写;级别决定读多深,不决定能不能用
+    │   ├── qmf.md              ← 直接放的笔记(无原文,不警告)
+    │   └── yoon2026/           ← 或一篇一个子文件夹
+    │       ├── 笔记.md
+    │       └── paper.md        ← 可选原文
     └── ...
 
-对号规则:文件夹里带 YAML 头且有 "## 一句话总结" 小节的 md 是笔记,其余 md 是原文。
+对号规则:带 YAML 头且有 "## 一句话总结" 小节的 md 是笔记,其余 md 是原文。
 笔记按头部的 doi → arxiv → 标题 依次去 refs.bib 里找条目;模板占位值视为空。
 
-给模型看的只有两样东西,都由本模块确定性生成到索引目录:
-- ref-index.md:每篇一行(key / 标题 / 年份 / 出处 / tags / 一句话总结 / 有无笔记原文);
-- refs/<key>.md:过滤版笔记——去掉 YAML 头、"对我的研究的启发"、"延伸阅读"与图片行。
-原文只能经 search_fulltext 按关键词取片段(有长度上限),不整篇进上下文。
+给模型看的只有程序生成到索引目录的东西:
+- ref-index.md:每篇一行(key / 级别 / 标题 / 年份 / 出处 / tags / 一句话总结 / 笔记 / 原文);
+- refs/<key>.md:A/B 为过滤版笔记;C 级只有一句话总结,正文与原文都不进上下文;
+- ref-levels.json:key → 级别,供 search_reference_text 拦截 C 级。
+A/B 的原文只能经 search_fulltext 按关键词取片段(有长度上限),不整篇进上下文。
 
 引用 key 只认 refs.bib(citable_keys),模型给的任何其它 key 都不是合法引用。
 """
@@ -36,6 +39,12 @@ NOTE_MARKER_HEADING = "一句话总结"
 HIDDEN_NOTE_SECTIONS = ("对我的研究的启发", "延伸阅读")
 REF_INDEX_NAME = "ref-index.md"
 REF_NOTES_DIRNAME = "refs"
+REF_LEVELS_NAME = "ref-levels.json"
+REF_FULLTEXT_NAME = "ref-fulltext.json"
+
+# 级别文件夹名只认大写。级别决定模型读多深,不决定这篇文献能不能被选用。
+LEVELS = ("A", "B", "C")
+LEVEL_LABELS = {"A": "精读", "B": "按需", "C": "仅总结"}
 
 # 原文片段检索的默认上限:每次最多返回这么多字符 / 段落。
 FULLTEXT_MAX_CHARS = 3000
@@ -441,7 +450,8 @@ def filter_note(text: str) -> str:
 @dataclass
 class PaperRecord:
     key: str
-    folder: str                      # 相对文献室的文件夹名
+    folder: str                      # 相对文献室的路径:"A/qmf.md" 或 "A/yoon2026"
+    level: str                       # "A" | "B" | "C"
     note_path: Path | None
     fulltext_path: Path | None
     meta: dict
@@ -461,6 +471,14 @@ class Library:
 
     def keys(self) -> set:
         return set(self.entries)
+
+    def level_counts(self) -> dict:
+        """三个键始终存在,即使某一级一篇都没有。"""
+        counts = {lv: 0 for lv in LEVELS}
+        for rec in self.records.values():
+            if rec.level in counts:
+                counts[rec.level] += 1
+        return counts
 
 
 def _match_entry(meta: dict, entries: dict) -> tuple[str | None, str]:
@@ -504,22 +522,146 @@ def _md_files(folder: Path) -> list[Path]:
     return files
 
 
+def _ignored_dir(name: str) -> bool:
+    """以 . / _ 开头,或小写名在图片目录名单里:扫描时跳过,不提示。"""
+    return name.startswith((".", "_")) or name.lower() in _SKIP_DIR_NAMES
+
+
+def _scan_paper_folder(folder: Path, rel: str, level: str, lib: Library, owner: dict) -> None:
+    """一个子文件夹 = 一篇论文。文案里的位置一律用相对文献室的路径 rel。"""
+    mds = _md_files(folder)
+    notes, others = [], []
+    for path in mds:
+        try:
+            text = path.read_text(encoding="utf-8-sig", errors="replace")
+        except OSError as exc:
+            lib.errors.append(f"{rel}/{path.name} 读不了: {exc}")
+            continue
+        (notes if is_note(text) else others).append((path, text))
+    if not notes:
+        msg = (f"{rel}/ 里没有找到模板笔记"
+               f"(带 YAML 头和 '## {NOTE_MARKER_HEADING}' 的 md),这篇文献不会进入索引")
+        (lib.errors if mds else lib.warnings).append(msg)
+        return
+    if len(notes) > 1:
+        lib.errors.append(f"{rel}/ 里有 {len(notes)} 份笔记"
+                          f"({', '.join(p.name for p, _ in notes)}),每篇只能一份")
+        return
+    note_path, note_text = notes[0]
+    meta, _body = parse_front_matter(note_text)
+    key, how = _match_entry(meta, lib.entries)
+    if key is None:
+        lib.errors.append(f"{rel}/{note_path.name}: {how}")
+        return
+    if key in owner:
+        lib.errors.append(f"{rel}/ 与 {owner[key]}/ 都对应 bib 条目 '{key}'")
+        return
+    owner[key] = rel
+    fulltext = None
+    if others:
+        others.sort(key=lambda pt: len(pt[1]), reverse=True)
+        fulltext = others[0][0]
+        if len(others) > 1:
+            lib.warnings.append(f"{rel}/ 有 {len(others)} 个非笔记 md,"
+                                f"取最长的 {fulltext.name} 作原文")
+    else:
+        lib.warnings.append(f"{rel}/ 没有原文 md(只能读笔记)")
+    entry = lib.entries[key]
+    note_year = "" if _is_placeholder(meta.get("year")) else str(meta.get("year")).strip()
+    if note_year and entry.year and note_year != entry.year:
+        lib.warnings.append(f"{rel}/ 笔记年份 {note_year} 与 bib '{key}' 的 {entry.year} 不一致")
+    tags = meta.get("tags") if isinstance(meta.get("tags"), list) else []
+    lib.records[key] = PaperRecord(
+        key=key, folder=rel, level=level, note_path=note_path, fulltext_path=fulltext,
+        meta=meta, summary=note_summary(note_text),
+        tags=[t for t in tags if not _is_placeholder(t)], match=how)
+
+
+def _scan_level(level_dir: Path, level: str, lib: Library, owner: dict) -> None:
+    """级别文件夹的直接子项:直接放的笔记,或一篇一个子文件夹。"""
+    for child in sorted(level_dir.iterdir(), key=lambda p: p.name):
+        rel = f"{level}/{child.name}"
+        if child.is_symlink():
+            lib.errors.append(f"{rel} 是符号链接,文献室不跟随符号链接(请放真实文件)")
+            continue
+        if child.is_dir():
+            if _ignored_dir(child.name):
+                continue
+            _scan_paper_folder(child, rel, level, lib, owner)
+            continue
+        if not child.is_file() or child.suffix.lower() != ".md":
+            continue
+        try:
+            text = child.read_text(encoding="utf-8-sig", errors="replace")
+        except OSError as exc:
+            lib.errors.append(f"{rel} 读不了: {exc}")
+            continue
+        if not is_note(text):
+            lib.warnings.append(
+                f"{rel} 不是模板笔记(缺 YAML 头或 '## {NOTE_MARKER_HEADING}'),已忽略;"
+                f"原文请和笔记放进同一个子文件夹")
+            continue
+        # 直接放的笔记本来就没有原文(D6),不发"没有原文"警告。
+        meta, _body = parse_front_matter(text)
+        key, how = _match_entry(meta, lib.entries)
+        if key is None:
+            lib.errors.append(f"{rel}: {how}")
+            continue
+        if key in owner:
+            lib.errors.append(f"{rel}/ 与 {owner[key]}/ 都对应 bib 条目 '{key}'")
+            continue
+        owner[key] = rel
+        entry = lib.entries[key]
+        note_year = "" if _is_placeholder(meta.get("year")) else str(meta.get("year")).strip()
+        if note_year and entry.year and note_year != entry.year:
+            lib.warnings.append(f"{rel} 笔记年份 {note_year} 与 bib '{key}' 的 {entry.year} 不一致")
+        tags = meta.get("tags") if isinstance(meta.get("tags"), list) else []
+        lib.records[key] = PaperRecord(
+            key=key, folder=rel, level=level, note_path=child, fulltext_path=None,
+            meta=meta, summary=note_summary(text),
+            tags=[t for t in tags if not _is_placeholder(t)], match=how)
+
+
+def _material_count(root: Path) -> int:
+    """文献材料数:非级别一级文件夹,加上各级别文件夹里会被当作论文条目或被警告的直接子项。
+
+    空的级别文件夹不算材料,这样 --new 建好的 A/B/C 不会因为缺 bib 而报错。
+    """
+    n = 0
+    for child in root.iterdir():
+        if child.is_symlink() or not child.is_dir() or child.name.startswith((".", "_")):
+            continue
+        if child.name not in LEVELS:
+            n += 1
+            continue
+        for item in child.iterdir():
+            if item.is_symlink():
+                n += 1
+            elif item.is_dir() and not _ignored_dir(item.name):
+                n += 1
+            elif item.is_file() and item.suffix.lower() == ".md":
+                n += 1
+    return n
+
+
 def scan_library(ref_root, bib_path=None) -> Library:
-    """扫描文献室,完成 bib ↔ 笔记 ↔ 原文 对号。只读。"""
+    """扫描文献室,完成 bib ↔ 笔记 ↔ 原文 对号。只读。
+
+    一级只认 A/B/C 三个级别文件夹;不在这三名里的文件夹警告后跳过,不进索引。
+    """
     root = Path(ref_root)
     bib = Path(bib_path) if bib_path else root / REFS_BIB_NAME
     lib = Library(root=root, bib_path=bib)
     if not root.is_dir():
         lib.warnings.append("没有 references/ 文件夹:正文不能引用任何文献")
         return lib
-    folders = [p for p in sorted(root.iterdir())
-               if p.is_dir() and not p.is_symlink() and not p.name.startswith((".", "_"))]
-    for p in sorted(root.iterdir()):
+    for p in sorted(root.iterdir(), key=lambda x: x.name):
         if p.is_symlink():
             lib.errors.append(f"{p.name} 是符号链接,文献室不跟随符号链接(请放真实文件)")
     if not bib.is_file():
-        if folders:
-            lib.errors.append(f"有 {len(folders)} 个文献文件夹,但缺少 {REFS_BIB_NAME}"
+        n = _material_count(root)
+        if n:
+            lib.errors.append(f"有 {n} 份文献材料,但缺少 {REFS_BIB_NAME}"
                               f"(引用 key 只认 refs.bib)")
         else:
             lib.warnings.append(f"references/ 里没有 {REFS_BIB_NAME}:正文不能引用任何文献")
@@ -528,53 +670,16 @@ def scan_library(ref_root, bib_path=None) -> Library:
     lib.errors.extend(bib_errors)
 
     owner: dict = {}
-    for folder in folders:
-        mds = _md_files(folder)
-        notes, others = [], []
-        for path in mds:
-            try:
-                text = path.read_text(encoding="utf-8-sig", errors="replace")
-            except OSError as exc:
-                lib.errors.append(f"{folder.name}/{path.name} 读不了: {exc}")
-                continue
-            (notes if is_note(text) else others).append((path, text))
-        if not notes:
-            msg = (f"{folder.name}/ 里没有找到模板笔记"
-                   f"(带 YAML 头和 '## {NOTE_MARKER_HEADING}' 的 md),这篇文献不会进入索引")
-            (lib.errors if mds else lib.warnings).append(msg)
-            continue
-        if len(notes) > 1:
-            lib.errors.append(f"{folder.name}/ 里有 {len(notes)} 份笔记"
-                              f"({', '.join(p.name for p, _ in notes)}),每篇只能一份")
-            continue
-        note_path, note_text = notes[0]
-        meta, _body = parse_front_matter(note_text)
-        key, how = _match_entry(meta, lib.entries)
-        if key is None:
-            lib.errors.append(f"{folder.name}/{note_path.name}: {how}")
-            continue
-        if key in owner:
-            lib.errors.append(f"{folder.name}/ 与 {owner[key]}/ 都对应 bib 条目 '{key}'")
-            continue
-        owner[key] = folder.name
-        fulltext = None
-        if others:
-            others.sort(key=lambda pt: len(pt[1]), reverse=True)
-            fulltext = others[0][0]
-            if len(others) > 1:
-                lib.warnings.append(f"{folder.name}/ 有 {len(others)} 个非笔记 md,"
-                                    f"取最长的 {fulltext.name} 作原文")
-        else:
-            lib.warnings.append(f"{folder.name}/ 没有原文 md(只能读笔记)")
-        entry = lib.entries[key]
-        note_year = "" if _is_placeholder(meta.get("year")) else str(meta.get("year")).strip()
-        if note_year and entry.year and note_year != entry.year:
-            lib.warnings.append(f"{folder.name}/ 笔记年份 {note_year} 与 bib '{key}' 的 {entry.year} 不一致")
-        tags = meta.get("tags") if isinstance(meta.get("tags"), list) else []
-        lib.records[key] = PaperRecord(
-            key=key, folder=folder.name, note_path=note_path, fulltext_path=fulltext,
-            meta=meta, summary=note_summary(note_text),
-            tags=[t for t in tags if not _is_placeholder(t)], match=how)
+    for level in LEVELS:
+        level_dir = root / level
+        if level_dir.is_dir() and not level_dir.is_symlink():
+            _scan_level(level_dir, level, lib, owner)
+    for child in sorted(root.iterdir(), key=lambda p: p.name):
+        if (child.is_dir() and not child.is_symlink() and not child.name.startswith((".", "_"))
+                and child.name not in LEVELS):
+            lib.warnings.append(
+                f"{child.name}/ 不在 A/B/C 级别文件夹里,其中的笔记不进入索引"
+                f"(级别文件夹名只认大写 A、B、C)")
     for key in sorted(set(lib.entries) - set(lib.records)):
         lib.warnings.append(f"bib 条目 '{key}' 没有笔记文件夹:只能按题录引用,不能描述其内容")
     return lib
@@ -592,22 +697,31 @@ def render_ref_index(lib: Library) -> str:
     lines = [
         "# 文献索引(程序生成,勿手改;源头是 inbox/references/)",
         "",
-        "引用只能用下表第一列的 key:`\\cite{key}`。先看一句话总结挑文献,再用",
-        "read_reference(key) 读过滤版笔记;需要原文细节时用 search_reference_text(key, 关键词)。",
+        "引用只能用下表第一列的 key:`\\cite{key}`。级别决定读多深,不决定能不能用:",
+        "- A 级:用 read_reference(key) 读完整笔记,按需提取方法、公式、实验、局限;需要原文细节时用 search_reference_text(key, 关键词)。",
+        "- B 级:用 read_reference(key) 读笔记,只取本章需要的部分;原文片段同样可查。",
+        "- C 级:只有一句话总结(read_reference 也只返回它),原文不可查;只用于一般背景引用,不展开描述。",
         "标“无笔记”的条目只知道题录,不要描述它的内容。",
         "",
-        "| key | 标题 | 年份 | 出处 | tags | 一句话总结 | 笔记 | 原文 |",
-        "|---|---|---|---|---|---|---|---|",
+        "| key | 级别 | 标题 | 年份 | 出处 | tags | 一句话总结 | 笔记 | 原文 |",
+        "|---|---|---|---|---|---|---|---|---|",
     ]
-    for key in sorted(lib.entries):
+    noted = sorted((k for k in lib.records), key=lambda k: (LEVELS.index(lib.records[k].level)
+                                                            if lib.records[k].level in LEVELS else 9, k))
+    bare = sorted(k for k in lib.entries if k not in lib.records)
+    for key in noted + bare:
         entry = lib.entries[key]
         rec = lib.records.get(key)
         summary = rec.summary if rec else "(无笔记)"
         tags = ", ".join(rec.tags) if rec else ""
+        level = rec.level if rec else "—"
+        if rec and rec.level == "C":
+            fulltext = "—"
+        else:
+            fulltext = "有" if rec and rec.fulltext_path else "无"
         lines.append(
-            f"| {key} | {_cell(entry.title, 160)} | {entry.year} | {_cell(entry.venue, 60)} | "
-            f"{_cell(tags, 60)} | {_cell(summary, 240)} | {'有' if rec else '无'} | "
-            f"{'有' if rec and rec.fulltext_path else '无'} |")
+            f"| {key} | {level} | {_cell(entry.title, 160)} | {entry.year} | {_cell(entry.venue, 60)} | "
+            f"{_cell(tags, 60)} | {_cell(summary, 240)} | {'有' if rec else '无'} | {fulltext} |")
     return "\n".join(lines) + "\n"
 
 
@@ -621,28 +735,48 @@ def _write_if_changed(path: Path, text: str) -> bool:
     return True
 
 
+def _note_view(key: str, rec: PaperRecord, entry: BibEntry) -> str:
+    """过滤版笔记。C 级只留一句话总结,笔记正文与原文都不给模型。"""
+    label = LEVEL_LABELS.get(rec.level, rec.level)
+    if rec.level == "C":
+        summary = rec.summary or "(笔记没有一句话总结)"
+        return (f"# [{key}] {entry.title}\n\n"
+                f"- 出处: {entry.venue or '?'} {entry.year}\n"
+                f"- 级别: C({label})\n"
+                f"- 原文: 不可查\n\n"
+                f"## 一句话总结\n\n"
+                f"{summary}\n\n"
+                f"> C 级文献:只作一般背景引用,不展开描述它的方法、实验或结论。\n")
+    text = rec.note_path.read_text(encoding="utf-8", errors="replace")
+    head = (f"# [{key}] {entry.title}\n\n"
+            f"- 出处: {entry.venue or '?'} {entry.year}\n"
+            f"- 级别: {rec.level}({label})\n"
+            f"- 原文: {'有,可用 search_reference_text 取片段' if rec.fulltext_path else '无'}\n\n")
+    return head + filter_note(text)
+
+
 def build_reference_index(lib: Library, index_dir) -> Path:
-    """写 ref-index.md 与 refs/<key>.md(过滤版笔记)。内容不变不重写。"""
+    """写 ref-index.md、refs/<key>.md、ref-fulltext.json、ref-levels.json。内容不变不重写。"""
+    import json
     index_dir = Path(index_dir)
     notes_dir = index_dir / REF_NOTES_DIRNAME
     notes_dir.mkdir(parents=True, exist_ok=True)
     wanted = set()
     for key, rec in lib.records.items():
-        entry = lib.entries[key]
-        head = (f"# [{key}] {entry.title}\n\n"
-                f"- 出处: {entry.venue or '?'} {entry.year}\n"
-                f"- 原文: {'有,可用 search_reference_text 取片段' if rec.fulltext_path else '无'}\n\n")
-        text = rec.note_path.read_text(encoding="utf-8", errors="replace")
         name = f"{_safe_name(key)}.md"
         wanted.add(name)
-        _write_if_changed(notes_dir / name, head + filter_note(text))
+        _write_if_changed(notes_dir / name, _note_view(key, rec, lib.entries[key]))
     for stale in notes_dir.glob("*.md"):
         if stale.name not in wanted:
             stale.unlink()
-    import json
-    fulltext = {k: str(r.fulltext_path) for k, r in sorted(lib.records.items()) if r.fulltext_path}
-    _write_if_changed(index_dir / "ref-fulltext.json",
+    # C 级即使有原文也不收录:模型取不到它的原文。
+    fulltext = {k: str(r.fulltext_path) for k, r in sorted(lib.records.items())
+                if r.fulltext_path and r.level != "C"}
+    _write_if_changed(index_dir / REF_FULLTEXT_NAME,
                       json.dumps(fulltext, ensure_ascii=False, indent=1) + "\n")
+    levels = {k: r.level for k, r in sorted(lib.records.items())}
+    _write_if_changed(index_dir / REF_LEVELS_NAME,
+                      json.dumps(levels, ensure_ascii=False, indent=1) + "\n")
     out = index_dir / REF_INDEX_NAME
     _write_if_changed(out, render_ref_index(lib))
     return out

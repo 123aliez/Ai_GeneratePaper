@@ -88,6 +88,15 @@ def lookup_fulltext(folder_path, key: str, query: str) -> str:
     key = (key or "").strip()
     if key not in known_keys():
         return f"Error: unknown reference key '{key}'. Use only keys from the reference index."
+    # 即使全文映射残留旧条目,C 级也不能进入检索或留下查阅日志。
+    levels_path = Path(_config().INDEX_DIR) / "ref-levels.json"
+    try:
+        levels = json.loads(levels_path.read_text(encoding="utf-8")) if levels_path.is_file() else {}
+    except (OSError, ValueError):
+        levels = {}
+    if isinstance(levels, dict) and levels.get(key) == "C":
+        return (f"Reference '{key}' is C-level (general background): its fulltext is not available. "
+                f"Cite it using only its one-line summary.")
     map_path = Path(_config().INDEX_DIR) / "ref-fulltext.json"
     try:
         mapping = json.loads(map_path.read_text(encoding="utf-8")) if map_path.is_file() else {}
