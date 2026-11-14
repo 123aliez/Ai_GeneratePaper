@@ -152,6 +152,13 @@ def write_file(file_path: str, content: str) -> str:
         return (f"Error: write refused — '{file_path}' is outside what this task may write. "
                 f"Author inputs (inbox/, outline) are read-only; write only the "
                 f"artifacts your task names.")
+    # LaTeX 反斜杠被 Python 字符串转义吃掉(\beta → 退格+eta)的内容不落盘:写进去就是
+    # 一份公式整片损坏的草稿,而后面的引用/数字检查都看不出来。退回让模型用原始字符串重写。
+    from .prose_call import latex_escape_damage, ESCAPE_HELP
+    damage = latex_escape_damage(content)
+    if damage:
+        _log("REJECTED", file_path)
+        return f"Error: write refused — {damage}. {ESCAPE_HELP}"
     _log("write_file", file_path)
     dir_name = os.path.dirname(file_path)
     if dir_name:

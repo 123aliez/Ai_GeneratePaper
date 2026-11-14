@@ -698,7 +698,8 @@ def run_convergence_loop(draft_agent, review_agent, folder_path, folder_rel,
                          reference_excerpt, structure,
                          run_agent_stage, verify, mode_clause: str = "",
                          family: str = MIXED, res_ids_path=None,
-                         record_stage=None, skills_clause: str = ""):
+                         record_stage=None, skills_clause: str = "",
+                         prose_stage=None, json_stage=None):
     """Freeze the first review's MUST FIX list as an acceptance checklist, then
     iterate revise -> verify up to MAX_REVISION_ROUNDS. Each verify round re-checks
     ONLY the frozen checklist (no new issues). Stop when every frozen item is
@@ -713,11 +714,19 @@ def run_convergence_loop(draft_agent, review_agent, folder_path, folder_rel,
     review = read_json_artifact(folder_path, "review-v1.json")
     frozen = review.get("must_fix", []) if isinstance(review, dict) else None
 
+    # prose_stage / json_stage:章节流水线传进来的"先单轮、失败回落 Agent"的调用器
+    # (见 _run_4stage_with_progress)。不传(老调用方/测试)就退回纯 Agent 路径。
+    def revise(prompt: str, output: str, base: str):
+        if prose_stage is None:
+            return run_agent_stage(draft_agent, "Draft", prompt)
+        return prose_stage(draft_agent, "Draft", prompt, [output],
+                           [base, "review-v1.md", "draft-v1.plan.md"])
+
     # Fallback: unparseable review or missing must_fix → single revise pass (old behaviour).
     if not isinstance(frozen, list):
         print("[Manager  ] notice     | review-v1.json unparseable; single revise pass", flush=True)
         set_agent_context("Draft")
-        result = run_agent_stage(draft_agent, "Draft", (
+        result = revise((
             f"{idea_clause(family, res_ids_path)}"
             f"Read brief.md, input.md, draft-v1.md, review-v1.md from '{folder_path}'. "
             f"Also read '{structure}'. "
@@ -725,14 +734,14 @@ def run_convergence_loop(draft_agent, review_agent, folder_path, folder_rel,
             f"Address ALL 'MUST FIX' items. Write '{folder_path}/draft-v2.md' and '{folder_path}/todo.md'. "
             f"If major rewrite, also write '{folder_path}/decision.md'.\n\n{reference_excerpt}"
             f"{skills_clause}"
-        ))
+        ), "draft-v2.md", "draft-v1.md")
         set_agent_context("Manager")
         return result
 
     if not frozen:
         print("[Manager  ] converge   | no MUST FIX items; one polish pass for SHOULD FIX", flush=True)
         set_agent_context("Draft")
-        result = run_agent_stage(draft_agent, "Draft", (
+        result = revise((
             f"{idea_clause(family, res_ids_path)}"
             f"Read brief.md, input.md, draft-v1.md, review-v1.md from '{folder_path}'. "
             f"Also read '{structure}'. "
@@ -740,7 +749,7 @@ def run_convergence_loop(draft_agent, review_agent, folder_path, folder_rel,
             f"There are no MUST FIX items. Address SHOULD FIX items where supported by evidence, "
             f"then write a clean '{folder_path}/draft-v2.md' and '{folder_path}/todo.md'.\n\n{reference_excerpt}"
             f"{skills_clause}"
-        ))
+        ), "draft-v2.md", "draft-v1.md")
         set_agent_context("Manager")
         return result
 
@@ -757,17 +766,46 @@ def run_convergence_loop(draft_agent, review_agent, folder_path, folder_rel,
         print(f"\n[Manager  ] Round {round_no}/{MAX_REVISION_ROUNDS} | revise → {folder_rel}/{draft_round}", flush=True)
         if not os.path.exists(os.path.join(folder_path, draft_round)):
             set_agent_context("Draft")
-            last_result = run_agent_stage(draft_agent, "Draft", (
+            if round_no == 1:
+                # 第 1 轮:整张冻结清单。SHOULD FIX 不进验收,但顺手处理——否则只要有
+                # 一条 MUST FIX,评审提的所有 SHOULD FIX 就再也没人管。
+                work_order = (
+                    f"Resolve EVERY item in this frozen acceptance checklist (JSON):\n{checklist_text}\n\n"
+                    f"Make the concrete change at each item's location. Preserve everything already correct — "
+                    f"do not rewrite unaffected paragraphs. Once every checklist item is resolved, also "
+                    f"apply the SHOULD FIX items of review-v1.md where the evidence supports the change; "
+                    f"they are not part of the acceptance checklist, so skip any that would need new "
+                    f"evidence or would disturb a resolved item. ")
+            else:
+                # 第 2 轮起:只给上一轮没通过的条目 + 核验者写的原因。原先每轮都重发整张
+                # 清单,起草者不知道哪条没过、为什么没过,只能整章重写碰运气——这正是
+                # 跑满轮数的主因,还会把已经通过的条目改坏。
+                prev_verdict = read_json_artifact(
+                    folder_path, f"review-verify.round-{round_no - 1}.json")
+                open_items = _open_checklist_items(frozen, prev_verdict)
+                open_text = json.dumps(open_items, ensure_ascii=False, indent=2)
+                passed = len(frozen) - len(open_items)
+                work_order = (
+                    f"{prev_draft} was verified against the frozen acceptance checklist (JSON). "
+                    f"{passed} of {len(frozen)} item(s) already passed. These {len(open_items)} are "
+                    f"STILL OPEN; each `note` is the verifier's explanation of what is still missing:\n"
+                    f"{open_text}\n\n"
+                    f"Fix ONLY these open items, and fix what the note says is missing — the previous "
+                    f"attempt at each of them was not accepted, so do not repeat it. Copy every other "
+                    f"paragraph of {prev_draft} verbatim: the passages that resolved the other items "
+                    f"must not change. If an open item cannot be resolved from the available evidence, "
+                    f"put the appropriate gap marker ([MISSING DATA] / [DESIGN DETAIL NEEDED] / "
+                    f"[CITATION NEEDED]) at its location instead of inventing content. ")
+            last_result = revise((
                 f"{idea_clause(family, res_ids_path)}"
                 f"Read brief.md, input.md, {prev_draft}, review-v1.md from '{folder_path}'. "
                 f"Also read '{structure}'. .\n\n"
                 f"{mode_clause}"
-                f"Resolve EVERY item in this frozen acceptance checklist (JSON):\n{checklist_text}\n\n"
-                f"Make the concrete change at each item's location. Preserve everything already correct — "
-                f"do not rewrite unaffected paragraphs. Write the full revised draft to '{folder_path}/{draft_round}'.\n\n"
+                f"{work_order}"
+                f"Write the full revised draft to '{folder_path}/{draft_round}'.\n\n"
                 f"{reference_excerpt}"
                 f"{skills_clause}"
-            ))
+            ), draft_round, prev_draft)
             set_agent_context("Manager")
             if not verify([draft_round]):
                 return last_result
@@ -778,15 +816,23 @@ def run_convergence_loop(draft_agent, review_agent, folder_path, folder_rel,
         print(f"[Manager  ] Round {round_no}/{MAX_REVISION_ROUNDS} | verify → {folder_rel}/{verdict_round}", flush=True)
         if not os.path.exists(os.path.join(folder_path, verdict_round)):
             set_agent_context("Review")
-            run_agent_stage(review_agent, "Review", (
+            verify_prompt = (
                 f"Read {draft_round} and brief.md from '{folder_path}'. .\n\n"
                 f"VERIFY mode: check ONLY whether each item in this frozen checklist is now resolved in {draft_round}. "
                 f"Do NOT raise new issues.\n{checklist_text}\n\n"
                 f"Write '{folder_path}/{verdict_round}' with EXACTLY this schema (valid JSON only):\n"
                 f"{VERIFY_JSON_SCHEMA_HINT}\n"
-                f"Set 'all_resolved' true only if every checklist item is resolved.\n\n"
+                f"Set 'all_resolved' true only if every checklist item is resolved. For every "
+                f"unresolved item, the `note` must say exactly what is still missing or wrong and "
+                f"where — the next revision round sees only that note.\n\n"
                 f"{reference_excerpt}"
-            ))
+            )
+            if json_stage is None:
+                run_agent_stage(review_agent, "Review", verify_prompt)
+            else:
+                json_stage(review_agent, "Review", verify_prompt, verdict_round,
+                           VERIFY_JSON_SCHEMA_HINT, [draft_round],
+                           lambda d: isinstance(d, dict) and isinstance(d.get("items"), list))
             set_agent_context("Manager")
             if not verify([verdict_round]):
                 return last_result
@@ -1163,6 +1209,15 @@ def final_integrity_reasons(folder_path: str) -> list[str]:
                     todo.write_text(old + head + line, encoding="utf-8")
     except Exception as exc:
         reasons.append(f"终稿 RES/引用残留扫描出错,未核验: {str(exc)[:120]}")
+    # 定稿润色丢了引用/占位符/缺口标记 = 交付物与核验过的修订稿不一致,不能算核验通过。
+    try:
+        from .draft_checks import read_polish_findings
+        polish = read_polish_findings(folder_path)
+        if polish:
+            reasons.append(f"定稿润色与修订稿不一致 {len(polish)} 处(见 polish-check.md): "
+                           + "; ".join(polish[:3]))
+    except Exception as exc:
+        reasons.append(f"润色保真检查读取出错: {str(exc)[:120]}")
     return reasons
 
 
@@ -1411,6 +1466,105 @@ def cross_chapter_state_preserves_others(before: str, after: str,
     return all(line in kept for line in meaningful(before))
 
 
+# ── 单轮写作的上下文:该读的文件由 Python 原文拼进提示词 ────────────────────
+# 写正文的阶段不再让 Agent 自己 read_file(见 agents/prose_call.py):idea.md、brief、
+# input、跨章状态、数据索引、实验设置、文献索引与本章选定文献的笔记,全部逐字给到。
+# 这是原文全文,不是摘录或转述——"idea 不被上游改写"的原则不变,只是把"读没读"
+# 从靠模型自觉变成确定的。
+_NOTES_BUDGET_CHARS = 200_000     # 本章选定文献笔记的总量上限
+_NOTE_CAP_CHARS = 40_000          # 单篇笔记上限
+_KEY_TOKEN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_:.+\-/]*")
+
+
+def _read_capped(path, cap: int = 100_000) -> str:
+    text = Path(path).read_text(encoding="utf-8", errors="replace")
+    if len(text) > cap:
+        text = text[:cap] + f"\n[TRUNCATED: file longer than {cap} characters]"
+    return text
+
+
+def chapter_reference_notes(texts: list[str]) -> list[tuple[str, str]]:
+    """texts(input.md、plan 等)里出现的文献 key → [("reference note: key", 过滤版笔记)]。
+
+    只认 refs.bib 里的 key;笔记用程序生成的过滤视图(C 级本来就没有正文),与
+    read_reference 给 Agent 的内容一致。超出总量上限的笔记不给正文,列在最后一条里。
+    """
+    import config
+    from .references import load_bib, note_view_path
+    known = set(load_bib(config.REFS_BIB_PATH)[0])
+    if not known:
+        return []
+    keys: list[str] = []
+    for text in texts:
+        for token in _KEY_TOKEN_RE.findall(text or ""):
+            token = token.rstrip(".,:;")
+            if token in known and token not in keys:
+                keys.append(token)
+    out, used, omitted = [], 0, []
+    for key in keys:
+        path = note_view_path(config.INDEX_DIR, key)
+        if not path.is_file():
+            continue
+        text = _read_capped(path, _NOTE_CAP_CHARS)
+        if used + len(text) > _NOTES_BUDGET_CHARS:
+            omitted.append(key)
+            continue
+        used += len(text)
+        out.append((f"reference note: {key}", text))
+    if omitted:
+        out.append(("reference notes omitted for size",
+                    "Notes of these keys are not provided in this call; cite them only for what "
+                    "their one-line summary in the reference index says: " + ", ".join(omitted)))
+    return out
+
+
+def build_context_files(folder_path: str, names: list[str], *, family: str = MIXED,
+                        xchap: str = "", res_ids_path=None, with_code: bool = False,
+                        with_references: bool = True) -> list[tuple[str, str]]:
+    """单轮调用的 PROVIDED FILES:[(标签, 原文)]。标签用提示词里提到的那个路径,
+    这样"read X"能对上"provided copy of X"。不存在的文件直接略过。
+
+    names 是本章目录里要给的文件名(brief.md / input.md 总是给,不必列)。
+    """
+    import config
+    files: list[tuple[str, str]] = []
+    seen: set[str] = set()
+
+    def add(label: str, path) -> str:
+        path = Path(path)
+        if label in seen or not path.is_file():
+            return ""
+        seen.add(label)
+        text = _read_capped(path)
+        files.append((label, text))
+        return text
+
+    add(str(IDEA_PATH), IDEA_PATH)
+    add(f"{folder_path}/brief.md", Path(folder_path, "brief.md"))
+    input_text = add(f"{folder_path}/input.md", Path(folder_path, "input.md"))
+    if xchap:
+        add(xchap, xchap)
+    if family in (DATA, MIXED) and res_ids_path is not None:
+        from .paths import settings_path
+        add(str(data_index_path()), data_index_path())
+        add(str(settings_path(DATA_ROOT)), settings_path(DATA_ROOT))
+    if with_code:
+        add(str(config.CODE_INDEX_PATH), config.CODE_INDEX_PATH)
+    key_sources = [input_text]
+    for name in names:
+        text = add(f"{folder_path}/{name}", Path(folder_path, name))
+        if name == "draft-v1.plan.md":
+            key_sources.append(text)
+    if with_references:
+        add(str(config.REF_INDEX_PATH), config.REF_INDEX_PATH)
+        try:
+            files.extend(chapter_reference_notes(key_sources))
+        except Exception as exc:
+            print(f"[Manager  ] notice     | reference notes not inlined: {str(exc)[:120]}",
+                  flush=True)
+    return files
+
+
 def run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manager_agent=None) -> dict:
     """章节流水线入口。运行期间把 Agent 的 write_file 限定在本章目录
     (inbox 里的作者输入物理只读),结束后解除。"""
@@ -1645,6 +1799,7 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
 
     from .content_source import content_source_summary
     print(f"[Manager  ] content    | {content_source_summary(family)}", flush=True)
+    code_in_scope = "experiments" in set(scope_types(route))
     structure = f"{folder_path}/brief.md"
     routing_clause = build_routing_clause(route)
     from .skills_registry import build_skill_injection
@@ -1741,6 +1896,62 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
                     print(f"[{agent_name:<8.8}] retry      | {label}", flush=True)
         return {"error": _safe_exc_label(last_error) if last_error else "unknown error"}
 
+    # ── 单轮调用器:写正文 / 出 JSON 的阶段先走单轮,失败才回落 CodeAgent ──────
+    # 单轮里模型直接输出正文、Python 落盘,LaTeX 反斜杠不经过 Python 字符串字面量
+    # (根治 \beta → 退格+eta 一类损坏),该读的文件由 Python 原文给到。离线测试桩
+    # 与 PROSE_SINGLE_TURN=false 走原 Agent 路径(single_turn_model 返回 None)。
+    from .prose_call import single_turn_model, run_prose_call, render_files
+    from .structured_call import run_structured_call
+
+    def _context(names, ctx_family, with_code, with_references=True):
+        return build_context_files(
+            folder_path, names, family=ctx_family, xchap=xchap, res_ids_path=res_ids_path,
+            with_code=with_code and code_in_scope, with_references=with_references)
+
+    def prose_stage(agent, agent_name: str, prompt: str, outputs: list[str],
+                    extra_names: list[str], ctx_family: str = "",
+                    with_code: bool = True):
+        model = single_turn_model(agent)
+        if model is not None:
+            try:
+                ok = run_prose_call(
+                    model, agent_name, getattr(agent, "instructions", "") or "", prompt,
+                    _context(extra_names, ctx_family or family, with_code),
+                    {name: os.path.join(folder_path, name) for name in outputs})
+                if ok:
+                    return "single-turn"
+            except Exception as exc:
+                if _is_permanent_failure(exc):
+                    print(f"[{agent_name:<8.8}] failed     | permanent error, no retry: "
+                          f"{_safe_exc_label(exc)}", flush=True)
+                    return {"error": "permanent error", "exception_type": type(exc).__name__}
+                print(f"[{agent_name:<8.8}] notice     | single-turn call failed "
+                      f"({_safe_exc_label(exc)}); falling back to the agent path", flush=True)
+        return run_agent_stage(agent, agent_name, prompt)
+
+    def json_stage(agent, agent_name: str, prompt: str, out_name: str, schema_hint: str,
+                   extra_names: list[str], validate=None):
+        model = single_turn_model(agent)
+        if model is not None:
+            user = (
+                "SINGLE-TURN MODE. You have NO tools: do not write Python and do not call "
+                "read_file / write_file. The files the task mentions are reproduced verbatim "
+                "below. Output ONLY the JSON object the task asks for — no prose, no code.\n\n"
+                f"=== TASK ===\n{prompt.rstrip()}\n\n=== PROVIDED FILES ===\n"
+                f"{render_files(_context(extra_names, family, False, with_references=False))}\n")
+            try:
+                data = run_structured_call(
+                    model, agent_name, getattr(agent, "instructions", "") or "", user,
+                    os.path.join(folder_path, out_name), schema_hint, validate=validate)
+                if data is not None:
+                    return "single-turn"
+            except Exception as exc:
+                if _is_permanent_failure(exc):
+                    return {"error": "permanent error", "exception_type": type(exc).__name__}
+                print(f"[{agent_name:<8.8}] notice     | single-turn JSON call failed "
+                      f"({_safe_exc_label(exc)}); falling back to the agent path", flush=True)
+        return run_agent_stage(agent, agent_name, prompt)
+
     # ── Stage 0: Evidence mining (pre-draft, multi-perspective QA) ──
     # STORM's perspective-guided QA: interrogate the content source before
     # drafting so the draft is written against grounded evidence, not an outline.
@@ -1810,7 +2021,7 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
                 f"each perspective posed about {subject} and the grounded answers. Use its "
                 f"grounded answers to pick target claims; treat its '## Open Gaps' as drafting "
                 f"caveats, not to be silently ignored. ")
-        results["stage1_plan"] = run_agent_stage(planner, planner_name, (
+        results["stage1_plan"] = prose_stage(planner, planner_name, (
             f"{idea_clause(family, res_ids_path)}"
             f"You are acting only as the planner for Stage 1. "
             f"Read brief.md and input.md from '{folder_path}'. "
@@ -1832,7 +2043,7 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
             f"For each part, specify target claims, required reference keys, forbidden overlap, transition role, and output file. "
             f"Also write '{folder_path}/todo.md' for known planning gaps. Do not write draft prose.\n\n"
             f"{reference_excerpt}"
-        ))
+        ), ["draft-v1.plan.md", "todo.md"], ["evidence-pack.md"])
         set_agent_context("Manager")
         if not verify(["draft-v1.plan.md", "todo.md"]):
             return _finish_with_table(folder_path, results)
@@ -1845,15 +2056,24 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
             print(f"[Manager  ] skip       | {part['output']} exists", flush=True)
             results["stage1_parts"].append("skipped")
             continue
+        # 衔接:给出**之前所有已写段的全文**,不再只给上一段末尾 1200 字符——第 3 段
+        # 看不到第 1 段时,重复与定义冲突都发生在它看不见的地方。一章不过两三千词,
+        # 全文的代价很小;超长时才退回每段的末尾。
         prev_context = ""
         if position > 0:
-            prev_output = stage1_parts[position - 1]["output"]
-            prev_tail = tail_text(os.path.join(folder_path, prev_output), 1200)
-            if prev_tail:
+            budget = 60_000 // position
+            prev_blocks = []
+            for earlier in stage1_parts[:position]:
+                text = tail_text(os.path.join(folder_path, earlier["output"]), budget)
+                if text:
+                    prev_blocks.append(f"--- Part {earlier['index']} ({earlier['output']}) ---\n{text}")
+            if prev_blocks:
                 prev_context = (
-                    f"PREVIOUS CONTEXT — the ending of Part {position} (already written). "
-                    f"Continue seamlessly from it: do not repeat it, do not contradict its definitions, "
-                    f"and keep terminology and symbols identical:\n\"\"\"\n{prev_tail}\n\"\"\"\n\n"
+                    f"PREVIOUS CONTEXT — the full text of the earlier part(s), already written. "
+                    f"Continue seamlessly from the last one: do not repeat any of them, do not "
+                    f"contradict their definitions, do not re-expand an abbreviation they already "
+                    f"expanded, and keep terminology and symbols identical:\n\"\"\"\n"
+                    + "\n\n".join(prev_blocks) + "\n\"\"\"\n\n"
                 )
         set_agent_context("Draft")
         evidence_draft_clause = ""
@@ -1863,7 +2083,7 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
                 f"'{folder_path}/evidence-pack.md' and read ONLY the Q&A for your part's topics — "
                 f"do not inline the whole pack. "
             )
-        result = run_agent_stage(draft_agent, "Draft", (
+        result = prose_stage(draft_agent, "Draft", (
             f"{idea_clause(part_family(part, route), res_ids_path)}"
             f"Read brief.md, input.md, and draft-v1.plan.md from '{folder_path}'. "
             f"{build_routing_clause(route, part_family(part, route), part)}"
@@ -1879,7 +2099,8 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
             f"Do not write other parts and do not duplicate material assigned to other parts.\n\n"
             f"{reference_excerpt}"
             f"{draft_skills}"
-        ))
+        ), [part["output"]], ["draft-v1.plan.md", "evidence-pack.md"],
+            ctx_family=part_family(part, route))
         results["stage1_parts"].append(result)
         set_agent_context("Manager")
         if not verify([part["output"]]):
@@ -1894,6 +2115,12 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
     record_stage(["draft-v1.md"], "draft")
     # 契约粗检:只提示,不进指纹,不改核验状态。每次重算。
     write_contract_check(folder_path, "draft-v1.md", scope_types(route))
+    # 结构/字数检查:brief 的每个小节在不在、写了多少词。只交给评审,同样每次重算。
+    from .draft_checks import write_structure_check, write_polish_check, STRUCTURE_CHECK
+    _structure_hits = write_structure_check(folder_path, "draft-v1.md", sections)
+    if _structure_hits:
+        print(f"[Manager  ] structure  | {len(_structure_hits)} finding(s) → "
+              f"{folder_rel}/{STRUCTURE_CHECK}", flush=True)
 
     # ── Deterministic number gate (experiment mode) ─────────────────
     # Cross-check every number in draft-v1 against the results store BEFORE the
@@ -1960,6 +2187,16 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
                     f"Also read '{folder_path}/contract-check.md': deterministic hints about the "
                     f"chapter contract; judge each, false positives are possible. "
                 )
+        _review_extra = ["draft-v1.md", "number-check.md", "contract-check.md"]
+        if _structure_hits:
+            _review_extra.append(STRUCTURE_CHECK)
+            number_check_clause += (
+                f"Also read '{folder_path}/{STRUCTURE_CHECK}': a deterministic check of each brief "
+                f"section's presence and word count. A MISSING section is a MUST FIX (unless the "
+                f"heading was merely renamed — check). SHORT / LONG is a SHOULD FIX: the fix for "
+                f"SHORT is the missing substance from the evidence, never padding; if the evidence "
+                f"is exhausted, a gap marker is the correct fix. "
+            )
         # 演进点①(修正版,Codex 审查 E1/E3):review-v1.md(散文评审)先走
         # CodeAgent——它需要 read_file 多轮读草稿;review-v1.json(结构化清单)
         # 再由单轮直调把已成文的评审**转换**成 JSON:单轮模型没有读取循环,
@@ -1969,7 +2206,10 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
         _review_json_done = False
         _skip_structured = review_agent is not None and \
             getattr(type(review_agent), "_offline_test_stub", False) is True
-        results["stage2"] = run_agent_stage(review_agent, "Review", (
+        _review_runner = (run_agent_stage if _skip_structured else
+                          lambda a, n, pr: prose_stage(a, n, pr, ["review-v1.md", "todo.md"],
+                                                       _review_extra))
+        results["stage2"] = _review_runner(review_agent, "Review", (
             f"{idea_clause(family, res_ids_path)}"
             f"Read draft-v1.md, brief.md, input.md from '{folder_path}'. "
             f"Also read '{structure}'. "
@@ -2111,6 +2351,7 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
             reference_excerpt, structure,
             run_agent_stage, verify, mode_clause, family, res_ids_path,
             record_stage=record_stage, skills_clause=draft_skills,
+            prose_stage=prose_stage, json_stage=json_stage,
         )
     if not verify(["draft-v2.md"]):
         return _finish_with_table(folder_path, results)
@@ -2126,8 +2367,7 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
         results["stage4"] = "skipped"
     else:
         set_agent_context("Review")
-        results["stage4"] = run_agent_stage(review_agent, "Review", (
-            f"{idea_clause(family, res_ids_path)}"
+        _finalize_prompt = (
             f"Read draft-v2.md, review-v1.md, brief.md, input.md from '{folder_path}'. "
             f"Also read '{structure}'. "
             f"{mode_clause}"
@@ -2144,8 +2384,49 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
             f"(remaining issues).\n\n"
             f"{reference_excerpt}"
             f"{review_skills}"
-        ))
+        )
+        _finalize_prompt = f"{idea_clause(family, res_ids_path)}" + _finalize_prompt
+        results["stage4"] = None
+        if single_turn_model(review_agent) is not None:
+            # 单轮路径拆成两次:① 润色定稿 + decision + todo;② 把 final.md 忠实译成中文。
+            # 一次调用同时产出英文定稿与整章中文版,输出长度翻倍、容易撞上限,两者还会
+            # 互相牵扯(为了好译改英文)。todo.md 以现有内容为底继承,不丢前面阶段的条目。
+            _todo_path = os.path.join(folder_path, "todo.md")
+            _r1 = prose_stage(review_agent, "Review", (
+                _finalize_prompt.replace(
+                    f"'{folder_path}/final.zh.md' (a faithful Chinese rendering of final.md for "
+                    f"the author to review, same placeholders and markers), ", "")
+                + "\nThe Chinese version is produced in a separate call — do not write "
+                  "final.zh.md here. todo.md: start from the provided todo.md, keep every item "
+                  "that is still open, and add what you found.\n"),
+                ["final.md", "decision.md", "todo.md"],
+                ["draft-v2.md", "review-v1.md", "todo.md"], with_code=False)
+            if _r1 == "single-turn":
+                _r2 = prose_stage(review_agent, "Review", (
+                    f"Translate '{folder_path}/final.md' into Chinese and write it to "
+                    f"'{folder_path}/final.zh.md' — the author's reading/review version. Render "
+                    f"every sentence faithfully: same structure, same headings (translated), same "
+                    f"claims, nothing added or dropped. Keep VERBATIM every `{{{{...}}}}` "
+                    f"placeholder, every \\cite{{...}}, every [TABLE: ...] / [FIGURE ...] line, "
+                    f"every [[TAB:x]] / [[FIG:x]] reference, every gap marker ([MISSING DATA] "
+                    f"etc.) and every LaTeX formula. Keep established English technical terms "
+                    f"in parentheses at first use.\n"),
+                    ["final.zh.md"], ["final.md"], with_code=False)
+                results["stage4"] = _r2
+            if not all_exist(final_outputs):
+                print("[Manager  ] notice     | single-turn finalization incomplete; "
+                      "falling back to the agent path", flush=True)
+                results["stage4"] = None
+        if results["stage4"] is None or not all_exist(final_outputs):
+            results["stage4"] = run_agent_stage(review_agent, "Review", _finalize_prompt)
         set_agent_context("Manager")
+        # 润色保真检查:必须在 RES 占位符被替换成数值之前(之后 final 里已无占位符可比)。
+        # 只在本次真的跑了定稿时重算;续跑跳过 Stage 4 时沿用已有 polish-check.md。
+        if all_exist(["final.md"]):
+            _polish = write_polish_check(folder_path, "draft-v2.md")
+            print(f"[Manager  ] polish     | "
+                  f"{'OK' if not _polish else f'{len(_polish)} loss finding(s)'} → "
+                  f"{folder_rel}/polish-check.md", flush=True)
     all_ok = verify(final_outputs)
     record_stage(["final.md", "final.zh.md"], "final")
 

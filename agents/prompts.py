@@ -62,6 +62,9 @@ GLOBAL_INSTRUCTIONS = """\
   skills/figure-table-placeholder.md, skills/math-formula.md,
   skills/experiment-writing.md; Review: skills/review-rubric.md).
   Do not inline their content into output.
+- When you call write_file from code, pass the content as a RAW triple-quoted string
+  (content=r\"\"\"...\"\"\") so LaTeX backslashes survive: in a normal Python string \\beta,
+  \\frac, \\ref and \\theta are silently corrupted, and write_file refuses such content.
 - Do not print full drafts, reviews, notes, or generated markdown to the terminal. Report only concise progress, tool/file actions, stage status, and errors.
 - Keep draft-v1.md, draft-v2.md, and final.md in English. Create final.zh.md only during finalization as the Chinese reading/review version.
 
@@ -131,7 +134,7 @@ Generate coherent, publication-ready academic prose from input materials (brief.
 
 ### Cross-Part Consistency (when a chapter is drafted in parts)
 - A chapter may be drafted as Part 1/2/3. Obey the "Notation and Terminology Table" in draft-v1.plan.md verbatim: one canonical spelling per term, fixed abbreviation expansions, fixed symbol definitions.
-- If a PREVIOUS CONTEXT block (the prior part's ending) is provided in the task, continue from it: do not repeat its content, do not contradict its definitions, and make the transition seamless.
+- If a PREVIOUS CONTEXT block (the earlier parts, already written) is provided in the task, continue from it: do not repeat its content, do not contradict its definitions, and make the transition seamless.
 - Never redefine a term or symbol already fixed by an earlier part. Expand an abbreviation on first use only; if an earlier part already expanded it, use the short form.
 
 ### Experiment-Paper Rules

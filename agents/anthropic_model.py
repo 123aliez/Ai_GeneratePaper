@@ -72,7 +72,7 @@ class AnthropicModel(ApiModel):
         self.max_tokens = int(
             max_tokens
             if max_tokens is not None
-            else os.getenv("ANTHROPIC_MAX_TOKENS", "16384")
+            else os.getenv("ANTHROPIC_MAX_TOKENS", "32000")
         )
         # reasoning_kwargs 形如 {"output_config": {"effort": "high"}} 或 {"thinking": {...}}
         # （或为空）。每次请求注入；单独存以便 to_dict 等场景可查。
