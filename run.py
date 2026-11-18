@@ -148,9 +148,13 @@ def _translate_zh_to_en() -> int:
     candidate = en_path.with_name(en_path.name + ".candidate")
     if candidate.exists():
         candidate.unlink()
+    from agents.content_stage import Doc
     prompt = build_translate_prompt(str(zh_path), str(candidate),
                                     str(en_path) if en_path.is_file() else "")
-    run_agent_stage_standalone(manager, "Manager", prompt, allowed_files=[candidate])
+    docs = [Doc("outline.zh.md", zh_path)]
+    if en_path.is_file():
+        docs.append(Doc("outline.previous.md", en_path))
+    run_agent_stage_standalone(manager, "Manager", prompt, docs, [candidate.name], en_path.parent)
     if not candidate.is_file():
         print(f"Error: Manager 没有写出翻译候选文件;{en_path.name} 未改动。")
         return 1
@@ -342,8 +346,23 @@ def expand_outline() -> int:
 
     prompt = build_expand_prompt(chapters, str(en_path), str(zh_path),
                                  str(IDEA_PATH), len(chapters))
-    run_agent_stage_standalone(manager, "Manager", prompt,
-                               allowed_files=[en_path, zh_path])
+    from agents.content_stage import Doc
+    # 两份产物都由脚本写进 _work/,中文版再挪到项目根(作者在那里审阅)
+    docs = [Doc("idea.md", IDEA_PATH)]
+    # 数据索引与实验设置也交给规划者:否则它会在要点里写"数据不在 idea.md 里,标 [MISSING DATA]",
+    # 这句话原样传给每个起草阶段
+    from config import DATA_ROOT
+    from agents.paths import data_index_path, settings_path
+    if Path(data_index_path(DATA_ROOT)).is_file():
+        docs.append(Doc("data-index.md", data_index_path(DATA_ROOT)))
+    if settings_path(DATA_ROOT).is_file():
+        docs.append(Doc(settings_path(DATA_ROOT).name, settings_path(DATA_ROOT)))
+    run_agent_stage_standalone(manager, "Manager", prompt, docs,
+                               [en_path.name, zh_path.name], en_path.parent)
+    staged_zh = en_path.parent / zh_path.name
+    if staged_zh.is_file() and staged_zh != zh_path:
+        zh_path.parent.mkdir(parents=True, exist_ok=True)
+        staged_zh.replace(zh_path)
 
     def _discard(reason_lines):
         """展开产物不合格:删掉(它们是机器刚生成、作者还没碰过的),免得下一次 --go 把失败
@@ -380,6 +399,11 @@ def expand_outline() -> int:
     pair_problems = validate_translation(expanded_zh, expanded_en)
     if pair_problems:
         return _discard([f"\nError: 中英文大纲互相对不上,拒绝采纳:"] + [f"  · {x}" for x in pair_problems])
+
+    # 篇幅预算(paper.toml 的 pages):补缺、压到预算内、中英文字数对齐。脚本做,不靠模型自觉
+    from agents.outline_expand import normalize_budget
+    for note in normalize_budget(expanded_en, expanded_zh, chapters):
+        print(f"  · {note}")
 
     # 重新序列化一遍再落盘:Manager 的原始输出可能夹带说明文字或代码围栏,
     # 而这份文件下一步要被作者改名成 outline.md,必须是干净的语法。
@@ -452,6 +476,17 @@ def _verification_tag(folder_path: str) -> str:
     return "·未核验" if read_verification_status(folder_path) == "unverified" else ""
 
 
+def abstract_last(folders: list[str]) -> list[str]:
+    """运行顺序:摘要章排到最后写(它概括其他各章);其余保持大纲顺序。论文里的位置不变。"""
+    try:
+        from agents.outline import parse_outline
+        types = {c["folder"]: c.get("type", "") for c in parse_outline()}
+    except Exception:
+        return list(folders)
+    return ([f for f in folders if types.get(f) != "abstract"]
+            + [f for f in folders if types.get(f) == "abstract"])
+
+
 def _print_paper_table(folders: list[str], rows: list[tuple]) -> None:
     """打印整篇章节汇总表。rows 是 (position, name, status) 列表。
 
@@ -459,6 +494,7 @@ def _print_paper_table(folders: list[str], rows: list[tuple]) -> None:
     """
     if not rows:
         return
+    rows = sorted(rows, key=lambda r: r[0])
     width_pos = max(len(str(r[0])) for r in rows)
     width_name = max(len(r[1]) for r in rows)
     width_status = max(len(r[2]) for r in rows)
@@ -498,7 +534,11 @@ def run_all_chapters(draft_agent, review_agent, manager_agent) -> int:
 
     completed, skipped = [], []
     chapter_rows = []   # (position, name, status) 用于整篇章节汇总表
-    for position, name in enumerate(folders, start=1):
+    run_order = abstract_last(folders)
+    if run_order != folders:
+        print("运行顺序:摘要最后写(它概括其他各章),论文里的位置不变。")
+    for name in run_order:
+        position = folders.index(name) + 1
         folder_path = os.path.join(PAPER_ROOT, name)
         # "已完成"还要求 Stage 5 交接凭据与当前指纹相符:改了输入、删掉陈旧产物重跑到
         # Stage 4 后中断时,共享状态里还留着旧 claim,只看 final.md + claim 会把该章误判
@@ -528,6 +568,12 @@ def run_all_chapters(draft_agent, review_agent, manager_agent) -> int:
         result = run_4stage_with_progress(
             draft_agent, review_agent, folder_path, manager_agent)
 
+        if result.get("model_error"):
+            # 订阅额度、登录等永久错误不能因已有 final.md 而继续下一章。
+            chapter_rows.append((position, name, "[失败] 模型调用停止"))
+            print(f"\n[run-all] 停止:{result['model_error']}")
+            _print_paper_table(folders, chapter_rows)
+            return 1
         if result.get("route_blocked"):
             # 门禁硬停(陈旧产物/数据歧义/brief 过期等):原因已在上方日志打印。
             # 单独处理,免得 final.md 已在时被误报成"跨章交接未完成"。
@@ -695,34 +741,6 @@ def cmd_assemble() -> int:
     return 0
 
 
-def cmd_paper_review(force: bool = False) -> int:
-    """整篇一致性检查(只读,出问题清单;改正文要回到对应章重跑)。终稿没变则跳过。"""
-    import config
-    from agents.outline import parse_outline, OutlineRouteError
-    from agents.paper_review import run_paper_review, PAPER_REVIEW_NAME
-    try:
-        meta = [{"folder": c["folder"], "title": c["title"], "type": c.get("type", ""),
-                 "number": c["number"]} for c in parse_outline()]
-    except OutlineRouteError as exc:
-        print(f"Error: 无法读 outline: {exc}")
-        return 1
-    try:
-        model = get_review_model()
-    except Exception as exc:
-        print(f"[整篇一致性] Review 模型不可用({type(exc).__name__}),只做确定性检查")
-        model = None
-    info = run_paper_review(model, meta, config.WORKSPACE_ROOT,
-                            Path(config.WORK_ROOT) / PAPER_REVIEW_NAME, force=force)
-    tag = {"skipped": "终稿未变,沿用上次结果", "done": "完成",
-           "deterministic-only": "仅确定性检查(模型未跑)"}[info["status"]]
-    print(f"[整篇一致性] {tag}:{len(info['findings'])} 条发现 → {info['path']}")
-    for line in info["findings"][:20]:
-        print(f"  · {line}")
-    if info["findings"]:
-        print("  这些问题不会自动修:回到对应章删掉其 final.md 等产物后重跑,改动才会经过核验。")
-    return 0
-
-
 def _read_status(folder: str) -> str:
     from agents.orchestrator import read_verification_status
     try:
@@ -791,8 +809,7 @@ def cmd_go(keep_outline: bool) -> int:
         print("\n某章失败或被拦下,已停止。修好后重跑同一条命令会从这一章继续。")
         return rc
 
-    print("\n== 5/5 整篇一致性检查 + 核验并组装 ==")
-    cmd_paper_review()
+    print("\n== 5/5 核验并组装 ==")
     return cmd_assemble()
 
 
@@ -801,7 +818,6 @@ USAGE = """用法:
   python run.py --new 项目名                          建项目 + 模板
   python run.py --project <项目> --go                 一条命令出初稿(首次展开大纲后停下等你审)
   python run.py --project <项目> --check | --index | --expand | --init | --all | --assemble | --list
-  python run.py --project <项目> --paper-review       整篇一致性检查(只读,结果进待补清单)
   python run.py --project <项目> <章节名>             只跑一章
 详见 README.md。"""
 
@@ -832,8 +848,7 @@ def main():
             sys.exit(2)
         rest = [a for j, a in enumerate(argv) if j not in (i, i + 1) and a != "--progress"]
 
-    actions = ("--check", "--index", "--assemble", "--go", "--list", "--init", "--expand", "--all",
-               "--paper-review")
+    actions = ("--check", "--index", "--assemble", "--go", "--list", "--init", "--expand", "--all")
     known = set(actions) | {"--keep-outline", "--force"}
     unknown = [a for a in rest if a.startswith("--") and a not in known]
     if unknown:
@@ -848,8 +863,8 @@ def main():
     if "--keep-outline" in rest and "--go" not in rest:
         print("Error: --keep-outline 只能和 --go 一起用")
         sys.exit(2)
-    if "--force" in rest and "--init" not in rest and "--paper-review" not in rest:
-        print("Error: --force 只能和 --init / --paper-review 一起用")
+    if "--force" in rest and "--init" not in rest:
+        print("Error: --force 只能和 --init 一起用")
         sys.exit(2)
 
     if "--check" in rest:
@@ -858,8 +873,6 @@ def main():
         sys.exit(cmd_index())
     if "--assemble" in rest:
         sys.exit(cmd_assemble())
-    if "--paper-review" in rest:
-        sys.exit(cmd_paper_review(force="--force" in rest))
     if "--go" in rest:
         sys.exit(cmd_go(keep_outline="--keep-outline" in rest))
     if "--list" in rest:
@@ -918,6 +931,8 @@ def main():
         sys.exit(run_all_chapters(draft_agent, review_agent, manager))
     print(f"\n{'=' * 60}\nRunning 4-stage iteration on: {folder_name}\n{'=' * 60}")
     results = run_4stage_with_progress(draft_agent, review_agent, folder_path, manager)
+    if results.get("model_error"):
+        sys.exit(1)
     print(f"\nStages completed: {len(results)}")
 
 

@@ -46,9 +46,8 @@ python run.py --project <项目> --init [--force]           # outline → per-ch
 python run.py --project <项目> --all                      # run every chapter
 python run.py --project <项目> 03-results                 # run one chapter
 python run.py --project <项目> --assemble                 # re-verify finals and assemble (no model calls)
-python run.py --project <项目> --paper-review [--force]   # whole-paper consistency review (read-only)
 python run.py --project <项目> --list                     # per-chapter status
-python run.py --project <项目> --go                       # check → expand (stop for review) → chapters → paper review → assemble
+python run.py --project <项目> --go                       # check → expand (stop for review) → chapters → assemble
 python run.py --project <项目> --go --keep-outline        # idea/skeleton changed; keep the current outline
 
 # Offline tests — no API calls (this is how wiring changes are validated)
@@ -91,7 +90,7 @@ Each of the 13 canonical chapter types has a contract: **focus** (what the chapt
 
 The reviewer is explicitly forbidden from judging novelty (D3/D11): the rubric's Originality row was replaced by Fidelity, and `REVIEW_INSTRUCTIONS`' Prohibited Behaviors end with "Never judge whether the contribution is novel".
 
-Evidence-mining perspectives switch by chapter type (`perspectives_for_route`): a run whose types are all `method`/`theory` uses `METHOD_PERSPECTIVES` (Attribution reviewer first — which base techniques can be credited with one citation — instead of the old Novelty reviewer); all `related` (or related+background) uses `LITERATURE_PERSPECTIVES` and all `background` uses `BACKGROUND_PERSPECTIVES` — both ground answers in the notes of the papers selected in input.md (`read_reference`), not in idea.md's mechanism; everything else stays family-based. The first IDEA perspective is now "Positioning reviewer": differences to prior work come ONLY from idea.md section 5, never derived from notes.
+Evidence-mining perspectives switch by chapter type (`perspectives_for_route`): a run whose types are all `method`/`theory` uses `METHOD_PERSPECTIVES` (Attribution reviewer first — which base techniques can be credited with one citation — instead of the old Novelty reviewer); everything else stays family-based. The first IDEA perspective is now "Positioning reviewer": differences to prior work come ONLY from idea.md section 5, never derived from notes.
 
 ### Short chapters — synthetic single section
 
@@ -108,43 +107,17 @@ Stage 0a     → input.md         (Manager, prepared from _work/index/ref-index.
 Stage 0b     → evidence-pack.md  (STORM-style multi-perspective QA; perspectives switch by family
                                   AND by chapter type — see Chapter contracts)
 Stage 1a     → draft-v1.plan.md  (Manager: plan + frozen Notation/Terminology Table)
-Stage 1b~    → draft-v1.part-N.md (part count = min(#sections, 3); each part routed on its own sections;
-                                  part N sees the FULL text of parts 1..N-1)
+Stage 1b~    → draft-v1.part-N.md (part count = min(#sections, 3); each part routed on its own sections)
               → draft-v1.md       (concatenated by Python, using the actual part count)
               → number-check.md   (number gate vs results store, strictness by gate level)
               → contract-check.md (deterministic chapter-contract lint; hints only)
-              → structure-check.md (deterministic: each brief section present? word count vs target)
-Stage 2      → review-v1.md + review-v1.json (MUST FIX frozen checklist; criteria by family + contract
-                                  + structure check: MISSING section = MUST FIX, SHORT/LONG = SHOULD FIX)
+Stage 2      → review-v1.md + review-v1.json (MUST FIX frozen checklist; criteria by family + contract check)
               → citation-insertions.md
-Stage 3      → draft-v2.md       (convergence loop: round 1 = whole frozen checklist + SHOULD FIX where
-                                  supported; round ≥2 = ONLY the still-open items + the verifier's notes)
-Stage 4      → final.md + decision.md + todo.md, then final.zh.md (separate translation call)
-              → polish-check.md  (deterministic draft-v2 → final diff, run BEFORE RES fill: lost cite keys /
-                                  placeholders / gap markers ⇒ unverified; renamed headings / length drift = advisory)
-              → number gate re-run (OVERWRITES number-check.md); contract-check recomputed on final.md
+Stage 3      → draft-v2.md       (convergence loop: revise↔verify frozen checklist, ≤ MAX_REVISION_ROUNDS)
+Stage 4      → final.md + final.zh.md + decision.md + todo.md (number gate re-run, OVERWRITES number-check.md;
+                                  contract-check recomputed on final.md)
 Stage 5      → cross-chapter-state.md  (via cross-chapter-draft.md candidate + atomic replace + Python validation)
-paper        → _work/paper-review.md (after all chapters, `--go` / `--paper-review`: cross-chapter duplicate
-                                  sentences (deterministic) + one read-only Review-model pass; findings go to
-                                  output/待补清单.md; skipped while the finals' fingerprint is unchanged)
 ```
-
-### Single-turn prose calls (`agents/prose_call.py`)
-
-Every stage that writes prose or a verdict (1a plan, 1b parts, Stage-2 review md, every Stage-3 revise
-round, every VERIFY verdict, Stage-4 finalize + translation) first runs as ONE direct model call via the
-orchestrator's `prose_stage` / `json_stage` closures, and falls back to the CodeAgent path only if that
-fails. Why: in a CodeAgent the model writes prose as a Python string literal, and `\beta`/`\frac`/`\ref`/
-`\theta` are silently corrupted by string escapes (`\b` backspace, `\f` form feed, ...). In the single-turn
-call the model emits `<<<FILE: name>>> … <<<END FILE>>>` blocks and Python writes them; all required
-files must be present, untruncated and escape-clean or nothing is written. The files a stage "reads" are
-inlined verbatim by `build_context_files` (idea.md, brief, input, cross-chapter state, data index +
-settings for data/mixed, code index for experiments, the reference index, and the filtered notes of every
-key mentioned in input.md/plan — capped). Calls stream when the model has `generate_stream` (ResilientModel
-retries only the stream path). Input material and evidence mining stay CodeAgent stages (they need
-multi-turn `read_reference`). `write_file` itself refuses escape-damaged content
-(`latex_escape_damage`). Offline test stubs (`_offline_test_stub = True`) and `PROSE_SINGLE_TURN=false`
-use the agent path.
 
 Key invariants to respect when editing:
 

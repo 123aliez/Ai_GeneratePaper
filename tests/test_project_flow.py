@@ -135,6 +135,10 @@ def test_flow():
     rc, out = run("--go", project=root)
     check("第二次 --go 跑完", rc == 0, out[-1500:])
     check("检测到中文大纲改动并翻译", "翻译完成" in out, out[-800:])
+    order = [m for m in re.findall(r"\[(\d+)/4\] (0\d-[\w-]+)\n", out)]
+    check("摘要章最后写(论文里仍是第 1 章)",
+          order and order[-1][1].endswith("abstract") and order[-1][0] == "1"
+          and "运行顺序:摘要最后写" in out, str(order))
 
     o = root / "output"
     for name in ("paper.md", "paper.zh.md", "待补清单.md", "图表清单.md", "数字溯源表.md"):
@@ -146,7 +150,7 @@ def test_flow():
     check("结果表按 CSV 渲染且加粗最优、拼 ± 标准差", "**78.30 ± 0.20**" in paper and "76.10 ± 0.30" in paper, paper)
     check("占位符替换为带原文小数位的值", "78.30%" in paper, paper)
     check("DIFF 派生数字由程序算出(2.20)", "2.20 points" in paper, paper)
-    check("REL 派生数字(2.9)", "2.9%" in paper, paper)
+    check("REL 派生数字(2.89,两位小数)", "2.89%" in paper, paper)
     check("交叉引用换成编号", "Table 1" in paper and "Figure 1" in paper and "[[" not in paper, paper)
     check("图占位块变成图注", "Figure 1. Architecture overview" in paper)
 

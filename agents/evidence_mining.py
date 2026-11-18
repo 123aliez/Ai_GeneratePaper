@@ -18,6 +18,7 @@ from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from config import IDEA_PATH, DATA_ROOT
+from .materials import ALL_NOTES_BUDGET
 from .paths import data_index_path
 from .chapter_type import IDEA, DATA, MIXED
 
@@ -42,43 +43,17 @@ METHOD_PERSPECTIVES = [
     IDEA_PERSPECTIVES[2],   # Precision reviewer
     IDEA_PERSPECTIVES[3],   # Design-alternative reviewer
 ]
-# 相关工作/背景章的主材料是文献笔记,不是 idea 的机制。原先它们按 idea 族拿到
-# Mechanism / Precision / Design-alternative 三个视角、答案只许锚定 idea.md——没有一个
-# 视角去读笔记,证据包里于是全是"我们的设计为什么对",而这两章要写的是"别人怎么做"。
-# Positioning 仍排第一:与前人工作的差异只能来自 idea.md 第 5 节,不从笔记推导。
-LITERATURE_PERSPECTIVES = [
-    IDEA_PERSPECTIVES[0],   # Positioning reviewer
-    ("Thematic-grouping reviewer",
-     "Into which lines of work do the papers selected in input.md fall, which keys belong to "
-     "each line, and what single idea ties a line together according to the notes?"),
-    ("Approach-and-limitation reviewer",
-     "For each A-level and B-level paper selected in input.md: what does its note say the "
-     "approach is, and which limitation does the NOTE itself state? Never infer a limitation "
-     "the note does not state."),
-    ("Coverage reviewer",
-     "Which brief.md sections or bullets have no selected paper behind them, and which "
-     "selected papers have no note (so they can be cited but not described)?"),
-]
-BACKGROUND_PERSPECTIVES = [
-    ("Concept-source reviewer",
-     "Which base concepts and notation does the method (idea.md sections 3-4) rely on, and "
-     "which selected paper's note is the source of each?"),
-    ("Definition reviewer",
-     "How does the source note define each concept (symbols, assumptions)? Quote the note; "
-     "do not complete a definition from memory."),
-    LITERATURE_PERSPECTIVES[3],   # Coverage reviewer
-]
 DATA_PERSPECTIVES = [
-    ("Statistics reviewer", "Are the reported gains real? Significance, variance, seeds, confidence intervals?"),
-    ("Baseline & ablation reviewer", "Are baselines fair and current? Which ablations are missing to isolate the contribution?"),
-    ("Reproducibility reviewer", "Are hardware, hyperparameters, data splits, and configs sufficient to rerun this?"),
-    ("Over-claim reviewer", "Which stated conclusion is stronger than the numbers support? Where is the evidence thinnest?"),
+    ("Headline-result reviewer", "Which comparisons show the clearest gains, and what is the strongest accurate way to state them?"),
+    ("Baseline reviewer", "Against which baselines is the gain shown, and what do the matched comparisons demonstrate?"),
+    ("Setup reviewer", "Which setup details (data, protocol, hyperparameters) does a reader need to trust these comparisons?"),
+    ("Over-claim reviewer", "Which stated conclusion is stronger than the numbers support, so it must be phrased more precisely?"),
 ]
 MIXED_PERSPECTIVES = [
     ("Claim-evidence reviewer", "For each claim about the contribution, which specific number supports it?"),
     ("Mechanism reviewer", "Do the results actually confirm the proposed mechanism, or only correlate with it?"),
     ("Over-claim reviewer", "Which stated conclusion is stronger than the numbers support?"),
-    ("Limitation reviewer", "What does the evidence NOT establish, and what is the strongest counter-reading?"),
+    ("Takeaway reviewer", "Which result best supports the contribution, and what does it mean for the reader?"),
 ]
 # 兼容别名:family 路由出现前的实验默认。
 EXPERIMENT_PERSPECTIVES = DATA_PERSPECTIVES
@@ -98,31 +73,14 @@ def perspectives_for_route(family: str, types: list[str]) -> list[tuple[str, str
     """本章覆盖的类型全部是方法/理论时用 Attribution 视角;否则按 family。"""
     if types and set(types) <= {"method", "theory"}:
         return METHOD_PERSPECTIVES
-    if types and set(types) <= {"background"}:
-        return BACKGROUND_PERSPECTIVES
-    if _is_literature(types):
-        return LITERATURE_PERSPECTIVES
     return perspectives_for_mode(family)
-
-
-def _is_literature(types: list[str] | None) -> bool:
-    """本次运行覆盖的类型全部是相关工作/背景 → 证据来自文献笔记。"""
-    return bool(types) and set(types) <= {"related", "background"}
-
-
-_LITERATURE_GROUNDING = (
-    "Ground it in the author's NOTE on a specific paper: call read_reference(key) for the "
-    "papers selected in input.md and cite the key next to every statement about that paper. "
-    "A C-level paper has only its one-line summary — say nothing beyond it. Statements about "
-    "OUR work, and every difference between our work and prior work, are grounded in a quoted "
-    "passage of idea.md (section 5 for differences) — never derived from the notes.")
 
 
 # "把答案锚定在证据上"对每个取材源含义不同:idea 答案锚定在作者自己的设计陈述,
 # data 答案锚定在记录下来的某个数字。idea 现在是每个 stage 提示词第一行就指向的
 # 全局文件,所以指令说"读 idea.md",而不是去找某个 pack 里的小节标题。
 _GROUNDING_RULE = {
-    IDEA: ("Ground it in a specific passage of idea.md (read it in full) — quote the "
+    IDEA: ("Ground it in a specific passage of idea.md (attached) — quote the "
            "author's own wording for the design or claim you are relying on. A number "
            "from data-index.md is acceptable only as motivation, never as the "
            "explanation of why the design works."),
@@ -134,26 +92,17 @@ _GROUNDING_RULE = {
 }
 
 
-def _evidence_boundary(family: str, types: list[str] | None = None,
-                       folder_path: str = "") -> str:
-    """一句话点明本节的证据边界:idea 是全局最高优先输入;data 类额外读 data-index;
-    相关工作/背景章额外读本章 input.md 选定文献的笔记。"""
-    if _is_literature(types):
-        return (
-            f"Read idea.md in full — it states OUR contribution and (section 5) how it differs "
-            f"from prior work. Then read '{folder_path}/input.md' — the references selected for "
-            f"this chapter — and read the note of every A-level and B-level paper listed there "
-            f"with read_reference(key). The notes are the evidence for everything said about "
-            f"prior work; idea.md is the evidence for everything said about ours.")
+def _evidence_boundary(family: str) -> str:
+    """一句话点明本节的证据边界:idea 是全局最高优先输入;data 类额外读 data-index。"""
     idea_line = (
-        f"Read idea.md in full — it is the author's own statement of the contribution "
-        f"(novelty, mechanism, design). It is the highest-priority input for every "
-        f"section; never restate it from memory, never paraphrase the claim.")
+        "The document idea.md (attached) is the author's own statement of the contribution "
+        "(novelty, mechanism, design). It is the highest-priority input for every "
+        "section; never restate it from memory, never paraphrase the claim.")
     if family in (DATA, MIXED):
         data_line = (
-            f" Also read '{data_index_path(DATA_ROOT)}' — the program-generated data index "
-            f"(one grid per result table, cells shown as `{{{{RES-xxx}}}}=value`). Every number "
-            f"you cite must trace to a cell there.")
+            " The document data-index.md (attached) is the program-generated data index "
+            "(one grid per result table, cells shown as `{{RES-xxx}}=value`). Every number "
+            "you cite must trace to a cell there.")
         return idea_line + data_line
     return idea_line
 
@@ -168,12 +117,11 @@ def build_evidence_mining_prompt(section_title: str, reference_excerpt: str,
         f"- **{name}**: {focus}" for name, focus in perspectives_for_route(family, types or [])
     )
     evidence_hint = ""
-    grounding = (_LITERATURE_GROUNDING if _is_literature(types)
-                 else _GROUNDING_RULE.get(family, _GROUNDING_RULE[MIXED]))
+    grounding = _GROUNDING_RULE.get(family, _GROUNDING_RULE[MIXED])
     family_note = (f"This is an evidence pack for a {family}-family section: "
                    f"the questions below are the ones this section's own evidence can "
                    f"answer. Do not import criteria from another section type.\n\n")
-    boundary = _evidence_boundary(family, types, folder_path)
+    boundary = _evidence_boundary(family)
     return (
         f"You are running PRE-DRAFT EVIDENCE MINING for section: \"{section_title}\".\n"
         f"Do not write prose for the paper yet. Your only output is an evidence pack.\n\n"
@@ -187,10 +135,10 @@ def build_evidence_mining_prompt(section_title: str, reference_excerpt: str,
         f"- If the evidence does not support an answer, write exactly: "
         f"\"I cannot answer from the provided evidence.\" then note what is needed.\n"
         f"- Never invent numbers, citations, mechanisms, or experimental details.\n\n"
-        f"Write the result to '{folder_path}/evidence-pack.md' with this structure:\n"
+        f"Return the result as evidence-pack.md with this structure:\n"
         f"## <Perspective>\n### Q: <question>\nA: <grounded answer or the gap declaration>\n\n"
-        f"End with '## Open Gaps' listing every unanswered question — these become "
-        f"drafting caveats, not fabrications.\n\n"
+        f"End with '## Open Gaps' listing every unanswered question — these mark what the "
+        f"paper must NOT claim; they are not material to write about.\n\n"
         f"{evidence_hint}"
     )
 
@@ -207,27 +155,28 @@ def build_input_material_prompt(chapter: str, brief_path: str, folder_path: str,
     """
     return (
         f"You are preparing the source material for chapter \"{chapter}\".\n"
-        f"Read idea.md in full — it states the contribution this chapter argues for; the "
+        f"The document idea.md (attached) states the contribution this chapter argues for; the "
         f"references you select must serve THAT contribution, not a generic one.\n"
-        f"Read '{brief_path}' — this chapter's spec (its declared `type:` and the "
+        f"The document brief.md (attached) is this chapter's spec (its declared `type:` and the "
         f"numbered sections it must cover).\n\n"
         f"{reference_rule}"
-        f"From the author's reference index below (one row per paper; the `key` column is "
-        f"the ONLY citable key), assemble the source material this chapter needs into a new "
-        f"'{folder_path}/input.md':\n"
+        f"From the attached ref-index.md and note:<key> documents (one row per paper; the `key` column is "
+        f"the ONLY citable key), assemble the source material this chapter needs and return it as "
+        f"input.md:\n"
         f"- The references this chapter needs, as a table with the header "
         f"`| key | level | section(s) | use in this chapter |`. For an A-level paper, the `use` cell "
         f"names the specific method / formula / experiment / limitation points this chapter will draw "
-        f"on (call read_reference(key) to get them); for a B-level paper, the one point this chapter "
+        f"on (use the attached note:<key> document); for a B-level paper, the one point this chapter "
         f"needs; for a C-level paper, the one-line reason it is cited. Choose by the one-line summary, "
         f"tags and level, and obey the REFERENCE RULES FOR THIS CHAPTER above.\n"
         f"- Any per-section pointers the drafter should reuse (which prior result to cite "
         f"  where, which comparison to draw).\n"
+        f"- If data-index.md / the experiment settings are attached, they are the data source "
+        f"  of this chapter: point to them, never state that data or a data index is missing.\n"
         f"- Keep it scoped to this chapter only; do NOT restate the contribution (it lives "
         f"  in idea.md) and do NOT list numbers (they live in data-index.md / data/).\n\n"
-        f"Write only '{folder_path}/input.md'. If the index is empty or nothing fits, leave a "
-        f"`> [REFERENCE NEEDED: ...]` line rather than inventing a key.\n\n"
-        f"=== AUTHOR REFERENCE INDEX ===\n{reference_index}\n"
+        f"Return only input.md. If the index is empty or nothing fits, leave a "
+        f"`> [REFERENCE NEEDED: ...]` line rather than inventing a key.\n"
     )
 
 
@@ -241,21 +190,44 @@ def run_input_material(manager_agent, folder_path, chapter, family,
     input_path = os.path.join(folder_path, "input.md")
     if os.path.exists(input_path):
         return "skipped"
-    print(f"[Manager  ] Stage 0/4  | Build chapter material (from references) "
-          f"→ {folder_path}/input.md", flush=True)
+    print(f"▶ 正在为【{os.path.basename(os.path.normpath(folder_path))}】挑选并整理要用的参考文献", flush=True)
     # 文献索引缺失必须报错(而不是当成空文献):备料拿到空索引,input.md 又"存在即
     # 跳过"会永久保留这份空素材。索引由 --go / --index 先行生成。
-    from config import REF_INDEX_PATH
+    from config import REF_INDEX_PATH, IDEA_PATH
+    from .content_stage import Doc
+    from .materials import all_notes_size, known_keys, keys_in_text, note_docs
     if not Path(REF_INDEX_PATH).is_file():
         raise FileNotFoundError(
             f"文献索引不存在: {REF_INDEX_PATH}(先建索引再跑章节)")
-    bibliography_excerpt = Path(REF_INDEX_PATH).read_text(encoding="utf-8", errors="replace")
     from .chapter_contract import build_contract_reference_rule
     reference_rule = build_contract_reference_rule(route) if route else ""
     set_agent_context("Manager")
+    brief = Doc("brief.md", os.path.join(folder_path, "brief.md"))
+    head = [Doc("idea.md", IDEA_PATH), brief, Doc("ref-index.md", REF_INDEX_PATH)]
+    if family in (DATA, MIXED):
+        # 数据章的备料也要看到数据索引与实验设置,否则模型会在 input.md 里写
+        # "没有数据索引",这句话随后被每个起草/评审阶段当成事实
+        from .paths import settings_path
+        if Path(data_index_path(DATA_ROOT)).is_file():
+            head.append(Doc("data-index.md", data_index_path(DATA_ROOT)))
+        sp = settings_path(DATA_ROOT)
+        if sp.is_file():
+            head.append(Doc(sp.name, sp))
+    if all_notes_size() <= ALL_NOTES_BUDGET:
+        notes = note_docs(sorted(known_keys()), max_notes=10_000)
+    else:
+        # 文献太多放不下全部笔记:先让模型只按索引挑出本章要用的,再附这些文献的笔记
+        run_agent_stage(manager_agent, "Manager", (
+            f"Choose the papers chapter \"{chapter}\" should cite. Read the chapter spec "
+            f"(brief.md) and the reference index (ref-index.md; the `key` column is the only "
+            f"citable key). Return input-keys.md: one bullet per chosen paper, `- <key>: why it "
+            f"matters here`, at most 14 papers, most relevant first.\n{reference_rule}"),
+            head, ["input-keys.md"])
+        picked = Path(folder_path, "input-keys.md")
+        keys = keys_in_text(picked.read_text(encoding="utf-8") if picked.is_file() else "")
+        notes = note_docs(keys)
     result = run_agent_stage(manager_agent, "Manager", build_input_material_prompt(
-        chapter, os.path.join(folder_path, "brief.md"), folder_path, family,
-        bibliography_excerpt, reference_rule=reference_rule))
+        chapter, "brief.md", folder_path, family, "", reference_rule=reference_rule), head + notes, ["input.md"])
     set_agent_context("Manager")
     verify(["input.md"])
     return result
@@ -263,7 +235,7 @@ def run_input_material(manager_agent, folder_path, chapter, family,
 
 def run_evidence_mining(draft_agent, folder_path, section_title,
                         reference_excerpt, run_agent_stage, verify, set_agent_context,
-                        family: str = DATA, types: list[str] | None = None):
+                        family: str = DATA, docs=None, types: list[str] | None = None):
     """执行一轮证据挖掘。可续跑:evidence-pack.md 存在即跳过。返回 agent 结果或 "skipped"。
 
     调用前须保证 input.md 已存在(先跑 run_input_material)。idea 全文与 data-index
@@ -274,7 +246,8 @@ def run_evidence_mining(draft_agent, folder_path, section_title,
         return "skipped"
     set_agent_context("Draft")
     result = run_agent_stage(draft_agent, "Draft", build_evidence_mining_prompt(
-        section_title, reference_excerpt, folder_path, family, types=types))
+        section_title, reference_excerpt, folder_path, family, types=types),
+        list(docs or []), ["evidence-pack.md", "todo.md"])
     set_agent_context("Manager")
     verify(["evidence-pack.md"])
     return result

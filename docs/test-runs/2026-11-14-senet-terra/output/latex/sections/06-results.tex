@@ -1,0 +1,36 @@
+\section{Results}
+
+\subsection{Classification Error Across Backbone Depths}
+
+SE-ResNet lowered both top-1 and top-5 error at every matched depth on ImageNet-1K. The comparisons reported by Hu et al. \cite{hu2018squeeze} paired each SE-ResNet with its corresponding ResNet baseline \cite{he2016resnet} under the same training setup. Table \ref{tab:x-d526b8} presents the errors and forward-pass computation for all six models.
+
+\begin{table}[t]
+\centering
+\caption{Matched-depth ImageNet-1K classification errors and forward-pass computation}
+\label{tab:x-d526b8}
+\begin{tabular}{lrrr}
+\toprule
+Method & Top-1 Err $\downarrow$ & Top-5 Err $\downarrow$ & GFLOPs $\downarrow$ \\
+\midrule
+ResNet-50 & 24.80 & 7.48 & \textbf{3.86} \\
+SE-ResNet-50 & 23.29 & 6.62 & 3.87 \\
+ResNet-101 & 23.17 & 6.52 & 7.58 \\
+SE-ResNet-101 & 22.38 & 6.07 & 7.60 \\
+ResNet-152 & 22.42 & 6.34 & 11.30 \\
+SE-ResNet-152 & \textbf{21.57} & \textbf{5.73} & 11.32 \\
+\bottomrule
+\end{tabular}
+\par\vspace{2pt}{\footnotesize Results reported by Hu et al. \textbackslash\{\}cite\{hu2018squeeze\}.}
+\end{table}
+
+At depth 50, SE-ResNet-50 reduced top-1 error by 1.51 percentage points and top-5 error by 0.86 percentage points relative to ResNet-50. The top-1 reduction was the largest among the three matched-depth comparisons.
+
+At depth 101, SE-ResNet-101 reduced top-1 error by 0.79 percentage points and top-5 error by 0.45 percentage points relative to ResNet-101. At depth 152, the corresponding reductions were 0.85 and 0.61 percentage points. The direction of the comparison was consistent across depths for both metrics, although the size of the reduction varied.
+
+SE-ResNet-152 achieved the lowest errors among the listed models, with top-1 error of 21.57\% and top-5 error of 5.73\%. A cross-depth comparison also favored SE-ResNet-101 over ResNet-152: its top-1 error was 22.38\% versus 22.42\%, and its top-5 error was 6.07\% versus 6.34\%. In this comparison, a shallower SE-ResNet achieved lower error on both metrics than the deeper ResNet baseline.
+
+\subsection{Computational Cost of Recalibration}
+
+The error reductions came with small increases in forward-pass GFLOPs at every matched depth. As shown in Table \ref{tab:x-d526b8}, SE-ResNet-50 required 0.01 more GFLOPs than ResNet-50. The corresponding increases were 0.02 GFLOPs for the depth-101 pair and 0.02 GFLOPs for the depth-152 pair. The two deeper pairs had equal absolute increases, both larger than the increase for the depth-50 pair.
+
+Relative to their matched ResNet baselines, the increases were 0.26\%, 0.26\%, and 0.18\% at depths 50, 101, and 152, respectively. Although the absolute increases were equal for the two deeper pairs, the increase represented a smaller fraction of baseline computation at depth 152. Across all three pairs, SE-ResNet achieved lower classification error with a small addition to forward-pass computation.

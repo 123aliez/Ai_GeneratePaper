@@ -24,7 +24,18 @@ from email.utils import parsedate_to_datetime
 from typing import Any
 
 
-# ── 唯一向上冒泡的异常 ──────────────────────────────────────────────────
+# ── 明确的模型失败与重试用尽异常 ────────────────────────────────────────
+class ModelCallError(Exception):
+    """适配器明确分类的失败；用户提示由程序生成，不含服务端回显。"""
+
+    def __init__(self, user_message: str, *, retryable: bool,
+                 status_code: int | None = None):
+        super().__init__(user_message)
+        self.user_message = user_message
+        self.retryable = retryable
+        self.status_code = status_code
+
+
 class TransientModelUnavailable(Exception):
     """ResilientModel 把单次 logical call 重试到上限仍未成功时抛出。
 
@@ -222,6 +233,10 @@ def classify_error(exc: BaseException) -> ErrorVerdict:
     但 2xx+body 这一路必须查——否则 Anthropic SSE 中断会被当成"200 成功"漏掉。
     reason 字段只用固定模式标识，绝不写入异常原文（防 key/prompt 泄漏到日志）。
     """
+    # CLI 订阅额度的 429 是永久失败，优先采用适配器的明确结论；API 的 429 仍按原策略重试。
+    if isinstance(exc, ModelCallError):
+        return ErrorVerdict(exc.retryable, exc.status_code, None,
+                            "explicit transient model error" if exc.retryable else "explicit permanent model error")
     status = _extract_status_code(exc)
     retry_after = _extract_retry_after(exc)
 

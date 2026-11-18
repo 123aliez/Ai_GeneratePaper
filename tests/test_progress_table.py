@@ -38,28 +38,28 @@ class FullRecordingAgent:
         self.folder = folder
         self.prompts = []
 
-    def run(self, prompt, **kwargs):
-        self.prompts.append(prompt)
-        # 所有会被 verify() 检查的产物名
-        for name in ("evidence-pack.md", "draft-v1.plan.md", "todo.md",
-                     "draft-v1.part-1.md", "draft-v1.part-2.md", "draft-v1.part-3.md",
-                     "draft-v1.md", "review-v1.md", "review-v1.json",
-                     "draft-v2.md", "final.md", "final.zh.md", "decision.md",
-                     "cross-chapter-draft.md"):
-            if f"/{name}'" in prompt and not os.path.exists(os.path.join(self.folder, name)):
-                path = Path(self.folder, name)
-                if name == "review-v1.json":
-                    # 收敛循环要 read_json_artifact 解析它:必须是合法 JSON,
-                    # 含 must_fix 空列表(无 MUST FIX → 单轮 polish)。
-                    path.write_text(
-                        '{"scores": {"overall": 5}, "decision": "ACCEPT", '
-                        '"must_fix": [], "should_fix": [], "consider": []}',
-                        encoding="utf-8")
-                else:
-                    path.write_text(
-                        f"# {name}\n\nplaceholder written by the test harness.\n",
-                        encoding="utf-8")
-        return f"wrote artifacts for prompt #{len(self.prompts)}"
+    def run_stage(self, task, docs, deliverables, out_dir, **kwargs):
+        from agents.content_stage import StageOutcome
+        self.prompts.append(task)
+        outcome = StageOutcome(rounds=1)
+        for name in deliverables:
+            path = Path(out_dir, name)
+            if path.exists():
+                outcome.written.append(name)
+                continue
+            if name == "review-v1.json":
+                # 收敛循环要解析它:必须是合法 JSON,must_fix 空列表(无 MUST FIX → 单轮 polish)
+                path.write_text(
+                    '{"checklist": [], "decision": "ACCEPT", '
+                    '"must_fix": [], "should_fix": [], "consider": [], "needs_citation": []}',
+                    encoding="utf-8")
+            elif name == "cross-chapter-entries.md":
+                path.write_text("## Per-Chapter Key Claims\n- harness claim\n", encoding="utf-8")
+            else:
+                path.write_text(f"# {name}\n\nplaceholder written by the test harness.\n",
+                                encoding="utf-8")
+            outcome.written.append(name)
+        return outcome
 
     def text(self) -> str:
         return "\n\n".join(self.prompts)

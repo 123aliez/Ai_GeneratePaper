@@ -18,7 +18,7 @@
 给模型看的只有程序生成到索引目录的东西:
 - ref-index.md:每篇一行(key / 级别 / 标题 / 年份 / 出处 / tags / 一句话总结 / 笔记 / 原文);
 - refs/<key>.md:A/B 为过滤版笔记;C 级只有一句话总结,正文与原文都不进上下文;
-- ref-levels.json:key → 级别,供 search_reference_text 拦截 C 级。
+- ref-levels.json:key → 级别,供脚本侧原文查询拦截 C 级。
 A/B 的原文只能经 search_fulltext 按关键词取片段(有长度上限),不整篇进上下文。
 
 引用 key 只认 refs.bib(citable_keys),模型给的任何其它 key 都不是合法引用。
@@ -698,9 +698,9 @@ def render_ref_index(lib: Library) -> str:
         "# 文献索引(程序生成,勿手改;源头是 inbox/references/)",
         "",
         "引用只能用下表第一列的 key:`\\cite{key}`。级别决定读多深,不决定能不能用:",
-        "- A 级:用 read_reference(key) 读完整笔记,按需提取方法、公式、实验、局限;需要原文细节时用 search_reference_text(key, 关键词)。",
-        "- B 级:用 read_reference(key) 读笔记,只取本章需要的部分;原文片段同样可查。",
-        "- C 级:只有一句话总结(read_reference 也只返回它),原文不可查;只用于一般背景引用,不展开描述。",
+        "- A 级:脚本把所选文献笔记附为 note:<key>,按需提取方法、公式、实验、局限;需要原文细节时返回 <lookup key=\"key\">关键词</lookup>,由脚本代查。",
+        "- B 级:阅读附上的 note:<key>,只取本章需要的部分;原文片段同样可查。",
+        "- C 级:只有一句话总结,原文不可查;只用于一般背景引用,不展开描述。",
         "标“无笔记”的条目只知道题录,不要描述它的内容。",
         "",
         "| key | 级别 | 标题 | 年份 | 出处 | tags | 一句话总结 | 笔记 | 原文 |",
@@ -751,7 +751,7 @@ def _note_view(key: str, rec: PaperRecord, entry: BibEntry) -> str:
     head = (f"# [{key}] {entry.title}\n\n"
             f"- 出处: {entry.venue or '?'} {entry.year}\n"
             f"- 级别: {rec.level}({label})\n"
-            f"- 原文: {'有,可用 search_reference_text 取片段' if rec.fulltext_path else '无'}\n\n")
+            f"- 原文: {'有,可返回 <lookup> 由脚本取片段' if rec.fulltext_path else '无'}\n\n")
     return head + filter_note(text)
 
 

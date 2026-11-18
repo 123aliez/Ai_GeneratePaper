@@ -30,27 +30,37 @@ def check(label: str, condition: bool, detail: str = "") -> None:
 
 
 class RecordingAgent:
-    """Stands in for a CodeAgent: records the prompt, writes the artifact the
-    orchestrator will verify, and returns. Lets a whole run complete offline."""
+    """Stands in for a ContentAgent: records the task and the attached documents, writes the
+    artifacts the orchestrator will verify, and returns. Lets a whole run complete offline."""
 
     # 告诉 orchestrator 这是离线测试桩:Stage 2 的 review-v1.json 单轮直调路径
-    # (structured_call → get_review_model → 真实网关)据此跳过,仍由本桩按
-    # CodeAgent 旧路径补写产物,离线套件不发任何 API 请求。
+    # (structured_call → get_review_model → 真实网关)据此跳过,review-v1.json 作为产物
+    # 由本桩一并写出,离线套件不发任何 API 请求。
     _offline_test_stub = True
+    # 这个桩会写出的产物;不在清单里的产物不写(模拟「只跑到这一段」)
+    WRITES = ("evidence-pack.md", "draft-v1.plan.md", "todo.md",
+              "draft-v1.part-1.md", "draft-v1.part-2.md", "draft-v1.part-3.md")
 
     def __init__(self, folder: str):
         self.folder = folder
         self.prompts = []
+        self.doc_sets = []      # 每次调用附的文档名
 
-    def run(self, prompt, **kwargs):
-        self.prompts.append(prompt)
-        # Satisfy whichever artifact this stage's verify() will look for.
-        for name in ("evidence-pack.md", "draft-v1.plan.md", "todo.md",
-                     "draft-v1.part-1.md", "draft-v1.part-2.md", "draft-v1.part-3.md"):
-            if f"/{name}'" in prompt and not os.path.exists(os.path.join(self.folder, name)):
-                Path(self.folder, name).write_text(
-                    f"# {name}\n\nplaceholder written by the test harness.\n", encoding="utf-8")
-        return f"wrote artifacts for prompt #{len(self.prompts)}"
+    def run_stage(self, task, docs, deliverables, out_dir, **kwargs):
+        from agents.content_stage import StageOutcome
+        self.prompts.append(task)
+        self.doc_sets.append([d.name for d in docs])
+        outcome = StageOutcome(rounds=1)
+        for name in deliverables:
+            if name in self.WRITES:
+                path = Path(out_dir, name)
+                if not path.exists():
+                    path.write_text(f"# {name}\n\nplaceholder written by the test harness.\n",
+                                    encoding="utf-8")
+                outcome.written.append(name)
+            else:
+                outcome.missing.append(name)
+        return outcome
 
     def text(self) -> str:
         return "\n\n".join(self.prompts)
@@ -165,8 +175,8 @@ def test_method_chapter_runs_without_data():
     check("规划+各起草段提示词被触发", len(rewrite_starts) >= 2,
           str([p[:50] for p in agent.prompts]))
     check("规划/起草段都以 idea.md 开头",
-          all(p.startswith("FIRST read idea.md") for p in rewrite_starts),
-          str([p[:60] for p in rewrite_starts if not p.startswith("FIRST read idea.md")]))
+          all(p.startswith("The document idea.md (attached)") for p in rewrite_starts),
+          str([p[:60] for p in rewrite_starts if not p.startswith("The document idea.md (attached)")]))
 
 
 # ── 2. a results chapter with no data blocks before any model call ───────
@@ -239,7 +249,7 @@ def test_results_chapter_runs_with_data():
     text = agent.text()
     check("results chapter with data reaches the model", len(agent.prompts) > 0)
     check("data perspectives are used for evidence mining",
-          "Statistics reviewer" in text, text[:200])
+          "Headline-result reviewer" in text, text[:200])
     check("novelty perspectives are NOT used for a results chapter",
           "Attribution reviewer" not in text and "Positioning reviewer" not in text)
     check("drafter is told the results are primary", "DATA chapter" in text)
@@ -342,83 +352,49 @@ type: results
 
 
 class FullRunAgent(RecordingAgent):
-    """跑到底的 RecordingAgent:补齐 Stage 2-5 要 verify 的产物。
+    """跑到底的 RecordingAgent:每个阶段声明的产物都造出来。
 
-    RecordingAgent 只写到 draft part 就停(它服务的是前几个测试),流水线在
-    Stage 2 的 verify 上返回。写作契约要验的恰恰是修订轮与定稿轮有没有带上,
-    所以这里把每个阶段的产物都造出来,包括一份 schema 合法的 review-v1.json——
-    orchestrator 在进收敛循环前会校验它,不合法就删掉并提前返回。
+    写作契约要验的恰恰是修订轮与定稿轮有没有带上,所以每个阶段的产物都要有,
+    包括一份 schema 合法的 review-v1.json——orchestrator 在进收敛循环前会校验它,
+    不合法就删掉并提前返回。
     """
 
-    ARTIFACTS = (
-        "input.md", "evidence-pack.md", "draft-v1.plan.md", "todo.md",
-        "draft-v1.part-1.md", "draft-v1.part-2.md", "draft-v1.part-3.md",
-        "review-v1.md", "draft-v2.md", "decision.md",
-        "final.md", "final.zh.md",
-    )
-
-    def run(self, prompt, **kwargs):
+    def run_stage(self, task, docs, deliverables, out_dir, **kwargs):
         import json as _json
-        import re as _re
-        self.prompts.append(prompt)
-
-        for name in self.ARTIFACTS:
-            if f"/{name}'" in prompt and not os.path.exists(os.path.join(self.folder, name)):
-                Path(self.folder, name).write_text(
-                    f"# {name}\n\nplaceholder written by the test harness.\n",
-                    encoding="utf-8")
-
-        # 收敛循环的轮次产物:名字里带轮号,按提示词里出现的文件名建。
-        for name in set(_re.findall(r"(draft-v2\.round-\d+\.md)", prompt)):
-            Path(self.folder, name).write_text(
-                "# round draft\n\nplaceholder.\n", encoding="utf-8")
-
-        # 结构化产物必须 schema 合法,否则 orchestrator 判为无效并提前返回。
-        # 按 REVIEW_JSON_SCHEMA_HINT 的完整 schema 写,不是随手编的字段:
-        # orchestrator 进收敛循环前会校验 must_fix,schema 不合法会被判无效并
-        # 提前返回,那时"修订轮带了契约"这类断言根本走不到。
-        if "review-v1.json" in prompt:
-            Path(self.folder, "review-v1.json").write_text(_json.dumps({
-                "scores": {"accuracy": 4, "completeness": 4, "clarity": 4,
-                           "structure": 4, "readability": 4, "ai_traces": 4,
-                           "style_consistency": 4, "overall": 4},
-                "decision": "REVISE",
-                "must_fix": [{"id": "MF1", "location": "section 1",
-                              "issue": "placeholder", "suggestion": "placeholder"}],
-                "should_fix": [], "consider": [], "needs_citation": [],
-            }, ensure_ascii=False), encoding="utf-8")
-        for name in set(_re.findall(r"(review-verify\.round-\d+\.json)", prompt)):
-            Path(self.folder, name).write_text(_json.dumps({
-                "all_resolved": True,
-                "items": [{"id": "MF1", "resolved": True, "note": "placeholder"}],
-            }, ensure_ascii=False), encoding="utf-8")
-
-        # 只有真正的 Stage 5 才能改跨章状态。Stage 1a 的规划提示词里也带着这个
-        # 路径(规划者要读它),只按路径匹配的话 Stage 1 就会提前伪造出成功标记,
-        # 真实 Stage 5 完全失效测试也照样通过——那就是自欺。
-        if "so the NEXT chapter can stay consistent" in prompt:
-            final_match = _re.search(r"Read '([^']+)/final\.md'", prompt)
-            chapter = (Path(final_match.group(1)).name if final_match
-                       else Path(self.folder).name)
-            marker = f"- [{chapter}] "
-            heading = "## Per-Chapter Key Claims"
-            # 新契约:Agent 读跨章状态但**写候选文件**,由编排器校验后才原子替换。
-            # 直接写目标文件的旧行为已经不可能通过校验——那正是这次改动要防的:
-            # Agent 静默删掉前章条目时,原文件必须保持不动。
-            candidate = _re.search(r"'([^']*cross-chapter-draft\.md)'", prompt)
-            source = _re.search(r"'([^']*cross-chapter-state\.md)'", prompt)
-            if candidate and source and os.path.exists(source.group(1)):
-                old = Path(source.group(1)).read_text(encoding="utf-8")
-                # 模拟真实的 upsert 契约:先删本章旧条目,再在 Key Claims 里写一条。
-                cleaned = "\n".join(line for line in old.splitlines()
-                                    if not line.startswith(marker)) + "\n"
-                Path(candidate.group(1)).write_text(
-                    cleaned.replace(heading,
-                                    f"{heading}\n\n{marker}written by the test harness",
-                                    1),
-                    encoding="utf-8")
-
-        return f"wrote artifacts for prompt #{len(self.prompts)}"
+        from agents.content_stage import StageOutcome
+        self.prompts.append(task)
+        self.doc_sets.append([d.name for d in docs])
+        outcome = StageOutcome(rounds=1)
+        for name in deliverables:
+            path = Path(out_dir, name)
+            if name == "review-v1.json":
+                text = _json.dumps({
+                    "checklist": [{"id": 1, "answer": "yes", "evidence": "placeholder"}],
+                    "decision": "REVISE",
+                    "must_fix": [{"id": "MF1", "location": "section 1",
+                                  "issue": "placeholder", "suggestion": "placeholder"}],
+                    "should_fix": [], "consider": [], "needs_citation": [],
+                }, ensure_ascii=False)
+            elif name.startswith("review-verify.round-"):
+                text = _json.dumps({
+                    "all_resolved": True,
+                    "items": [{"id": "MF1", "resolved": True, "note": "placeholder"}],
+                }, ensure_ascii=False)
+            elif name == "cross-chapter-entries.md":
+                # Stage 5:只给本章条目,合并由脚本完成
+                text = ("## Terminology Decisions\n- written by the test harness\n"
+                        "## Per-Chapter Key Claims\n- written by the test harness\n"
+                        "## Unresolved Cross-Chapter Issues\n- none\n")
+            elif name.startswith("draft-v2.round-"):
+                text = "# round draft\n\nplaceholder.\n"
+            else:
+                if path.exists():
+                    outcome.written.append(name)
+                    continue
+                text = f"# {name}\n\nplaceholder written by the test harness.\n"
+            path.write_text(text, encoding="utf-8")
+            outcome.written.append(name)
+        return outcome
 
 
 def _is_rewrite_prompt(prompt: str) -> bool:
@@ -485,11 +461,11 @@ def test_full_paper_route_reaches_prompts():
     check("整篇路由跑 Stage 5 更新跨章状态",
           any("so the NEXT chapter can stay consistent" in p for p in agent.prompts),
           str([p[:60] for p in agent.prompts]))
-    check("Stage 5 要求带章节前缀以便幂等重跑",
-          "`- [02-method] `" in text, text[-1500:])
+    # 幂等不再靠提示词要求模型带前缀:合并由脚本完成(见 test_upsert_cross_chapter_is_idempotent)
+    check("Stage 5 只要求模型写本章条目", "cross-chapter-entries.md" in text)
     xchap_text = Path(ws, "cross-chapter-state.md").read_text(encoding="utf-8")
-    check("只有 Stage 5 写了 Key Claims 标记(Stage 1 没提前伪造)",
-          xchap_text.count("- [02-method] ") == 1, xchap_text)
+    check("本章条目只来自 Stage 5(三个小节各一条,由脚本合并)",
+          xchap_text.count("- [02-method] ") == 3, xchap_text)
     check("跨章交接被判为成功", result.get("stage5_xchap_ok") is True, str(result))
 
     # 每一个会写正文的阶段都必须带 FULL 契约。漏一个,后面的轮次就会把前面按
@@ -501,11 +477,35 @@ def test_full_paper_route_reaches_prompts():
         check("每个整篇正文改写提示词都带 FULL 契约",
               "WRITING MODE: FULL-PAPER" in prompt, prompt[:400])
         check("每个整篇正文改写阶段都以 idea.md 开头",
-              prompt.startswith("FIRST read idea.md"),
+              prompt.startswith("The document idea.md (attached)"),
               prompt[:80])
 
     # 审稿侧同样按整篇判
     check("审稿按整篇判(查重复定义)", "re-defines a term already fixed" in text)
+
+
+def test_upsert_cross_chapter_is_idempotent():
+    """跨章状态的合并由脚本完成:删本章旧条目、追加新条目、不碰别章,重跑结果不变。"""
+    from agents.orchestrator import (upsert_cross_chapter, cross_chapter_state_preserves_others,
+                                     cross_chapter_state_has_claim)
+    base = ("# Cross-chapter state\n\n## Terminology Decisions\n\n- [01-a] keep one\n\n"
+            "## Per-Chapter Key Claims\n\n- [01-a] claim a\n\n"
+            "## Unresolved Cross-Chapter Issues\n\n- [01-a] issue a\n")
+    entries = ("## Terminology Decisions\n- SE block\n"
+               "## Per-Chapter Key Claims\n- [02-b] claim b\n"
+               "## Unresolved Cross-Chapter Issues\n- later chapter must cover X\n")
+    once = upsert_cross_chapter(base, entries, "02-b")
+    twice = upsert_cross_chapter(once, entries, "02-b")
+    check("重跑结果不变(幂等)", once == twice, twice)
+    check("别章条目一条不少", cross_chapter_state_preserves_others(base, once, "02-b"))
+    check("本章条目带前缀并落在对应小节", cross_chapter_state_has_claim(once, "02-b")
+          and "- [02-b] SE block" in once and "- [02-b] later chapter must cover X" in once, once)
+    check("模型自己写的 [章名] 前缀不会重复", once.count("[02-b] [02-b]") == 0 and
+          once.count("- [02-b] claim b") == 1, once)
+    changed = upsert_cross_chapter(once, "## Per-Chapter Key Claims\n- new claim\n", "02-b")
+    check("重跑换内容 → 本章旧条目被替换而不是堆叠",
+          "claim b" not in changed and "- [02-b] new claim" in changed
+          and "SE block" not in changed, changed)
 
 
 def test_full_paper_rewrite_stages_lead_with_idea():
@@ -533,8 +533,8 @@ def test_full_paper_rewrite_stages_lead_with_idea():
     for name, hit in kinds.items():
         check(f"整篇跑到了 {name} 阶段", hit)
     check("每个正文改写阶段都以 idea.md 开头",
-          all(p.startswith("FIRST read idea.md") for p in rewrite_prompts),
-          str([p[:60] for p in rewrite_prompts if not p.startswith("FIRST read idea.md")]))
+          all(p.startswith("The document idea.md (attached)") for p in rewrite_prompts),
+          str([p[:60] for p in rewrite_prompts if not p.startswith("The document idea.md (attached)")]))
 
 
 def test_system_prompts_require_cross_chapter_context():
@@ -545,10 +545,10 @@ def test_system_prompts_require_cross_chapter_context():
     for name, instructions in (("Draft", DRAFT_INSTRUCTIONS),
                                ("Review", REVIEW_INSTRUCTIONS)):
         check(f"{name} 系统指令要求读取跨章上下文",
-              "Cross-chapter context: read only the cross-chapter-state / structure paths"
+              "Cross-chapter context: use only the cross-chapter-state / structure documents"
               in instructions, instructions[-1400:])
     check("Manager 系统指令要求读取跨章上下文",
-          "Cross-chapter context: read the cross-chapter-state.md path"
+          "Cross-chapter context: use the attached cross-chapter-state.md"
           in MANAGER_INSTRUCTIONS, MANAGER_INSTRUCTIONS[-1400:])
 
 

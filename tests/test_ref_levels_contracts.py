@@ -24,7 +24,7 @@ from agents.prompts import REVIEW_INSTRUCTIONS
 from agents.project import new_project
 from agents.references import build_reference_index, scan_library
 from agents.skills_registry import STAGE_PROMPT_VERSION, skills_fingerprint
-from agents.tools import search_reference_text
+from agents.materials import lookup_fulltext, note_docs
 from test_pipeline_routing import (FullRunAgent, IDEA_TEXT, make_data, make_full_paper_ws,
                                    make_ws_in_outline, set_idea)
 
@@ -154,7 +154,7 @@ def test_scan_and_index():
     check("T08 ref-levels.json",
           levels == {"convnext": "C", "daft": "C", "fungi": "B", "qmf": "A", "yoon": "A"}, str(levels))
 
-    # T09:工具按 config 指向夹具索引。
+    # T09:在纯内容架构的实际检索入口验证级别限制与日志。
     saved = (config.INDEX_DIR, config.REFS_BIB_PATH, config.REFERENCES_ROOT)
     fresh = fixture()
     fresh_out = Path(tempfile.mkdtemp())
@@ -164,16 +164,30 @@ def test_scan_and_index():
     config.REFERENCES_ROOT = fresh
     try:
         from unittest.mock import patch
-        with patch("agents.tools._log_lookup") as lookup:
-            refused = search_reference_text("daft", "framework")
+        lookup_folder = Path(tempfile.mkdtemp())
+        log = lookup_folder / "fulltext-lookups.md"
+        # 模拟升级前遗留的全文映射:C 级限制不能只依赖新索引恰好不含条目。
+        mapping_path = fresh_out / "ref-fulltext.json"
+        mapping = json.loads(mapping_path.read_text(encoding="utf-8"))
+        mapping["daft"] = str(fresh / "C" / "daft" / "paper.md")
+        mapping_path.write_text(json.dumps(mapping), encoding="utf-8")
+        from agents.references import search_fulltext
+        with patch("agents.references.search_fulltext", wraps=search_fulltext) as search:
+            refused = lookup_fulltext(lookup_folder, "daft", "framework")
             check("T09 C 级被拒", refused.startswith("Reference 'daft' is C-level"), refused)
-            check("T09 C 级拒绝不调用查阅日志", not lookup.called)
-            ok = search_reference_text("yoon", "yoon-unique-term")
-            check("T09 A 级返回片段", ok.startswith("# Excerpts"), ok[:200])
-            check("T09 A 级查阅日志正向对照", lookup.call_count == 1)
+            check("T09 C 级拒绝不检索、不写日志", not search.called and not log.exists())
+            ok = lookup_fulltext(lookup_folder, "yoon", "yoon-unique-term")
+            check("T09 A 级返回片段", "yoon-unique-term" in ok, ok[:200])
+            check("T09 A 级查阅日志正向对照",
+                  search.call_count == 1 and "[yoon]" in log.read_text(encoding="utf-8"))
+        mapping.pop("daft")
+        mapping_path.write_text(json.dumps(mapping), encoding="utf-8")
         (fresh_out / "ref-levels.json").unlink()
-        fallback = search_reference_text("daft", "framework")
+        fallback = lookup_fulltext(lookup_folder, "daft", "framework")
         check("T09 缺登记文件时落到无原文", "has no fulltext available" in fallback, fallback)
+        docs = note_docs(["daft"])
+        check("T09 模型收到 C 级总结且没有正文",
+              "DAFT 变换" in docs[0].text and "UNIQUE-C-BODY-LINE" not in docs[0].text)
     finally:
         config.INDEX_DIR, config.REFS_BIB_PATH, config.REFERENCES_ROOT = saved
 
@@ -288,7 +302,7 @@ def test_pipeline_prompts():
     parts = [p for p in prompts if "Write only Part" in p]
     revise = [p for p in prompts if "Resolve EVERY item in this frozen acceptance checklist" in p]
     final = [p for p in prompts if "final.zh.md" in p]
-    review = [p for p in prompts if "Write a detailed review" in p]
+    review = [p for p in prompts if "Return a detailed review" in p]
     verify = [p for p in prompts if "VERIFY mode" in p]
     stage0a = [p for p in prompts if "preparing the source material" in p]
     stage0b = [p for p in prompts if "PRE-DRAFT EVIDENCE MINING" in p]
@@ -352,7 +366,7 @@ def test_check_and_assemble():
     check("T18 核验状态不变", chs[0].status == "verified" and "核验通过" in report, report)
 
     import agents.skills_registry as reg
-    check("T18 版本号为 3", STAGE_PROMPT_VERSION == 3)
+    check("T18 合并后的提示词版本号为 4", STAGE_PROMPT_VERSION == 4)
     before = skills_fingerprint()
     copy = Path(tempfile.mkdtemp()) / "chapter_contract.py"
     copy.write_text(reg.CONTRACT_PATH.read_text(encoding="utf-8") + "\n# changed\n", encoding="utf-8")

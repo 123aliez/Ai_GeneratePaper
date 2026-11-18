@@ -54,9 +54,12 @@ class FakePlanner:
     """--expand / 翻译用的假规划者。"""
     _offline_test_stub = True
 
-    def run(self, prompt, **kwargs):
+    def run_stage(self, task, docs, deliverables, out_dir, **kwargs):
+        from agents.content_stage import StageOutcome
+        out = StageOutcome(rounds=1, written=list(deliverables))
         if "expand" in CAPTURED and not Path(CAPTURED["expand"][0]).exists():
-            en, zh = CAPTURED["expand"]
+            en = str(Path(out_dir) / Path(CAPTURED["expand"][0]).name)
+            zh = str(Path(out_dir) / Path(CAPTURED["expand"][1]).name)
             chapters = parse_outline(config.INBOX_ROOT / "outline_draft.md")
             for c in chapters:
                 if c["type"] in SHORT_CHAPTER_TYPES:
@@ -72,8 +75,9 @@ class FakePlanner:
             Path(zh).write_text(oe.render_outline(chapters, "T", oe.ZH_EXPANDED_MARKER), encoding="utf-8")
         elif "translate" in CAPTURED:
             zh, cand = CAPTURED.pop("translate")
-            Path(cand).write_text(Path(zh).read_text(encoding="utf-8"), encoding="utf-8")
-        return "ok"
+            zh_text = next(d for d in docs if d.name == "outline.zh.md").load()
+            Path(out_dir, Path(cand).name).write_text(zh_text, encoding="utf-8")
+        return out
 
 
 def _res_id(suffix: str) -> str:
@@ -86,13 +90,10 @@ def _res_id(suffix: str) -> str:
 
 
 class FakeChapterAgent(FullRunAgent):
-    ARTIFACTS = FullRunAgent.ARTIFACTS + ("input.md",)
-
-    def run(self, prompt, **kwargs):
-        result = super().run(prompt, **kwargs)
-        m = re.search(r"'([^']*)/final\.md' \(English\)", prompt)
-        if m:
-            folder = Path(m.group(1))
+    def run_stage(self, task, docs, deliverables, out_dir, **kwargs):
+        result = super().run_stage(task, docs, deliverables, out_dir, **kwargs)
+        if "final.md" in deliverables and "final.zh.md" in deliverables:
+            folder = Path(out_dir)
             name = folder.name
             top1_ours = _res_id("Ours.Top-1↑")
             top1_base = _res_id("ResNet-50.Top-1↑")
@@ -132,13 +133,11 @@ def _create_agents(*_models):
         def __init__(self):
             self._by_folder = {}
 
-        def run(self, prompt, **kwargs):
-            m = re.search(r"'([^']*workspace/[^'/]+)/(?:brief|input|draft|review|final|evidence|todo|"
-                          r"decision|number|cross-chapter-draft)[^']*'", prompt)
-            folder = m.group(1) if m else ""
+        def run_stage(self, task, docs, deliverables, out_dir, **kwargs):
+            folder = str(out_dir)
             if folder not in self._by_folder:
                 self._by_folder[folder] = FakeChapterAgent(folder)
-            return self._by_folder[folder].run(prompt, **kwargs)
+            return self._by_folder[folder].run_stage(task, docs, deliverables, out_dir, **kwargs)
 
     r = Router()
     return r, r, r

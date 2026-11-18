@@ -12,7 +12,7 @@ provider 由 ``.env`` 的显式字段（``*_PROVIDER``）决定，**不再靠 mo
 
 参数职责
 --------
-- ``provider`` ：API 协议 / Adapter 类型（openai | anthropic）
+- ``provider`` ：适配器类型（openai | anthropic | claude_cli）
 - ``model_id`` ：服务端模型 slug（网关真正接受的字符串）
 - ``reasoning_level`` ：统一语义档位（off|low|medium|high|xhigh|max），由 capabilities 翻译
 - ``timeout``/``max_retries``：底层 SDK 客户端的单请求超时与重试次数
@@ -24,7 +24,7 @@ provider 由 ``.env`` 的显式字段（``*_PROVIDER``）决定，**不再靠 mo
     SDK max_retries = 0        （底层客户端不重试）
     smolagents retryer = OFF   （ApiModel retry=False）
     ResilientModel = ON        （唯一瞬时重试 owner）
-    run_agent_stage = 最后兜底 （只对 TransientModelUnavailable 重跑，4 次纯兜底）
+    run_agent_stage = 最后兜底 （永久错误立即停止，其余失败最多 3 次阶段尝试）
 
 因此 ``build_model`` 永远把底层 Model 包进 ``ResilientModel`` 再返回——Agent 层拿到的
 永远是 ResilientModel，对下游完全透明。
@@ -38,7 +38,7 @@ from .retry_policy import RetrySchedule
 from .resilient_model import ResilientModel
 
 # 各 provider 的默认单请求超时（秒）。Claude reasoning 任务更长。
-_DEFAULT_TIMEOUT = {"openai": 300.0, "anthropic": 600.0}
+_DEFAULT_TIMEOUT = {"openai": 300.0, "anthropic": 600.0, "claude_cli": 600.0}
 
 
 def build_model(
@@ -67,15 +67,15 @@ def build_model(
     ----------
     provider : str
         ``"openai"`` 走 smolagents ``OpenAIModel``（openai 官方 SDK）；``"anthropic"`` 走
-        本项目 :class:`agents.anthropic_model.AnthropicModel`（anthropic 官方 SDK + /v1/messages）。
+        本项目 AnthropicModel；``"claude_cli"`` 走本机 Claude Code 订阅登录。
     model_id : str
         网关真实模型 slug。
     api_key, api_base : str
-        网关密钥与 base_url。
+        网关密钥与 base_url；claude_cli 忽略两者。
     reasoning_level : str
         统一推理档位。
     timeout : float, optional
-        底层 SDK 单请求超时；不传则用 provider 默认（OpenAI 300 / Claude 600）。
+        API 单请求超时或 CLI 整个子进程期限；默认 OpenAI 300 / Claude 600 秒。
     max_retries : int
         **底层 SDK 客户端**的重试次数。瞬时重试已交给 ResilientModel，这里应为 0
         （见模块 docstring 的重试归属）。``retry_enabled=True`` 时若传入非 0 会强制
@@ -129,9 +129,15 @@ def build_model(
             **reasoning_kwargs,
             **extra,
         )
+    elif provider == "claude_cli":
+        from .claude_cli_model import ClaudeCliModel
+
+        # 复用当前用户的订阅登录；不向 CLI 传 API key/base，也不在构造阶段探测可执行文件。
+        base = ClaudeCliModel(model_id=model_id, timeout=effective_timeout, owner=owner,
+                              **reasoning_kwargs, **extra)
     else:
         raise ValueError(
-            f"未知 provider={provider!r}，合法值：'openai' / 'anthropic'"
+            f"未知 provider={provider!r}，合法值：'openai' / 'anthropic' / 'claude_cli'"
         )
 
     # retry_enabled=False：退化到改造前，直接返回底层 Model（排障对照用）。

@@ -184,7 +184,7 @@ def test_assembler_pieces():
     check("表/图按出现顺序编号", num.tables == {"主结果": 1, "消融": 2} and num.figures == {"ov": 1}, str(num))
     md = A.build_paper_md(chs, num, tables)
     check("paper.md:章题归一、交叉引用、图注块、表渲染",
-          "## Method" in md and "### Overview" in md and "Table 1" in md and "Figure 1" in md
+          "## 1 Method" in md and "### 1.1 Overview" in md and "Table 1" in md and "Figure 1" in md
           and "**Table 1. M**" in md and "待补图" in md, md)
     info = A.build_latex(chs, num, tables, d / "latex", None, "Title", ["A"], d / "refs.bib")
     tex = "\n".join(p.read_text(encoding="utf-8") for p in (d / "latex" / "sections").glob("*.tex"))
@@ -265,6 +265,71 @@ def test_codex_review_fixes():
     # 标题归一
     t1, _ = A.normalize_headings("## Only\nBody", "T")
     check("只有一个标题时不删(它是小节)", "Only" in t1)
+    t_same, _ = A.normalize_headings("### Abstract\n\nBody", "Abstract")
+    check("唯一标题与章名相同 → 不重复", "Abstract" not in t_same and "Body" in t_same, repr(t_same))
+    _h = A.normalize_headings("### A\nx\n## B\ny\n#### deep\nz\n", "Ch", ["A", "B"])[1]
+    check("按大纲统一同级小节层级", _h == [(1, "A"), (1, "B"), (3, "deep")], repr(_h))
+    _tex = A.md_to_tex("$$\nx=1.\n\\label{eq:a}\n$$\n\nSee Eq. $\\eqref{eq:a}$ here.\n", A.Numbering(), {})
+    check("带 label 的公式 → equation 环境", "\\begin{equation}" in _tex and "\\[" not in _tex, _tex)
+    check("$\\eqref{}$ 去掉外层 $", "$\\eqref" not in _tex and "\\eqref{eq:a}" in _tex, _tex)
+    # 章节交叉引用:[[SEC:标题]] → Section N / N.M;裸章名与流程用语被检出
+    schs = [A.Chapter(folder="01-a", title="Abstract", ctype="abstract", number=1, en="Short."),
+            A.Chapter(folder="02-i", title="Introduction", ctype="intro", number=2,
+                      en="See [[SEC:Overview]] and [[SEC:Method]] and [[SEC:Nowhere]]."),
+            A.Chapter(folder="03-m", title="Method", ctype="method", number=3,
+                      en="### Intro bit\n\ntext\n\n### Overview\n\ntext", sections=["Intro bit", "Overview"])]
+    snum = A.number_items(schs)
+    check("章节号:摘要不编号,按出现顺序",
+          snum.sections.get("introduction") == "1" and snum.sections.get("method") == "2"
+          and snum.sections.get("overview") == "2.2", str(snum.sections))
+    smd = A.build_paper_md(schs, snum, {})
+    check("占位符替换成 Section N,找不到的保持可见",
+          "See Section 2.2 and Section 2 and [SEC:Nowhere?]." in smd and "## 2 Method" in smd, smd)
+    check("裸章名被检出",
+          A.chapter_refs("shown in Results and Method provides it") == ["Method provides", "in Results"]
+          and not A.chapter_refs("Our method provides it, as shown in Table 1."))
+    check("流程用语被检出", A.process_words("uses the supplied He-style initialization") == ["the supplied"]
+          and not A.process_words("Training uses SGD."))
+    check("英式拼写被检出", A.british_spellings("We analyse the modelling and analyze it.") == ["analyse", "modelling"])
+    from agents import outline as _O
+    _chs = [{"number": 1, "type": "abstract", "sections": [{"target_words": 200}]},
+            {"number": 2, "type": "method", "sections": [{"target_words": 1500}, {"target_words": 1500}]},
+            {"number": 3, "type": "results", "sections": [{"target_words": 1800}, {"target_words": 1800, "words_explicit": True}]},
+            {"number": 4, "type": "conclusion", "sections": [{"target_words": 300}]}]
+    _plan = _O.plan_chapter_words(_chs, 10, 700)
+    check("章节计划:总量落在预算附近", abs(sum(_plan.values()) - 7000) <= 100, str(_plan))
+    check("章节计划:方法章分得比结果章的弹性部分多", _plan[2] > _plan[3] - 1800, str(_plan))
+    _O.apply_page_budget(_chs, 10, 700)
+    _sum = sum(s["target_words"] for c in _chs for s in c["sections"])
+    check("页数预算:总字数落在预算附近", abs(_sum - 7000) <= 150, str(_sum))
+    check("页数预算:摘要/结论/显式字数不动", _chs[0]["sections"][0]["target_words"] == 200
+          and _chs[3]["sections"][0]["target_words"] == 300 and _chs[2]["sections"][1]["target_words"] == 1800)
+    from agents import outline_expand as _OE
+    _orig_budget = _O.page_budget
+    _O.page_budget = lambda: (10, 700)
+    try:
+        _skel = [{"number": 1, "title": "A", "type": "abstract", "sections": []},
+                 {"number": 2, "title": "M", "type": "method", "sections": []},
+                 {"number": 3, "title": "R", "type": "results", "sections": []}]
+        _txt = _OE.budget_clause(_skel)
+        check("预算段:给出每章建议并要求逐小节标字数", "## Page budget" in _txt and "2. M (method)" in _txt
+              and "EVERY `###` subsection" in _txt, _txt[:200])
+        _en = [{"number": 1, "type": "abstract", "sections": [{"title": "A", "target_words": 200, "words_explicit": True, "synthetic": True}]},
+               {"number": 2, "type": "method", "sections": [{"title": "m1", "target_words": 4000, "words_explicit": True},
+                                                            {"title": "m2", "target_words": 4000, "words_explicit": True}]},
+               {"number": 3, "type": "results", "sections": [{"title": "r1", "target_words": 3000, "words_explicit": False}]}]
+        _zh = [{"number": 1, "type": "abstract", "sections": [{"title": "摘", "target_words": 1, "words_explicit": False}]},
+               {"number": 2, "type": "method", "sections": [{"title": "法1", "target_words": 1, "words_explicit": False}, {"title": "法2", "target_words": 1, "words_explicit": False}]},
+               {"number": 3, "type": "results", "sections": [{"title": "果1", "target_words": 1, "words_explicit": False}]}]
+        _notes = _OE.normalize_budget(_en, _zh, _skel)
+        _tot = sum(x["target_words"] for c in _en for x in c["sections"])
+        check("预算归一:缺字数补上、超预算压回", _tot <= 7000 and all(x["words_explicit"] for c in _en for x in c["sections"]), f"{_tot} {_notes}")
+        check("预算归一:中文版字数与英文版一致", all(zs["target_words"] == es["target_words"]
+              for ec, zc in zip(_en, _zh) for es, zs in zip(ec["sections"], zc["sections"])))
+    finally:
+        _O.page_budget = _orig_budget
+    check("摘要多段 → 并成一段", A.collapse_abstract("### Abstract\n\nA a.\n\nB b.\n") == "### Abstract\n\nA a. B b.\n")
+    check("摘要含列表时不动", A.collapse_abstract("A.\n\n- x\n") == "A.\n\n- x\n")
     t2, _ = A.normalize_headings("# Ch\n```\n# comment\n```\n## Sub\nx", "T")
     check("代码围栏里的 # 不是标题", t2.count("\x00H") == 1, repr(t2))
     # verbatim 不能被内容提前结束

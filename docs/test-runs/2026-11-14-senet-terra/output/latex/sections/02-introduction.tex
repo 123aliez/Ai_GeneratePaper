@@ -1,0 +1,17 @@
+\section{Introduction}
+
+\subsection{Channel Dependencies in Image Classification}
+
+Convolutional feature channels can carry interdependent information, such as responses to edges and textures that together describe an image. A channel's value for classification can therefore depend on the responses of other channels. Convolutional networks learn these interactions implicitly through their stacked transformations, motivating an explicit mechanism for channel recalibration.
+
+Channel recalibration assigns weights to feature responses channel by channel. The aim is to emphasize useful features and suppress less useful ones in light of the information represented across channels. Hu et al. introduced squeeze-and-excitation (SE) blocks, which use global channel summaries to learn channel gates \cite{hu2018squeeze}, making recalibration responsive to each image.
+
+Residual networks (ResNets), which use shortcut connections to support residual learning \cite{he2016resnet}, provide the backbone for assessing channel recalibration. Comparing a ResNet with its SE-augmented counterpart at the same depth connects the channel-dependency motivation to a controlled architectural comparison.
+
+\subsection{Contributions}
+
+The ImageNet-1K comparison reported by Hu et al. \cite{hu2018squeeze} supports two findings about SE-ResNet, a ResNet augmented with SE blocks.
+
+The matched-depth comparison shows lower top-1 and top-5 error for SE-ResNet-50, SE-ResNet-101, and SE-ResNet-152 than for their respective ResNet baselines under the same training setting. Both error metrics decrease at every matched depth, as shown in Section 5.
+
+The computational-cost assessment shows that these error reductions come with small increases in forward-pass computation. The increase holds across all three matched-depth comparisons in Section 5.

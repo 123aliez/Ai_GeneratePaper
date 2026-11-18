@@ -82,15 +82,16 @@ def test_prompt_states_the_hard_constraints():
     prompt = build_expand_prompt(chapters, "/tmp/out.md", "/tmp/out.zh.md",
                                  "/tmp/idea.md", 4)
 
-    check("要求先读 idea.md", "/tmp/idea.md" in prompt)
-    check("写明英文产物路径", "/tmp/out.md" in prompt)
-    check("写明中文产物路径", "/tmp/out.zh.md" in prompt)
+    check("idea.md 以附件形式提供", "idea.md (attached)" in prompt)
+    check("写明英文产物文件名", "out.md" in prompt)
+    check("写明中文产物文件名", "out.zh.md" in prompt)
     check("要求写两份", "TWO files" in prompt or "two files" in prompt)
     check("要求英文版给 Agent", "ENGLISH version" in prompt or "out_en_path" in prompt)
     check("禁止改章节结构",
           "Do NOT add, remove, merge, split, reorder or rename a chapter" in prompt)
     check("禁止改 type", "Do NOT change any chapter's `type:` line" in prompt)
-    check("禁止写字数", "Do NOT write word counts" in prompt)
+    check("无预算时不写字数,作者已写的逐字保留",
+          "Word counts:" in prompt and "omit the annotation" in prompt and "## Page budget" not in prompt)
     check("要求写边界约束", "WHICH BOUNDARY not to cross" in prompt)
     check("要求缺失处打标记", "[DESIGN DETAIL NEEDED]" in prompt
           and "[MISSING DATA]" in prompt)

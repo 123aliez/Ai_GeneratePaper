@@ -1,0 +1,24 @@
+\documentclass[11pt]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{graphicx,booktabs,amsmath,amssymb,hyperref,xcolor}
+\usepackage[numbers]{natbib}
+\newcommand{\todo}[1]{\textcolor{red}{\textbf{[#1]}}}
+\title{Channel Recalibration in Residual Networks: A Study of Squeeze-and-Excitation}
+\author{Pipeline Test}
+\date{}
+\begin{document}
+\maketitle
+\begin{abstract}
+Convolutional feature channels can carry interdependent information, so their relative responses matter for image classification. Stacked convolutional transformations learn these interactions implicitly, motivating explicit channel recalibration to emphasize useful features and suppress less useful ones. We compare residual networks (ResNets) with matched-depth SE-ResNets using the ImageNet-1K results reported by Hu et al.; each SE-ResNet incorporates squeeze-and-excitation (SE) blocks that use global average pooling and learned channel gates to scale feature responses. Under a shared training setting and single-scale, single-crop validation, SE-ResNet lowers top-1 error by 0.79--1.51 percentage points relative to matched-depth ResNet baselines across all three evaluated depths on ImageNet-1K, with small increases in forward-pass computation. Top-5 error also decreases at every matched depth. The comparisons show that channel recalibration improves classification accuracy across the evaluated ResNet depths while adding little forward-pass computation.
+\end{abstract}
+
+\input{sections/02-introduction}
+\input{sections/03-related-work}
+\input{sections/04-method}
+\input{sections/05-experimental-setup-experiments}
+\input{sections/06-results}
+\input{sections/07-conclusion}
+\bibliographystyle{plainnat}
+\bibliography{refs}
+\end{document}

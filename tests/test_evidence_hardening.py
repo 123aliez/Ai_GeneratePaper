@@ -170,19 +170,44 @@ def test_stage_fingerprint_lifecycle():
     # 未记账 → 陈旧
     check("存在但未记账 → 判陈旧",
           sr.stale_stage_artifacts(d, [art], "fpA", {"review": "m1"}) == [art])
-    sr.record_stage_fingerprint(d, art, "fpA", "review", "m1")
+    sr.record_stage_fingerprint(d, art, "fpA", "review", "claude_cli/sonnet")
     check("指纹相符 → 不陈旧",
           sr.stale_stage_artifacts(d, [art], "fpA", {"review": "m1"}) == [])
     check("brief 指纹变 → 判陈旧",
           sr.stale_stage_artifacts(d, [art], "fpB", {"review": "m1"}) == [art])
-    check("模型组变 → 判陈旧",
-          sr.stale_stage_artifacts(d, [art], "fpA", {"review": "m2"}) == [art])
+    check("换 provider/model 不判陈旧",
+          sr.stale_stage_artifacts(d, [art], "fpA", {"review": "openai/gpt-5"}) == [])
+    check("复用产物不改写原模型来源", sr.load_manifest(d)[art]["model_group"] == "claude_cli/sonnet")
     check("prompts.py 内容参与指纹(不同 stage 名指纹不同)",
           sr.stage_fingerprint("fpA", "review") != sr.stage_fingerprint("fpA", "draft"))
     # 轮次产物名 → 阶段推断
     check("round 产物名映射到 revise/verify 阶段",
           sr._stage_of("draft-v2.round-2.md") == "revise"
           and sr._stage_of("review-verify.round-1.json") == "verify")
+
+
+def test_stage_fingerprint_inputs_and_legacy_manifest():
+    from unittest.mock import patch
+    with tempfile.TemporaryDirectory() as folder:
+        artifact = "draft-v1.md"
+        Path(folder, artifact).write_text("draft", encoding="utf-8")
+        original = {"idea.md": "idea-A", "data": "data-A"}
+        sr.record_stage_fingerprint(folder, artifact, "brief", "draft", "claude_cli/sonnet", original)
+        check("仅换模型且输入不变 → 复用", sr.stale_stage_artifacts(
+            folder, [artifact], "brief", {"draft": "anthropic/claude-opus-4-6"}, original) == [])
+        for key in original:
+            changed = {**original, key: "changed"}
+            check(f"换模型同时改 {key} 仍判陈旧", sr.stale_stage_artifacts(
+                folder, [artifact], "brief", {"draft": "openai/gpt-5"}, changed) == [artifact])
+        with patch.object(sr, "skills_fingerprint", return_value="changed-prompt-or-skill"):
+            check("换模型同时改提示词/skill 仍判陈旧", sr.stale_stage_artifacts(
+                folder, [artifact], "brief", {"draft": "openai/gpt-5"}, original) == [artifact])
+        legacy = sr.load_manifest(folder)
+        legacy[artifact].pop("fingerprint_version")
+        legacy[artifact].pop("model_group")
+        sr.save_manifest(folder, legacy)
+        check("旧账本保守判陈旧一次", sr.stale_stage_artifacts(
+            folder, [artifact], "brief", {"draft": "openai/gpt-5"}, original) == [artifact])
 
 
 def test_orchestrator_blocks_on_stale_fingerprints():
@@ -204,8 +229,8 @@ def test_orchestrator_blocks_on_stale_fingerprints():
         _offline_test_stub = True
         def __init__(self):
             self.prompts = []
-        def run(self, prompt, **kw):
-            self.prompts.append(prompt)
+        def run_stage(self, task, docs, deliverables, out_dir, **kw):
+            self.prompts.append(task)
             return "should not happen"
 
     agent = NoCallAgent()
@@ -223,6 +248,96 @@ def test_orchestrator_blocks_on_stale_fingerprints():
           "fingerprints stale" in results.get("route_blocked", ""), str(results))
     check("产物未被删除(是否重跑由使用者定)",
           Path(folder, "draft-v1.md").exists())
+
+
+def test_switch_models_resumes_partial_chapter_and_preserves_provenance():
+    import contextlib
+    import io
+    from unittest.mock import patch
+    import config
+    import agents.orchestrator as orch
+    import agents.outline as ol
+    from agents.claude_cli_model import ClaudeSubscriptionQuotaExceeded
+    from test_pipeline_routing import make_ws_in_outline, set_idea, IDEA_TEXT, make_data, FullRunAgent
+
+    class StopAtReview(FullRunAgent):
+        def run_stage(self, task, docs, deliverables, out_dir, **kwargs):
+            if "review-v1.md" in deliverables:
+                raise ClaudeSubscriptionQuotaExceeded(status_code=429, owner="Review")
+            return super().run_stage(task, docs, deliverables, out_dir, **kwargs)
+
+    set_idea(IDEA_TEXT)
+    folder, outline, _ = make_ws_in_outline("type: method\n\n1. **Framework** (~200 words)\n- 机制")
+    with patch.object(ol, "OUTLINE_PATH", Path(outline)), \
+            patch.object(orch, "DATA_ROOT", make_data({"test_accuracy": 0.817})), \
+            contextlib.redirect_stdout(io.StringIO()):
+        agent = StopAtReview(folder)
+        with patch.multiple(config, DRAFT_PROVIDER="claude_cli", DRAFT_MODEL="sonnet",
+                            REVIEW_PROVIDER="claude_cli", REVIEW_MODEL="sonnet"):
+            first = orch.run_4stage_with_progress(agent, agent, folder, None)
+        check("额度用尽保留已完成初稿并停止", bool(first.get("model_error"))
+              and Path(folder, "draft-v1.md").is_file() and not Path(folder, "final.md").exists())
+        old_manifest = sr.load_manifest(folder)
+        old_text = Path(folder, "draft-v1.md").read_text(encoding="utf-8")
+        new_agent = FullRunAgent(folder)
+        with patch.multiple(config, DRAFT_PROVIDER="openai", DRAFT_MODEL="gpt-5",
+                            REVIEW_PROVIDER="anthropic", REVIEW_MODEL="claude-opus-4-6"):
+            resumed = orch.run_4stage_with_progress(new_agent, new_agent, folder, None)
+        check("换 provider/model 后接续未完成部分", resumed.get("stage5_xchap_ok") is True, str(resumed))
+        manifest = sr.load_manifest(folder)
+        for artifact in ("evidence-pack.md", "draft-v1.plan.md", "draft-v1.part-1.md", "draft-v1.md"):
+            check(f"复用 {artifact} 保留来源", manifest[artifact] == old_manifest[artifact])
+        check("复用初稿正文未重写", Path(folder, "draft-v1.md").read_text(encoding="utf-8") == old_text)
+        check("续写终稿记录新模型来源", manifest["final.md"]["model_group"] == "anthropic/claude-opus-4-6")
+        check("续写修订记录新模型来源", manifest["draft-v2.md"]["model_group"] == "openai/gpt-5")
+        check("未变的 todo 保留来源，新增跨章条目记新来源", manifest["todo.md"] == old_manifest["todo.md"]
+              and manifest["cross-chapter-entries.md"]["model_group"] == "anthropic/claude-opus-4-6")
+
+
+def test_quota_during_followup_keeps_completed_artifact_recorded():
+    import contextlib
+    import io
+    from unittest.mock import patch
+    import config
+    import agents.orchestrator as orch
+    import agents.outline as ol
+    from agents.claude_cli_model import ClaudeSubscriptionQuotaExceeded
+    from agents.content_stage import ContentAgent, run_content_stage
+    from test_pipeline_routing import make_ws_in_outline, set_idea, IDEA_TEXT, make_data, FullRunAgent
+
+    class PartialModel:
+        calls = 0
+
+        def generate(self, messages):
+            self.calls += 1
+            if self.calls == 1:
+                return types.SimpleNamespace(content='<file name="review-v1.md">Complete review</file>')
+            raise ClaudeSubscriptionQuotaExceeded(status_code=429, owner="Review")
+
+    model = PartialModel()
+
+    class PartialReviewAgent(FullRunAgent):
+        def run_stage(self, task, docs, deliverables, out_dir, **kwargs):
+            if "review-v1.md" in deliverables:
+                return run_content_stage(ContentAgent(model, "SYSTEM", "Review"), task, docs,
+                                         deliverables, out_dir, **kwargs)
+            return super().run_stage(task, docs, deliverables, out_dir, **kwargs)
+
+    set_idea(IDEA_TEXT)
+    folder, outline, _ = make_ws_in_outline("type: method\n\n1. **Framework** (~200 words)\n- 机制")
+    agent = PartialReviewAgent(folder)
+    with patch.object(ol, "OUTLINE_PATH", Path(outline)), \
+            patch.object(orch, "DATA_ROOT", make_data({"test_accuracy": 0.817})), \
+            patch.multiple(config, REVIEW_PROVIDER="claude_cli", REVIEW_MODEL="sonnet"), \
+            contextlib.redirect_stdout(io.StringIO()):
+        result = orch.run_4stage_with_progress(agent, agent, folder, None)
+    check("追问时额度耗尽立即停", bool(result.get("model_error")) and model.calls == 2)
+    entry = sr.load_manifest(folder).get("review-v1.md", {})
+    check("追问前完成的产物已记账", entry.get("model_group") == "claude_cli/sonnet"
+          and Path(folder, "review-v1.md").read_text(encoding="utf-8") == "Complete review\n")
+    check("追问前产物切模型后也不陈旧", sr.stale_stage_artifacts(
+        folder, ["review-v1.md"], orch.read_brief_fingerprint(str(Path(folder, "brief.md"))),
+        {"review": "openai/gpt-5"}, entry["inputs"]) == [])
 
 
 def make_gate_data():
@@ -273,8 +388,8 @@ def test_offline_stub_skips_structured_path():
     src = Path(ROOT, "agents", "orchestrator.py").read_text(encoding="utf-8")
     check("orchestrator 尊重 _offline_test_stub 标记",
           "_offline_test_stub" in src)
-    check("单轮直调有 CodeAgent 兜底(失败回退)",
-          "falling back to CodeAgent path" in src)
+    check("单轮直调转换失败会再试一次(不再有 CodeAgent 兜底)",
+          "for _try in (1, 2)" in src and "falling back to CodeAgent path" not in src)
 
 
 def test_record_stage_covers_all_candidates():
@@ -334,6 +449,107 @@ def test_record_stage_covers_all_candidates():
     check("同指纹重跑不硬停", "route_blocked" not in r2, str(r2.get("route_blocked")))
     check("同指纹重跑零模型调用", not agent2.prompts,
           f"calls={len(agent2.prompts)}")
+
+
+def test_content_hash_refreshes_script_artifacts_and_legacy_entries():
+    """内容变化或指纹更新必须重记；未变文件切模型时保留原始条目。"""
+    import hashlib
+    with tempfile.TemporaryDirectory() as folder:
+        for artifact in ("review-v1.json", "number-check.md", "citation-insertions.md"):
+            path = Path(folder, artifact)
+            stage = sr._stage_of(artifact)
+            path.write_text("old", encoding="utf-8")
+            sr.record_stage_fingerprint(folder, artifact, "brief", stage, "old/model", {"idea": "old"})
+            old = sr.load_manifest(folder)[artifact]
+            path.unlink()
+            # 即使重新生成的内容完全相同，变化的输入指纹也必须刷新，避免永久陈旧。
+            path.write_text("old", encoding="utf-8")
+            sr.record_stage_fingerprint(folder, artifact, "brief", stage, "new/model", {"idea": "new"})
+            rebuilt = sr.load_manifest(folder)[artifact]
+            check(f"{artifact} 删除后相同内容重建也刷新指纹", rebuilt["fingerprint"] != old["fingerprint"]
+                  and rebuilt["model_group"] == "new/model")
+            check(f"{artifact} 重建后不陈旧", sr.stale_stage_artifacts(
+                folder, [artifact], "brief", {stage: "another/model"}, {"idea": "new"}) == [])
+            sr.record_stage_fingerprint(folder, artifact, "brief", stage, "another/model", {"idea": "new"})
+            check(f"{artifact} 切模型复用保留完整条目", sr.load_manifest(folder)[artifact] == rebuilt)
+            path.write_text("changed", encoding="utf-8")
+            sr.record_stage_fingerprint(folder, artifact, "brief", stage, "changed/model", {"idea": "new"})
+            changed = sr.load_manifest(folder)[artifact]
+            check(f"{artifact} 脚本改写后更新内容和来源", changed["model_group"] == "changed/model"
+                  and changed["content_sha256"] == hashlib.sha256(b"changed").hexdigest())
+            legacy = sr.load_manifest(folder)
+            del legacy[artifact]["content_sha256"]
+            sr.save_manifest(folder, legacy)
+            sr.record_stage_fingerprint(folder, artifact, "brief", stage, "legacy-refreshed/model", {"idea": "new"})
+            refreshed = sr.load_manifest(folder)[artifact]
+            check(f"{artifact} 缺哈希旧条目需要重记", refreshed["model_group"] == "legacy-refreshed/model"
+                  and refreshed["content_sha256"] == changed["content_sha256"])
+
+
+def test_deleted_stale_script_outputs_refresh_and_next_run_resumes():
+    """走真实结构化旁路和数字门禁：删陈旧文件重建后下次不能再次硬停。"""
+    import contextlib
+    import hashlib
+    import io
+    from unittest.mock import patch
+    import config
+    import agents.orchestrator as orch
+    import agents.outline as ol
+    from test_pipeline_routing import make_ws_in_outline, set_idea, IDEA_TEXT, make_data, FullRunAgent
+
+    class StructuredAgent(FullRunAgent):
+        _offline_test_stub = False
+
+    class StructuredModel:
+        calls = 0
+
+        def generate(self, messages):
+            self.calls += 1
+            return types.SimpleNamespace(content=json.dumps({
+                "must_fix": [], "should_fix": [], "decision": "ACCEPT",
+                "needs_citation": [{"sentence": "not in draft", "suggested_key": None}],
+            }))
+
+    set_idea(IDEA_TEXT)
+    folder, outline, _ = make_ws_in_outline("type: method\n\n1. **Framework** (~200 words)\n- 机制")
+    structured = StructuredModel()
+    with patch.object(ol, "OUTLINE_PATH", Path(outline)), \
+            patch.object(orch, "DATA_ROOT", make_data({"test_accuracy": 0.817})), \
+            patch.object(config, "get_review_model", return_value=structured), \
+            patch.multiple(config, REVIEW_PROVIDER="claude_cli", REVIEW_MODEL="sonnet"), \
+            contextlib.redirect_stdout(io.StringIO()):
+        agent = StructuredAgent(folder)
+        first = orch.run_4stage_with_progress(agent, agent, folder, None)
+        check("脚本产物回归首次成功", first.get("stage5_xchap_ok") is True)
+        old_manifest = sr.load_manifest(folder)
+        with patch.object(sr, "STAGE_PROMPT_VERSION", sr.STAGE_PROMPT_VERSION + 1), \
+                patch.multiple(config, REVIEW_PROVIDER="openai", REVIEW_MODEL="gpt-5"):
+            stopped = orch.run_4stage_with_progress(agent, agent, folder, None)
+            stale = stopped.get("stale_stage_artifacts", [])
+            for artifact in ("review-v1.json", "number-check.md", "citation-insertions.md"):
+                check(f"{artifact} 变提示词后被列为陈旧", artifact in stale)
+            for artifact in stale:
+                Path(folder, artifact).unlink()
+            rebuilt_agent = StructuredAgent(folder)
+            rebuilt = orch.run_4stage_with_progress(rebuilt_agent, rebuilt_agent, folder, None)
+            check("按提示删陈旧产物后重建成功", rebuilt.get("stage5_xchap_ok") is True, str(rebuilt))
+            manifest = sr.load_manifest(folder)
+            for artifact in ("review-v1.json", "number-check.md", "citation-insertions.md"):
+                entry = manifest[artifact]
+                check(f"{artifact} 脚本重建后指纹更新", entry["fingerprint"] != old_manifest[artifact]["fingerprint"])
+                check(f"{artifact} 内容哈希与磁盘一致", entry["content_sha256"]
+                      == hashlib.sha256(Path(folder, artifact).read_bytes()).hexdigest())
+            check("结构化旁路重建记录新模型", manifest["review-v1.json"]["model_group"] == "openai/gpt-5")
+            check("数字门禁和引用报告不虚记模型来源", manifest["number-check.md"]["model_group"] == ""
+                  and manifest["citation-insertions.md"]["model_group"] == "")
+            next_agent = StructuredAgent(folder)
+            with patch.multiple(config, REVIEW_PROVIDER="anthropic", REVIEW_MODEL="claude-opus-4-6"):
+                resumed = orch.run_4stage_with_progress(next_agent, next_agent, folder, None)
+            check("重建后的下次运行不再硬停且零模型调用", resumed.get("stage5_xchap_ok") is True
+                  and "route_blocked" not in resumed and not next_agent.prompts)
+            check("复用结构化产物来源保持不变", sr.load_manifest(folder)["review-v1.json"]
+                  == manifest["review-v1.json"])
+            check("结构化旁路仅在首次和重建时调用", structured.calls == 2)
 
 
 if __name__ == "__main__":
