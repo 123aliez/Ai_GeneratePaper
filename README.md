@@ -118,6 +118,12 @@ method / theory / experiments / results / analysis / ablation / discussion / lim
 conclusion`,中文别名也认)。小节和起草要点不用写:`--go` 会让规划者读 idea.md 展开成
 `outline.zh.md`,你审完/改完再跑。
 
+可选的第四列「小节」:想自己定某章的小节就填,如 `5.1 Setup; 5.2 Main Results: results;
+5.3 Ablation: ablation`(分号分隔,冒号后是小节 type,不写沿用章 type)。期刊论文常把实验设置、
+结果、消融合成一章 Experiments,这时给小节标 type,各小节才会按各自的规则写和审;不标则整章
+按 experiments(实验设置)处理。不填这一列时,规划者展开大纲也会给每个小节标 `- type:`,
+审 `outline.zh.md` 时顺便核对;实验类章节多个小节都没标 type 时,展开和 `--init` 会提醒。
+
 ### results/ —— 结果表(每个 CSV 是论文里的一张表)
 
 ```

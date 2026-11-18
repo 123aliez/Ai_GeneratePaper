@@ -244,6 +244,73 @@ def test_model_id_typo_is_caught_offline():
     check("正常模型名不误报", not any("DRAFT_MODEL" in e or "REVIEW_MODEL" in e for e in errors))
 
 
+# ── 小节类型:骨架表「小节」列 / 展开时标 type / 提醒 ──────────────────────
+_SKELETON = """| # | 章标题 | type | 小节(可选) |
+| --- | --- | --- | --- |
+| 1 | Method | method | |
+| 2 | Experiments | experiments | 2.1 Setup; 2.2 Main Results: results; 2.3 Ablation: 消融 |
+"""
+
+
+def _parse(text):
+    from agents.outline import parse_outline
+    path = Path(tempfile.mkdtemp()) / "outline.md"
+    path.write_text(text, encoding="utf-8")
+    return parse_outline(path)
+
+
+def test_skeleton_section_column():
+    chapters = _parse(_SKELETON)
+    exp = chapters[1]
+    check("小节列解析出标题与 type(含中文别名)",
+          [(x["title"], x["type"]) for x in exp["sections"]]
+          == [("Setup", ""), ("Main Results", "results"), ("Ablation", "ablation")],
+          str(exp["sections"]))
+    check("不填小节列的章没有小节", chapters[0]["sections"] == [])
+    bad = _parse(_SKELETON.replace("消融", "foo"))[1]["sections"][2]
+    check("写错的小节 type 被记下而不是静默丢弃",
+          bad["type"] == "" and bad["type_unrecognized"] == "foo", str(bad))
+    no_col = _parse("| # | 章标题 | type |\n| --- | --- | --- |\n| 1 | Method | method |\n")
+    check("没有小节列的旧骨架照常解析", len(no_col) == 1 and no_col[0]["sections"] == [])
+
+
+def test_author_sections_survive_expansion_contract():
+    from agents.outline_expand import build_expand_prompt, validate_expansion, render_outline
+    chapters = _parse(_SKELETON)
+    prompt = build_expand_prompt(chapters, "/tmp/o.md", "/tmp/o.zh.md", "/tmp/idea.md", 2)
+    check("展开提示要求给新建小节标 type", "Subsection type: the FIRST line under every" in prompt)
+    check("作者的小节与 type 原样交给规划者",
+          "### 2.2 Main Results" in prompt and "- type: results" in prompt)
+    good = _parse(render_outline([dict(chapters[0], sections=[
+        {"number": 1, "title": "Gate", "target_words": 250, "words_explicit": False,
+         "type": "method", "bullets": ["x"]},
+        {"number": 2, "title": "Fusion", "target_words": 250, "words_explicit": False,
+         "type": "method", "bullets": ["y"]}]), chapters[1]]))
+    check("合规展开通过校验", validate_expansion(chapters, good) == [],
+          str(validate_expansion(chapters, good)))
+    retyped = [dict(c) for c in good]
+    retyped[1] = dict(retyped[1], sections=[dict(x) for x in retyped[1]["sections"]])
+    retyped[1]["sections"][1]["type"] = "analysis"
+    check("改了作者写的小节 type 会被拦",
+          any("type 被改" in x for x in validate_expansion(chapters, retyped)))
+    bogus = _parse(render_outline(good).replace("- type: method", "- type: gating", 1))
+    check("规划者写了非标准小节 type 会被拦",
+          any("不是标准类型" in x for x in validate_expansion(chapters, bogus)),
+          str(validate_expansion(chapters, bogus)))
+
+
+def test_untyped_data_chapter_warning():
+    from agents.outline import untyped_section_warnings
+    plain = _parse(_SKELETON.replace("2.2 Main Results: results; 2.3 Ablation: 消融",
+                                     "2.2 Main Results; 2.3 Ablation"))
+    notes = untyped_section_warnings(plain)
+    check("实验章多个小节都没标 type → 提醒", len(notes) == 1 and "第 2 章" in notes[0], str(notes))
+    check("标了 type 就不提醒", untyped_section_warnings(_parse(_SKELETON)) == [])
+    method_only = _parse("| # | 章标题 | type | 小节 |\n| --- | --- | --- | --- |\n"
+                         "| 1 | Method | method | Gate; Fusion |\n")
+    check("非实验章不提醒", untyped_section_warnings(method_only) == [])
+
+
 if __name__ == "__main__":
     tests = [v for k, v in list(globals().items()) if k.startswith("test_") and callable(v)]
     for fn in tests:

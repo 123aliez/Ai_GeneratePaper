@@ -243,6 +243,9 @@ def init_workspaces(force: bool) -> int:
 
     print(f"Outline: {OUTLINE_PATH}")
     print(f"Workspace: {PAPER_ROOT}\n")
+    from agents.outline import untyped_section_warnings
+    for note in untyped_section_warnings(skeleton):
+        print(f"[小节类型提醒] {note}")
     for line in outline_banner(result):
         print(line)
 
@@ -416,6 +419,12 @@ def expand_outline() -> int:
     from agents import project
     project.record_expansion()
 
+    from agents.outline import untyped_section_warnings
+    _type_notes = untyped_section_warnings(expanded_zh)
+    if _type_notes:
+        print("\n[小节类型提醒] 审大纲时请顺便看一下:")
+        for note in _type_notes:
+            print(f"  · {note}")
     total_sections = sum(len(c["sections"]) for c in expanded_en)
     print(f"\n展开完成:{len(expanded_en)} 章,{total_sections} 个小节 → "
           f"{en_path.name} + {zh_path.name}")
