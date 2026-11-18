@@ -397,8 +397,15 @@ def build_stage1_parts(sections: list[dict]) -> list[dict]:
     if count >= 6:
         groups = [sections[:2], sections[2:4], sections[4:]]
     elif count >= 3:
-        size = (count + 2) // 3
-        groups = [sections[:size], sections[size:size * 2], sections[size * 2:]]
+        # 3-5 节均分成三段,多出的小节放前面(4 → 2+1+1,5 → 2+2+1)。原先按
+        # size=(count+2)//3 切,4 节时前两段就分完了,第三段是空列表,又被补成一个
+        # 700 词、没有任何小节的 "Chapter part 3"。
+        base, extra = divmod(count, 3)
+        groups, start = [], 0
+        for i in range(3):
+            size = base + (1 if i < extra else 0)
+            groups.append(sections[start:start + size])
+            start += size
     elif count:
         groups = [[section] for section in sections]   # 1 或 2 个小节 → 1 或 2 段
     else:
@@ -465,7 +472,9 @@ def format_stage1_parts(parts: list[dict]) -> str:
                       f"actual results and evidence of this part need, then stop. ~{target} words "
                       f"is only a planning reference from the outline, not a target or a floor: "
                       f"go shorter when the results are few, longer only for results that need it. "
-                      f"Never pad, never repeat a number the table already shows")
+                      f"Never pad. Do not walk through a table cell by cell; quote only the key "
+                      f"differences and test results that support a claim, each as its "
+                      f"{{{{RES-xxx}}}} placeholder")
         blocks.append(
             f"Part {part['index']} -> {part['output']}\n"
             f"{length}\n"
