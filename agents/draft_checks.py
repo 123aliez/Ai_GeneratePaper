@@ -1,21 +1,15 @@
-"""两道确定性的初稿质量检查(不调模型,只用标准库)。
+"""定稿润色保真检查(polish-check.md,不调模型,只用标准库)。
 
-1. 结构检查(structure-check.md):brief 里的每个小节在草稿里有没有、写了多少词。
-   字数目标此前只出现在提示词里,没有任何检查;漏写一节或把 200 词的摘要写成 800 词
-   都不会被发现。结果交给评审:缺节 = MUST FIX,字数偏离 = SHOULD FIX(绝不靠注水凑数)。
-2. 润色保真检查(polish-check.md):Stage 4 由另一个模型整篇重写做"轻润色",提示词要求
-   不许改引用/数字/标记,但之前没有任何东西核对它真的没丢。这里比对 draft-v2.md 与
-   final.md 的引用 key、占位符、表/图占位、缺口标记、小节标题与字数。
-
-两者都是提示性质的程序产物:每次重算、不进阶段指纹。结构检查只给评审看;润色检查
-发现丢失时会让本章标为"未核验"(丢了一条引用或一个数字占位符不是风格问题)。
+Stage 4 由另一个模型整篇重写做"轻润色",提示词要求不许改引用/数字/标记,但之前没有
+任何东西核对它真的没丢。这里比对 draft-v2.md 与 final.md(及 final.zh.md)的引用 key、
+占位符、表/图占位、缺口标记、小节标题与字数。丢引用/占位符/缺口标记会让本章标为
+"未核验";标题改名、字数漂移只作提示。每次定稿后重算,不进阶段指纹。
 """
 import os
 import re
 from collections import Counter
 from pathlib import Path
 
-STRUCTURE_CHECK = "structure-check.md"
 # 提示级发现(标题改名、字数漂移)的前缀:写进 polish-check.md 给作者看,但不判未核验——
 # 润色微调标题措辞是合理的;丢引用/占位符/缺口标记才是交付物与核验稿不一致。
 ADVISORY = "advisory: "
@@ -94,75 +88,7 @@ def _atomic_write(path: Path, text: str) -> None:
     os.replace(tmp, path)
 
 
-# ── 1. 结构检查 ───────────────────────────────────────────────────────────
-def check_structure(text: str, sections: list[dict]) -> list[str]:
-    """每个 brief 小节一行结论。sections 来自 parse_brief_sections。
-
-    行首标签:MISSING(找不到这一节的标题)、UNDERLENGTH(不到目标一半)、SHORT(不到 70%)、
-    LONG(超出 150%)、OK。真实测试里各节普遍只写到目标的 10%~60%,而提示词里的目标字数
-    没有任何检查,评审也没提——所以"不到一半"要能进 MUST FIX。
-    只有一个小节的章(摘要、结论等短章)不要求有小节标题,直接数全文。
-    容差故意放宽(<70% 或 >150% 才报):起草提示词给的区间是 85%-120%,这里只抓明显跑偏。
-    """
-    body = body_text(text)
-    if not sections:
-        return []
-    if len(sections) == 1:
-        spans = {0: body}
-    else:
-        lines = body.splitlines()
-        heads = _headings(body)
-        starts: dict[int, int] = {}
-        for idx, section in enumerate(sections):
-            want = _norm_title(section.get("title", ""))
-            for line_no, have in heads:
-                if line_no not in starts.values() and _title_matches(want, have):
-                    starts[idx] = line_no
-                    break
-        order = sorted(starts.values())
-        spans = {}
-        for idx, line_no in starts.items():
-            later = [n for n in order if n > line_no]
-            end = later[0] if later else len(lines)
-            spans[idx] = "\n".join(lines[line_no + 1:end])
-    out = []
-    for idx, section in enumerate(sections):
-        title = section.get("title", f"section {idx + 1}")
-        target = int(section.get("target_words") or 0)
-        if idx not in spans:
-            out.append(f"MISSING: section \"{title}\" (target ~{target} words) has no heading "
-                       f"in the draft")
-            continue
-        words = count_words(spans[idx])
-        tag = "OK"
-        if target and words < target * 0.5:
-            tag = "UNDERLENGTH"
-        elif target and words < target * 0.7:
-            tag = "SHORT"
-        elif target and words > target * 1.5 + 30:
-            tag = "LONG"
-        out.append(f"{tag}: section \"{title}\" — {words} words (target ~{target})")
-    return out
-
-
-def write_structure_check(folder_path: str, source_name: str, sections: list[dict]) -> list[str]:
-    """读本章 source_name,写 structure-check.md(覆盖)。返回非 OK 的行。"""
-    source = Path(folder_path) / source_name
-    if not source.is_file() or not sections:
-        return []
-    rows = check_structure(source.read_text(encoding="utf-8", errors="replace"), sections)
-    hits = [r for r in rows if not r.startswith("OK")]
-    status = "OK" if not hits else f"{len(hits)} finding(s)"
-    lines = [f"# Structure check ({source_name} vs brief.md)",
-             f"Status: {status}", "",
-             "Deterministic: section presence by heading, word counts by a rough tokenizer. "
-             "A renamed heading shows up as MISSING — check before acting.", ""]
-    lines += [f"- [STRUCTURE] {r}" for r in rows]
-    _atomic_write(Path(folder_path) / STRUCTURE_CHECK, "\n".join(lines) + "\n")
-    return hits
-
-
-# ── 2. 润色保真检查 ───────────────────────────────────────────────────────
+# ── 润色保真检查 ───────────────────────────────────────────────────────
 def _cite_keys(text: str) -> set[str]:
     keys = set()
     for m in _CITE_RE.finditer(text or ""):

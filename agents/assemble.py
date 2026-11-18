@@ -56,7 +56,6 @@ class Chapter:
     used: list = field(default_factory=list)      # numbers-used.json 的 used 列表
     sections: list = field(default_factory=list)  # 大纲里的小节标题(用来统一标题层级)
     contract: list = field(default_factory=list)  # contract-check.md 的粗检提示(不含 skipped)
-    structure: list = field(default_factory=list)  # structure-check.md(终稿)里非 OK 的小节
 
 
 @dataclass
@@ -158,11 +157,6 @@ def load_chapters(chapters_meta: list[dict], workspace: Path) -> list[Chapter]:
         ch.contract = [ln[len("- [CONTRACT] "):].strip()
                        for ln in _read(folder / "contract-check.md").splitlines()
                        if ln.startswith("- [CONTRACT] ") and not ln[len("- [CONTRACT] "):].startswith("skipped:")]
-        sc = _read(folder / "structure-check.md")
-        if "(final.md vs brief.md)" in sc:      # 只收终稿的检查结果,初稿那份已过时
-            ch.structure = [ln[len("- [STRUCTURE] "):].strip() for ln in sc.splitlines()
-                            if ln.startswith("- [STRUCTURE] ")
-                            and not ln[len("- [STRUCTURE] "):].startswith("OK")]
         out.append(ch)
     return out
 
@@ -825,8 +819,6 @@ def build_todo_report(chapters: list[Chapter], extra_notes: list[str], num: Numb
         items = []
         for hit in c.contract:
             items.append(f"[章节约束] {hit}(程序粗检,请人工判断)")
-        for hit in c.structure:
-            items.append(f"[篇幅/结构] {hit}")
         for reason in c.reasons:
             items.append(f"未核验原因: {reason}")
         for kind, ctx in collect_markers(c.en):

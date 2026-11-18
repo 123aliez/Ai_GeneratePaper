@@ -2086,12 +2086,7 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
     record_stage(["draft-v1.md"], "draft")
     # 契约粗检:只提示,不进指纹,不改核验状态。每次重算。
     write_contract_check(folder_path, "draft-v1.md", scope_types(route))
-    # 结构/字数检查:brief 的每个小节在不在、写了多少词。交给评审,每次重算。
-    from .draft_checks import write_structure_check, write_polish_check, STRUCTURE_CHECK
-    _structure_hits = write_structure_check(folder_path, "draft-v1.md", sections)
-    if _structure_hits:
-        print(f"[Manager  ] structure  | {len(_structure_hits)} finding(s) → "
-              f"{folder_rel}/{STRUCTURE_CHECK}", flush=True)
+    from .draft_checks import write_polish_check
 
     # ── Deterministic number gate (experiment mode) ─────────────────
     # Cross-check every number in draft-v1 against the results store BEFORE the
@@ -2158,18 +2153,6 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
                     f"The attached contract-check.md contains deterministic hints about the "
                     f"chapter contract; judge each, false positives are possible. "
                 )
-        if _structure_hits:
-            number_check_clause += (
-                f"The attached {STRUCTURE_CHECK} is a deterministic check of each brief section's "
-                f"presence and word count against its target. Each MISSING section (unless the "
-                f"heading was merely renamed — check) and each UNDERLENGTH section (under half its "
-                f"target) is a MUST FIX; SHORT and LONG are SHOULD FIX. The fix for a short section "
-                f"is the missing SUBSTANCE from the attached evidence (idea.md, the notes, the "
-                f"settings file, the result tables) — never padding, never restating. When the "
-                f"evidence for a section is genuinely exhausted, the accepted fix is a visible "
-                f"`[UNKNOWN: <which material would let this section reach its length>]` marker at "
-                f"the section's end, so the author knows what to supply. "
-            )
         # 演进点①(修正版,Codex 审查 E1/E3):review-v1.md(散文评审)先走
         # CodeAgent——它需要 read_file 多轮读草稿;review-v1.json(结构化清单)
         # 再由单轮直调把已成文的评审**转换**成 JSON:单轮模型没有读取循环,
@@ -2194,8 +2177,7 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
                f"(MF1, MF2, ...), a precise location, the issue, and a concrete suggestion.\n\n")
             + f"{reference_excerpt}"
             + f"{review_skills}"
-        ), chapter_base() + local_docs(folder_path, "draft-v1.md", "brief.md", "input.md", "number-check.md", "contract-check.md",
-                                      *([STRUCTURE_CHECK] if _structure_hits else []))
+        ), chapter_base() + local_docs(folder_path, "draft-v1.md", "brief.md", "input.md", "number-check.md", "contract-check.md")
            + xchap_docs + abstract_docs,
            ["review-v1.md", "todo.md"] + (["review-v1.json"] if _skip_structured else []))
         set_agent_context("Manager")
@@ -2466,8 +2448,6 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
     # 契约粗检对着终稿重算。只进待补清单,不进 verification_reasons(D13)。
     if os.path.isfile(os.path.join(folder_path, "final.md")):
         write_contract_check(folder_path, "final.md", scope_types(route))
-        # 结构/字数对着终稿重算:待补清单逐节列出仍偏短/缺失的小节(提示,不判未核验)。
-        write_structure_check(folder_path, "final.md", sections)
 
     if os.path.exists(os.path.join(folder_path, "final.md")):
         if gate != OFF and not final_gate_attempted:

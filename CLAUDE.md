@@ -113,9 +113,6 @@ Stage 1b~    → draft-v1.part-N.md (part count = min(#sections, 3); each part r
               → draft-v1.md       (concatenated by Python, using the actual part count)
               → number-check.md   (number gate vs results store, strictness by gate level)
               → contract-check.md (deterministic chapter-contract lint; hints only)
-              → structure-check.md (deterministic: each brief section present? words vs target —
-                                  MISSING / UNDERLENGTH (<50%) go to the review as MUST FIX, SHORT/LONG
-                                  as SHOULD FIX; a genuine material gap may be resolved with [UNKNOWN: ...])
 Stage 2      → review-v1.md + review-v1.json (MUST FIX frozen checklist; criteria by family + contract check)
               → citation-insertions.md
 Stage 3      → draft-v2.md       (convergence loop, ≤ MAX_REVISION_ROUNDS: round 1 = whole frozen checklist
@@ -125,7 +122,6 @@ Stage 4      → final.md + final.zh.md + decision.md + todo.md (number gate re-
                                   contract-check recomputed on final.md)
               → polish-check.md  (deterministic draft-v2 → final diff, run BEFORE RES fill: lost cite keys /
                                   placeholders / gap markers ⇒ unverified; renamed headings / length drift = advisory)
-              → structure-check.md recomputed on final.md → per-section [篇幅/结构] rows in 待补清单.md
 Stage 5      → cross-chapter-state.md  (via cross-chapter-draft.md candidate + atomic replace + Python validation)
 paper        → _work/paper-review.md (after all chapters, `--go` / `--paper-review`: cross-chapter duplicate
                                   sentences (deterministic) + one read-only Review-model pass; findings go to

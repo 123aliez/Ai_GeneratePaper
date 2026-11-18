@@ -336,8 +336,7 @@ def assemble_output(extra_notes: list[str] | None = None) -> dict:
         words = sum(len(c.en.split()) for c in chapters)
         est = words / per_page
         notes.append(f"篇幅:正文约 {words} 词,按每页 {per_page} 词约 {est:.1f} 页(目标 {pages} 页,不含参考文献)"
-                     + (";超出预算,投稿前需压缩" if est > pages * 1.1 else
-                        ";明显不足,各节缺口见下方 [篇幅/结构] 行" if est < pages * 0.7 else ""))
+                     + ("" if est <= pages * 1.1 else ";超出预算,投稿前需压缩"))
     notes += [f"LaTeX 静态检查: {p}" for p in latex["checks"]]
     # 整篇一致性检查(--go 在组装前跑;--paper-review 可单独跑)的发现。终稿改过而检查
     # 没重跑时只提醒,不把过期的发现当成当前问题。

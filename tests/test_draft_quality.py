@@ -1,9 +1,7 @@
 """初稿质量改进的离线验证(不调 API),基于纯内容阶段架构。
 
-来自 2026-11-14 真实 API 测试(docs/test-runs/2026-11-14-senet-terra)暴露的问题:
-各节普遍只写到目标字数的 10%~60%、相关工作只有三句话、实验设置章的小节类型被标题误判。
+2 号项来自 2026-11-14 真实 API 测试(实验设置章的小节类型被标题误判)。
 
-1 结构/字数检查:不到目标一半 → 交给评审作 MUST FIX;终稿结果逐节进待补清单
 2 显式声明 type 的章不再按小节标题猜类型
 3 收敛循环:第 2 轮起只给未通过条目 + 核验备注;第 1 轮顺带 SHOULD FIX
 4 相关工作/背景章的证据挖掘视角锚定在文献笔记上
@@ -26,9 +24,8 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 import agents.orchestrator as orch
 import agents.outline as ol
-from agents.assemble import load_chapters
 from agents.chapter_type import IDEA, resolve_run_route
-from agents.draft_checks import (check_structure, polish_findings, write_polish_check,
+from agents.draft_checks import (polish_findings, write_polish_check,
                                  read_polish_findings, ADVISORY)
 from agents.evidence_mining import perspectives_for_route, build_evidence_mining_prompt
 from agents.paper_review import duplicate_sentences, run_paper_review, read_paper_review
@@ -69,44 +66,6 @@ class _ScriptModel:
     def generate(self, messages, **kw):
         self.calls.append(messages)
         return _Resp(self.reply)
-
-
-# ── 1. 结构/字数 ─────────────────────────────────────────────────────────
-def test_structure_check_levels():
-    sections = [{"title": "Overview", "target_words": 50},
-                {"title": "Spectral Gate", "target_words": 20},
-                {"title": "Related Methods", "target_words": 100},
-                {"title": "Training Objective", "target_words": 100}]
-    draft = ("## 4.1 Overview\n\n" + "word " * 50 + "\n\n### Spectral Gate\n\n" + "w " * 12
-             + "\n\n### Related Methods\n\n" + "w " * 20
-             + "\n\n## Limitations of This Draft\n\n" + "x " * 200)
-    rows = check_structure(draft, sections)
-    check("齐全的小节 OK", rows[0].startswith("OK"), str(rows))
-    check("50%~70% → SHORT", rows[1].startswith("SHORT"), str(rows))
-    check("不到一半 → UNDERLENGTH", rows[2].startswith("UNDERLENGTH"), str(rows))
-    check("缺失的小节 MISSING", rows[3].startswith("MISSING"), str(rows))
-    single = check_structure("No heading at all. " + "w " * 30,
-                             [{"title": "Abstract", "target_words": 200}])
-    check("短章不要求小节标题,只数字数", single[0].startswith("UNDERLENGTH"), str(single))
-
-
-def test_short_draft_reaches_review_as_must_fix():
-    set_idea(IDEA_TEXT)
-    folder, outline, _ = make_ws_in_outline(
-        "type: method\n\n1. **Framework** (~300 words)\n- 机制", "02-method")
-    agent = FullRunAgent(folder)
-    results, _ = run_chapter(agent, folder, outline, make_data({"test_accuracy": 0.8}))
-    review = [(p, d) for p, d in zip(agent.prompts, agent.doc_sets)
-              if "Return a detailed review as review-v1.md" in p]
-    check("评审收到结构检查", review and "structure-check.md" in review[0][1]
-          and "UNDERLENGTH section (under half its target) is a MUST FIX" in review[0][0])
-    check("缺材料时允许用 [UNKNOWN: ...] 说明缺什么", "[UNKNOWN: <which material" in review[0][0])
-    sc = Path(folder, "structure-check.md").read_text(encoding="utf-8")
-    check("终稿结构检查覆盖初稿那份", "(final.md vs brief.md)" in sc, sc[:200])
-    chapters = load_chapters([{"folder": Path(folder).name, "title": "Method",
-                               "type": "method", "number": 1}], Path(folder).parent)
-    check("偏短的小节进待补清单", chapters[0].structure
-          and chapters[0].structure[0].startswith("UNDERLENGTH"), str(chapters[0].structure))
 
 
 # ── 2. 小节类型 ──────────────────────────────────────────────────────────
