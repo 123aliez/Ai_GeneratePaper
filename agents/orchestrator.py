@@ -446,7 +446,8 @@ def part_family(part: dict, route: dict) -> str:
 def format_stage1_parts(parts: list[dict]) -> str:
     """把段边界渲染成规划提示词里的一段说明。
 
-    字数区间按比例放宽,不用固定的 ±词数。原先是 `max(300, target-100)` 到
+    正文段(≥400 词)不给区间:篇幅由 Draft agent 按本段实际实验结果自定,尽量精炼,
+    大纲字数只作参考。短段(摘要/结论等)仍给按比例的窄区间,不用固定的 ±词数。原先是 `max(300, target-100)` 到
     `target+150`:那个 300 下限是照 survey 章节(每段 700+ 词)定的,用在一个 150
     词的摘要上会被抬成 "300-300 words" —— 目标翻倍,区间还塌成一个点。
     """
@@ -457,16 +458,17 @@ def format_stage1_parts(parts: list[dict]) -> str:
             # 摘要/结论这类短段:篇幅本身就是体裁要求,保持原来的窄区间
             lower = max(60, int(target * 0.85))
             upper = max(lower + 40, int(target * 1.2) + 30)
-            note = ""
+            length = f"Target length: {lower}-{upper} words"
         else:
-            # 正文段放宽:目标值当下限附近的参考,材料(表格多、对比多)撑得住就写到上限
-            lower = int(target * 0.8)
-            upper = int(target * 1.6) + 50
-            note = (" (a guide, not a cap: write toward the upper end when the attached "
-                    "material — tables, comparisons, mechanism — supports it; never pad)")
+            # 正文段:篇幅由 Draft 按本段实际结果自定,尽量精炼;大纲字数只作规划参考
+            length = (f"Length: decided by the material, as concise as possible — write what the "
+                      f"actual results and evidence of this part need, then stop. ~{target} words "
+                      f"is only a planning reference from the outline, not a target or a floor: "
+                      f"go shorter when the results are few, longer only for results that need it. "
+                      f"Never pad, never repeat a number the table already shows")
         blocks.append(
             f"Part {part['index']} -> {part['output']}\n"
-            f"Target length: {lower}-{upper} words{note}\n"
+            f"{length}\n"
             f"Covers: " + "; ".join(part["titles"])
         )
     return "\n\n".join(blocks)
