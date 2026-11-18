@@ -53,6 +53,10 @@
 - $\mathbf{x} \in \mathbb{R}^{C \times H \times W}$:输入特征图,$C$ 为通道数
 - $g(\cdot)$:谱域重标定函数,定义为 $g(\mathbf{x}) = \sigma(\mathbf{W}_2\,\delta(\mathbf{W}_1 \mathcal{F}(\mathbf{x})))$
 
+**训练目标 / 损失函数**:<Method 章要写出训练目标。提出了新损失就写出公式和每一项的含义;
+沿用标准损失也写一句,例如"沿用骨干网络的标准交叉熵损失,不引入额外损失项"。
+不写的话 Method 章会在这里标 `[DESIGN DETAIL NEEDED]`。>
+
 ### 4.4 设计选择与替代方案
 <每个关键选择,说明"为什么这样"而不是"还可以那样"。审稿人一定会问。>
 
