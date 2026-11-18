@@ -336,8 +336,20 @@ def assemble_output(extra_notes: list[str] | None = None) -> dict:
         words = sum(len(c.en.split()) for c in chapters)
         est = words / per_page
         notes.append(f"篇幅:正文约 {words} 词,按每页 {per_page} 词约 {est:.1f} 页(目标 {pages} 页,不含参考文献)"
-                     + ("" if est <= pages * 1.1 else ";超出预算,投稿前需压缩"))
+                     + (";超出预算,投稿前需压缩" if est > pages * 1.1 else
+                        ";明显不足,各节缺口见下方 [篇幅/结构] 行" if est < pages * 0.7 else ""))
     notes += [f"LaTeX 静态检查: {p}" for p in latex["checks"]]
+    # 整篇一致性检查(--go 在组装前跑;--paper-review 可单独跑)的发现。终稿改过而检查
+    # 没重跑时只提醒,不把过期的发现当成当前问题。
+    from .paper_review import PAPER_REVIEW_NAME, read_paper_review, finals_fingerprint, _SHA_RE
+    review_path = Path(config.WORK_ROOT) / PAPER_REVIEW_NAME
+    if review_path.is_file():
+        m = _SHA_RE.search(review_path.read_text(encoding="utf-8", errors="replace"))
+        if m and m.group(1) == finals_fingerprint(meta, Path(config.WORKSPACE_ROOT)):
+            notes += [f"整篇一致性: {f}" for f in read_paper_review(review_path)]
+        else:
+            notes.append("整篇一致性检查结果已过期(之后改过终稿):重跑 "
+                         "`python run.py --project <项目> --paper-review`")
     (out / "待补清单.md").write_text(A.build_todo_report(chapters, notes, num, tables), encoding="utf-8")
     folder_titles = {c.folder: f"{c.number}. {c.title}" for c in chapters}
     (out / "图表清单.md").write_text(A.build_figure_report(num, tables, folder_titles), encoding="utf-8")

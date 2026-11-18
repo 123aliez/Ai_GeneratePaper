@@ -98,7 +98,9 @@ def _atomic_write(path: Path, text: str) -> None:
 def check_structure(text: str, sections: list[dict]) -> list[str]:
     """每个 brief 小节一行结论。sections 来自 parse_brief_sections。
 
-    行首标签:MISSING(找不到这一节的标题)、SHORT / LONG(字数明显偏离目标)、OK。
+    行首标签:MISSING(找不到这一节的标题)、UNDERLENGTH(不到目标一半)、SHORT(不到 70%)、
+    LONG(超出 150%)、OK。真实测试里各节普遍只写到目标的 10%~60%,而提示词里的目标字数
+    没有任何检查,评审也没提——所以"不到一半"要能进 MUST FIX。
     只有一个小节的章(摘要、结论等短章)不要求有小节标题,直接数全文。
     容差故意放宽(<70% 或 >150% 才报):起草提示词给的区间是 85%-120%,这里只抓明显跑偏。
     """
@@ -133,7 +135,9 @@ def check_structure(text: str, sections: list[dict]) -> list[str]:
             continue
         words = count_words(spans[idx])
         tag = "OK"
-        if target and words < target * 0.7:
+        if target and words < target * 0.5:
+            tag = "UNDERLENGTH"
+        elif target and words < target * 0.7:
             tag = "SHORT"
         elif target and words > target * 1.5 + 30:
             tag = "LONG"

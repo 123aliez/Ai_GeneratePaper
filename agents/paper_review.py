@@ -52,6 +52,16 @@ Rules:
 """
 
 
+def _complete_text(model, messages) -> str:
+    """一次完整生成的文本。优先走流式(ResilientModel 只在流式路径上做断流重连)。"""
+    stream = getattr(model, "generate_stream", None)
+    if callable(stream):
+        return "".join(getattr(d, "content", "") or "" for d in stream(messages))
+    response = model.generate(messages)
+    text = getattr(response, "content", "") or ""
+    return text if isinstance(text, str) else str(text)
+
+
 def finals_fingerprint(chapters: list[dict], workspace) -> str:
     digest = hashlib.sha256()
     for meta in chapters:
@@ -131,8 +141,7 @@ def run_paper_review(model, chapters: list[dict], workspace, out_path, *,
             from smolagents.models import ChatMessage, MessageRole
             print(f"[Review  ] single-turn | whole-paper consistency review "
                   f"({len(texts)} chapter(s))", flush=True)
-            from .prose_call import complete_text
-            text = complete_text(model, [
+            text = _complete_text(model, [
                 ChatMessage(role=MessageRole.SYSTEM, content=PAPER_REVIEW_INSTRUCTIONS),
                 ChatMessage(role=MessageRole.USER,
                             content=build_paper_review_prompt(chapters, workspace)),
