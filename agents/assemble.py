@@ -754,6 +754,10 @@ def static_checks(latex_dir: Path, bib_path: Path) -> list[str]:
             closes = len(re.findall(r"(?<!\\)\}", stripped))
             if opens != closes:
                 problems.append(f"{f.name}: 花括号不配平({opens} 个 {{ / {closes} 个 }})")
+        # 被转义成文字的命令(如表注里的 \cite 变成 \textbackslash{}cite\{...\}):编译不报错,
+        # 但成品里是乱码,原有检查都看不出来。
+        for m in re.finditer(r"\\textbackslash(?:\{\}|\\\{\\\})([A-Za-z]{2,})", stripped):
+            problems.append(f"{f.name}: 命令 \\{m.group(1)} 被转义成了普通文字(成品会显示乱码)")
         for key in unknown_cite_keys(stripped, known):
             problems.append(f"{f.name}: 引用 key '{key}' 不在 refs.bib 里")
         for lab in re.findall(r"\\label\{([^}]+)\}", stripped):

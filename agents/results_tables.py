@@ -267,12 +267,28 @@ def tex_escape(text: str) -> str:
     return text.replace("↑", r"$\uparrow$").replace("↓", r"$\downarrow$").replace("±", r"$\pm$")
 
 
+# 表注/表题里模型写的 \cite{key}:原样保留成真正的引用。其余一律转义(防模型文本夹带命令)。
+# 真实测试里 `note: Results reported by Hu et al. \cite{hu2018squeeze}` 被整体转义成了
+# 字面文字 "\textbackslash\{\}cite\{...\}",编译后是乱码、参考文献也不被引用。
+_KEEP_CITE_RE = re.compile(r"\\cite[pt]?\{[A-Za-z0-9_:.+\-/]+(?:\s*,\s*[A-Za-z0-9_:.+\-/]+)*\}")
+
+
+def tex_escape_keep_cite(text: str) -> str:
+    pieces, last = [], 0
+    for m in _KEEP_CITE_RE.finditer(text or ""):
+        pieces.append(tex_escape(text[last:m.start()]))
+        pieces.append(re.sub(r"\s+", "", m.group(0)))
+        last = m.end()
+    pieces.append(tex_escape((text or "")[last:]))
+    return "".join(pieces)
+
+
 def render_table_latex(table: Table, caption: str = "", note: str = "", label: str = "") -> str:
     header, rows = table_matrix(table)
     colspec = "l" + "r" * (len(header) - 1)
     out = [r"\begin{table}[t]", r"\centering"]
     if caption:
-        out.append(rf"\caption{{{tex_escape(caption)}}}")
+        out.append(rf"\caption{{{tex_escape_keep_cite(caption)}}}")
     if label:
         out.append(rf"\label{{{label}}}")
     out += [rf"\begin{{tabular}}{{{colspec}}}", r"\toprule",
@@ -282,7 +298,7 @@ def render_table_latex(table: Table, caption: str = "", note: str = "", label: s
         out.append(" & ".join(cells) + r" \\")
     out += [r"\bottomrule", r"\end{tabular}"]
     if note:
-        out.append(rf"\par\vspace{{2pt}}{{\footnotesize {tex_escape(note)}}}")
+        out.append(rf"\par\vspace{{2pt}}{{\footnotesize {tex_escape_keep_cite(note)}}}")
     out.append(r"\end{table}")
     return "\n".join(out)
 

@@ -146,6 +146,25 @@ def _settings_unfilled(text: str) -> bool:
     return all(re.fullmatch(r"<.*>", ln) for ln in body)
 
 
+def model_config_errors() -> list[str]:
+    """三组模型配置的离线检查:必填项没填、模型名含非常规字符。"""
+    import config
+    errors = []
+    for role in ("DRAFT", "REVIEW", "MANAGER"):
+        missing = [n for n in ("MODEL", "API_KEY", "API_BASE")
+                   if not getattr(config, f"{role}_{n}", "")]
+        if missing:
+            errors.append(f".env 里 {role}_{'/'.join(missing)} 没填")
+        # 模型名笔误(真实测试里 MANAGER_MODEL 多了一个 'ß')要到请求发出才收到 404。
+        # 非 ASCII 字符与空白不会出现在任何模型 ID 里,不联网就能拦下。
+        model_id = str(getattr(config, f"{role}_MODEL", "") or "")
+        odd = sorted({ch for ch in model_id if ord(ch) > 127 or ch.isspace()})
+        if odd:
+            errors.append(f".env 里 {role}_MODEL = {model_id!r} 含非常规字符 "
+                          f"{' '.join(repr(c) for c in odd)},多半是笔误")
+    return errors
+
+
 def check_materials(need_models: bool = False) -> Check:
     import config
     from .content_source import idea_is_skeleton, load_idea_document
@@ -247,11 +266,7 @@ def check_materials(need_models: bool = False) -> Check:
             chk.errors.append(f"paper.toml 解析失败: {exc}")
 
     if need_models:
-        for role in ("DRAFT", "REVIEW", "MANAGER"):
-            missing = [n for n in ("MODEL", "API_KEY", "API_BASE")
-                       if not getattr(config, f"{role}_{n}", "")]
-            if missing:
-                chk.errors.append(f".env 里 {role}_{'/'.join(missing)} 没填")
+        chk.errors += model_config_errors()
     return chk
 
 

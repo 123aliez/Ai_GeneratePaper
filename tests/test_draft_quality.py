@@ -200,6 +200,50 @@ def test_polish_fidelity():
     check("硬发现进核验原因", any("polish-check.md" in r for r in reasons), str(reasons))
 
 
+# ── 审查真实测试产物发现的缺陷 ───────────────────────────────────────────
+def test_table_note_keeps_cite():
+    from agents.results_tables import tex_escape_keep_cite
+    out = tex_escape_keep_cite(r"Results reported by Hu et al. \cite{hu2018squeeze}. 5% & \input{x}")
+    check("表注里的 \\cite 原样保留", r"\cite{hu2018squeeze}" in out
+          and "textbackslash\\{\\}cite" not in out, out)
+    check("其余文字照常转义(含危险命令)", r"5\%" in out and r"\&" in out
+          and r"\textbackslash\{\}input" in out, out)
+
+
+def test_static_check_flags_escaped_command():
+    from agents.assemble import static_checks
+    root = Path(tempfile.mkdtemp())
+    (root / "refs.bib").write_text("@article{hu2018squeeze, title={SE}}\n", encoding="utf-8")
+    (root / "latex").mkdir()
+    (root / "latex" / "a.tex").write_text(
+        "Results reported by Hu et al. \\textbackslash\\{\\}cite\\{hu2018squeeze\\}.\n",
+        encoding="utf-8")
+    problems = static_checks(root / "latex", root / "refs.bib")
+    check("静态检查报出被转义的命令", any("\\cite" in p and "普通文字" in p for p in problems),
+          str(problems))
+
+
+def test_model_id_typo_is_caught_offline():
+    import config
+    from agents.project import model_config_errors
+    saved = {n: getattr(config, n) for n in dir(config)
+             if n.endswith(("_MODEL", "_API_KEY", "_API_BASE")) and n.split("_")[0] in
+             ("DRAFT", "REVIEW", "MANAGER")}
+    try:
+        for role in ("DRAFT", "REVIEW", "MANAGER"):
+            setattr(config, f"{role}_MODEL", "gpt-6.1-terra")
+            setattr(config, f"{role}_API_KEY", "dummy")
+            setattr(config, f"{role}_API_BASE", "https://example.invalid/v1")
+        config.MANAGER_MODEL = "gpt-6.1-terraß"
+        errors = model_config_errors()
+    finally:
+        for n, v in saved.items():
+            setattr(config, n, v)
+    check("模型名里的 ß 在材料检查阶段被拦下",
+          any("MANAGER_MODEL" in e and "ß" in e for e in errors), str(errors))
+    check("正常模型名不误报", not any("DRAFT_MODEL" in e or "REVIEW_MODEL" in e for e in errors))
+
+
 if __name__ == "__main__":
     tests = [v for k, v in list(globals().items()) if k.startswith("test_") and callable(v)]
     for fn in tests:
