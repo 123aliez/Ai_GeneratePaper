@@ -58,7 +58,7 @@ _FENCE_RE = re.compile(r"^\s*(```|~~~)")
 _TABLE_ROW_RE = re.compile(r"^\s*\|(.+)\|\s*$")
 _TABLE_SEP_RE = re.compile(r"^\s*\|[\s:|-]+\|\s*$")
 
-DEFAULT_SECTION_WORDS = 250
+DEFAULT_SECTION_WORDS = 400
 
 # 短章类型：篇幅太小（abstract/conclusion/limitations/discussion）不值得拆 ### 小节起草。
 # 这类章在 outline 里直接把要点挂在 ## 章标题下，parse_outline 会合成一个 synthetic 小节
@@ -330,7 +330,7 @@ def apply_page_budget(chapters: list[dict], pages: int, per_page: int) -> None:
         room = max(plan[chapter["number"]] - fixed_here, 0)
         base = sum(s["target_words"] for s in flex)
         for s in flex:
-            s["target_words"] = max(100, int(round(room * s["target_words"] / base / 25.0)) * 25)
+            s["target_words"] = max(200, int(round(room * s["target_words"] / base / 25.0)) * 25)
 
 
 def _finalize_chapters(chapters: list[dict]) -> list[dict]:
@@ -341,7 +341,7 @@ def _finalize_chapters(chapters: list[dict]) -> list[dict]:
             guessed = normalize_type(chapter["title"])
             chapter["type"] = guessed if guessed != DEFAULT_TYPE else DEFAULT_TYPE
         chapter["family"], chapter["gate"] = route_for_type(chapter["type"])
-        # 没显式标字数的小节,按 type 给经验默认值(小节级 type 优先 → 章 type → 兜底 250)。
+        # 没显式标字数的小节,按 type 给经验默认值(小节级 type 优先 → 章 type → 兜底 400)。
         # 显式标过的保持不动(words_explicit=True,不在这里覆盖)。
         for section in chapter["sections"]:
             if not section.get("words_explicit"):

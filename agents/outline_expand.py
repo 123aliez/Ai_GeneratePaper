@@ -13,7 +13,7 @@
 
 字数不由 Manager 定 —— 篇幅是投稿约束(会议页数、章节配比),只有作者知道。
 不带 `(~N words)` 的小节,框架按该小节 type 查 DEFAULT_WORDS_BY_TYPE 给经验默认值
-(小节级 type 优先 → 章 type),都查不到才退回 DEFAULT_SECTION_WORDS=250。
+(小节级 type 优先 → 章 type),都查不到才退回 DEFAULT_SECTION_WORDS=400。
 """
 import re
 from pathlib import Path
@@ -128,7 +128,7 @@ def budget_clause(chapters: list[dict]) -> str:
         f"- Allocate by how much real material the chapter has: the idea document and data "
         f"index decide it. Core content (the method, the main results) gets the most words; a "
         f"chapter with thin material gets FEWER words than the suggestion. Never pad.\n"
-        f"- Stay within about 30% of each chapter's suggestion unless the material clearly "
+        f"- Stay within about 50% of each chapter's suggestion unless the material clearly "
         f"calls for more or less; chapter totals must add up to no more than {pages * per_page} "
         f"words.\n"
         f"- Split a chapter's words across its subsections by the weight of their content.\n\n")

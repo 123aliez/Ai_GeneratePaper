@@ -453,11 +453,20 @@ def format_stage1_parts(parts: list[dict]) -> str:
     blocks = []
     for part in parts:
         target = max(1, part["target_words"])
-        lower = max(60, int(target * 0.85))
-        upper = max(lower + 40, int(target * 1.2) + 30)
+        if target < 400:
+            # 摘要/结论这类短段:篇幅本身就是体裁要求,保持原来的窄区间
+            lower = max(60, int(target * 0.85))
+            upper = max(lower + 40, int(target * 1.2) + 30)
+            note = ""
+        else:
+            # 正文段放宽:目标值当下限附近的参考,材料(表格多、对比多)撑得住就写到上限
+            lower = int(target * 0.8)
+            upper = int(target * 1.6) + 50
+            note = (" (a guide, not a cap: write toward the upper end when the attached "
+                    "material — tables, comparisons, mechanism — supports it; never pad)")
         blocks.append(
             f"Part {part['index']} -> {part['output']}\n"
-            f"Target length: {lower}-{upper} words\n"
+            f"Target length: {lower}-{upper} words{note}\n"
             f"Covers: " + "; ".join(part["titles"])
         )
     return "\n\n".join(blocks)
