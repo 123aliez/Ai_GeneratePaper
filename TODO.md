@@ -26,6 +26,7 @@
 | 8 | Anthropic 原生协议路径(`provider=anthropic`)端到端未测;离线测试只覆盖路由与参数映射 |
 | 9 | 材料充足时页数能否真的接近预算(测试材料只有一张表,正文约 4.5 页 / 目标 12 页) |
 | 10 | `claude_cli`：PM 在 CLI 2.1.312、Pro 订阅实测 `claude-opus-4-6` 成功且 `modelUsage` 型号一致；`opus-4.6` 简写返回 `is_error=true`、404；`sonnet` 别名解析为 `claude-sonnet-5-5`。同一道数学题中，`claude-opus-4-6` 的 low/xhigh/max 均成功，思考 token 为 0/73/95，sonnet + max 成功、思考 token 为 88；xhigh 是否内部降档未知，本地只校验五档名称。早先 sonnet + medium 起草请求思考 token 为 0，medium 及以下由模型自行决定是否思考。已有多轮展平样例；已实测独立调用在项目目录、`~/.claude/projects`、`~/.claude.json` 无会话残留。适配器另已测假子进程及真实本地 Python 进程树超时回收（不调用 claude），整篇订阅路径尚待验证 |
+| 13 | 第 2 轮起只改未通过项后收敛是否更快;润色保真检查与整篇一致性检查的误报率 |
 | 11 | **额度用尽的真实报错格式未经实测，当前按429与 usage limit / limit reached / hit your limit 等文案识别**；需真实样本核对。额度耗尽不重试，支持切 API 配置接续 |
 | 12 | 章节契约是否被遵守;契约粗检误报率 |
 | 13 | 验证相关工作和实验两批起草、讨论与局限性一批起草的整篇生成效果 |

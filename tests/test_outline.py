@@ -401,7 +401,7 @@ def test_part_count_adapts_to_section_count():
         return [{"number": i, "title": f"S{i}", "target_words": 150}
                 for i in range(1, n + 1)]
 
-    for count, want_parts in ((1, 1), (2, 2), (3, 3), (6, 3), (7, 3)):
+    for count, want_parts in ((1, 1), (2, 2), (3, 3), (4, 3), (5, 3), (6, 3), (7, 3)):
         parts = orch.build_stage1_parts(sections(count))
         check(f"{count} 个小节 → {want_parts} 段", len(parts) == want_parts,
               f"got {len(parts)}")

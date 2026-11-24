@@ -13,7 +13,7 @@
 
 字数不由 Manager 定 —— 篇幅是投稿约束(会议页数、章节配比),只有作者知道。
 不带 `(~N words)` 的小节,框架按该小节 type 查 DEFAULT_WORDS_BY_TYPE 给经验默认值
-(小节级 type 优先 → 章 type),都查不到才退回 DEFAULT_SECTION_WORDS=250。
+(小节级 type 优先 → 章 type),都查不到才退回 DEFAULT_SECTION_WORDS=400。
 """
 import re
 from pathlib import Path
@@ -99,6 +99,9 @@ def skeleton_report(chapters: list[dict]) -> list[str]:
         count = len(chapter["sections"])
         has = f"已有 {count} 个小节" if count else "无小节,待展开"
         flag = "  ← type 无法识别" if chapter["type"] == DEFAULT_TYPE else ""
+        bad = [sec["title"] for sec in chapter["sections"] if sec.get("type_unrecognized")]
+        if bad:
+            flag += f"  ← 小节 type 无法识别: {', '.join(bad)}"
         lines.append(f"  {chapter['number']:>2}. {chapter['title']:<28} "
                      f"type={chapter['type']:<12} {has}{flag}")
     return lines
@@ -125,7 +128,7 @@ def budget_clause(chapters: list[dict]) -> str:
         f"- Allocate by how much real material the chapter has: the idea document and data "
         f"index decide it. Core content (the method, the main results) gets the most words; a "
         f"chapter with thin material gets FEWER words than the suggestion. Never pad.\n"
-        f"- Stay within about 30% of each chapter's suggestion unless the material clearly "
+        f"- Stay within about 50% of each chapter's suggestion unless the material clearly "
         f"calls for more or less; chapter totals must add up to no more than {pages * per_page} "
         f"words.\n"
         f"- Split a chapter's words across its subsections by the weight of their content.\n\n")
@@ -219,7 +222,16 @@ def build_expand_prompt(chapters: list[dict], out_en_path: str,
         f"for a short chapter, KEEP them verbatim.\n"
         f"- Bullets not under a `###` subsection are allowed ONLY for the short "
         f"chapter types above. For every other chapter, place every bullet under a "
-        f"`###` subsection.\n\n"
+        f"`###` subsection.\n"
+        f"- Subsection type: the FIRST line under every `###` subsection you create is "
+        f"`- type: X`, with X one of: abstract, intro, related, background, method, theory, "
+        f"experiments, results, analysis, ablation, discussion, limitations, conclusion. It "
+        f"decides which writing and review rules that subsection gets. Use the chapter's own "
+        f"type unless the subsection's content clearly belongs to another one — typically an "
+        f"`experiments` chapter that also holds the main comparison (results), an ablation "
+        f"(ablation) or a further analysis (analysis). Subsections the author already wrote "
+        f"keep their `- type:` line exactly as given (or none, if none was given). Short "
+        f"chapters get no type line beyond the chapter's own.\n\n"
         f"{budget_clause(chapters)}"
         f"## Length & structure heuristics (how to slice chapters, venue-style)\n"
         f"- Prioritise the parts most readers actually read: Abstract + Introduction "
@@ -445,6 +457,13 @@ def validate_expansion(original: list[dict], expanded: list[dict]) -> list[str]:
                 f"第 {chapter['number']} 章 '{chapter['title']}' 是短章,"
                 f"应把要点直接写在 ## 下,不能新增 ### 小节")
         problems += _section_problems(chapter, got)
+        # 规划者给小节标的 type 必须是标准类型之一:写错的 type 解析时会被忽略,
+        # 那个小节就悄悄退回章 type,作者审大纲时看见的 type 和实际生效的不一致。
+        for section in got["sections"]:
+            if section.get("type_unrecognized"):
+                problems.append(
+                    f"第 {chapter['number']} 章小节 '{section['title']}' 的 type "
+                    f"'{section['type_unrecognized']}' 不是标准类型")
 
     extra = sorted(set(by_number) - {c["number"] for c in original})
     if extra:

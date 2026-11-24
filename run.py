@@ -243,6 +243,9 @@ def init_workspaces(force: bool) -> int:
 
     print(f"Outline: {OUTLINE_PATH}")
     print(f"Workspace: {PAPER_ROOT}\n")
+    from agents.outline import untyped_section_warnings
+    for note in untyped_section_warnings(skeleton):
+        print(f"[小节类型提醒] {note}")
     for line in outline_banner(result):
         print(line)
 
@@ -416,6 +419,12 @@ def expand_outline() -> int:
     from agents import project
     project.record_expansion()
 
+    from agents.outline import untyped_section_warnings
+    _type_notes = untyped_section_warnings(expanded_zh)
+    if _type_notes:
+        print("\n[小节类型提醒] 审大纲时请顺便看一下:")
+        for note in _type_notes:
+            print(f"  · {note}")
     total_sections = sum(len(c["sections"]) for c in expanded_en)
     print(f"\n展开完成:{len(expanded_en)} 章,{total_sections} 个小节 → "
           f"{en_path.name} + {zh_path.name}")
@@ -749,6 +758,34 @@ def _read_status(folder: str) -> str:
         return ""
 
 
+def cmd_paper_review(force: bool = False) -> int:
+    """整篇一致性检查(只读,出问题清单;改正文要回到对应章重跑)。终稿没变则跳过。"""
+    import config
+    from agents.outline import parse_outline, OutlineRouteError
+    from agents.paper_review import run_paper_review, PAPER_REVIEW_NAME
+    try:
+        meta = [{"folder": c["folder"], "title": c["title"], "type": c.get("type", ""),
+                 "number": c["number"]} for c in parse_outline()]
+    except OutlineRouteError as exc:
+        print(f"Error: 无法读 outline: {exc}")
+        return 1
+    try:
+        model = get_review_model()
+    except Exception as exc:
+        print(f"[整篇一致性] Review 模型不可用({type(exc).__name__}),只做确定性检查")
+        model = None
+    info = run_paper_review(model, meta, config.WORKSPACE_ROOT,
+                            Path(config.WORK_ROOT) / PAPER_REVIEW_NAME, force=force)
+    tag = {"skipped": "终稿未变,沿用上次结果", "done": "完成",
+           "deterministic-only": "仅确定性检查(模型未跑,下次会重试)"}[info["status"]]
+    print(f"[整篇一致性] {tag}:{len(info['findings'])} 条发现 → {info['path']}")
+    for line in info["findings"][:20]:
+        print(f"  · {line}")
+    if info["findings"]:
+        print("  这些问题不会自动修:回到对应章删掉其终稿等产物后重跑,改动才会经过核验。")
+    return 0
+
+
 def cmd_go(keep_outline: bool) -> int:
     """一条命令:材料检查 → 建索引 → 展开大纲(首次停下等审) → 逐章生成 → 组装。"""
     import config
@@ -809,7 +846,8 @@ def cmd_go(keep_outline: bool) -> int:
         print("\n某章失败或被拦下,已停止。修好后重跑同一条命令会从这一章继续。")
         return rc
 
-    print("\n== 5/5 核验并组装 ==")
+    print("\n== 5/5 整篇一致性检查 + 核验并组装 ==")
+    cmd_paper_review()
     return cmd_assemble()
 
 
@@ -818,6 +856,7 @@ USAGE = """用法:
   python run.py --new 项目名                          建项目 + 模板
   python run.py --project <项目> --go                 一条命令出初稿(首次展开大纲后停下等你审)
   python run.py --project <项目> --check | --index | --expand | --init | --all | --assemble | --list
+  python run.py --project <项目> --paper-review       整篇一致性检查(只读,结果进待补清单)
   python run.py --project <项目> <章节名>             只跑一章
 详见 README.md。"""
 
@@ -848,7 +887,8 @@ def main():
             sys.exit(2)
         rest = [a for j, a in enumerate(argv) if j not in (i, i + 1) and a != "--progress"]
 
-    actions = ("--check", "--index", "--assemble", "--go", "--list", "--init", "--expand", "--all")
+    actions = ("--check", "--index", "--assemble", "--go", "--list", "--init", "--expand", "--all",
+               "--paper-review")
     known = set(actions) | {"--keep-outline", "--force"}
     unknown = [a for a in rest if a.startswith("--") and a not in known]
     if unknown:
@@ -863,8 +903,8 @@ def main():
     if "--keep-outline" in rest and "--go" not in rest:
         print("Error: --keep-outline 只能和 --go 一起用")
         sys.exit(2)
-    if "--force" in rest and "--init" not in rest:
-        print("Error: --force 只能和 --init 一起用")
+    if "--force" in rest and "--init" not in rest and "--paper-review" not in rest:
+        print("Error: --force 只能和 --init / --paper-review 一起用")
         sys.exit(2)
 
     if "--check" in rest:
@@ -873,6 +913,8 @@ def main():
         sys.exit(cmd_index())
     if "--assemble" in rest:
         sys.exit(cmd_assemble())
+    if "--paper-review" in rest:
+        sys.exit(cmd_paper_review(force="--force" in rest))
     if "--go" in rest:
         sys.exit(cmd_go(keep_outline="--keep-outline" in rest))
     if "--list" in rest:

@@ -58,7 +58,7 @@ _FENCE_RE = re.compile(r"^\s*(```|~~~)")
 _TABLE_ROW_RE = re.compile(r"^\s*\|(.+)\|\s*$")
 _TABLE_SEP_RE = re.compile(r"^\s*\|[\s:|-]+\|\s*$")
 
-DEFAULT_SECTION_WORDS = 250
+DEFAULT_SECTION_WORDS = 400
 
 # 短章类型：篇幅太小（abstract/conclusion/limitations/discussion）不值得拆 ### 小节起草。
 # 这类章在 outline 里直接把要点挂在 ## 章标题下，parse_outline 会合成一个 synthetic 小节
@@ -102,6 +102,9 @@ def _table_cells(line: str) -> list[str]:
 def _header_role(cell: str) -> str:
     """表头单元格 → 它是哪一列("number"/"title"/"type"/"")。"""
     key = cell.strip().strip("*").strip("`").strip().lower()
+    key = re.sub(r"\s*[(（][^)）]*[)）]\s*$", "", key)     # "小节(可选)" → "小节"
+    if key in {"小节", "小节类型", "subsections", "sections"}:
+        return "sections"
     if key in {"章号", "序号", "#", "no", "no.", "num", "number"}:
         return "number"
     if key in {"标题", "章节标题", "章标题", "题目", "名称", "章", "章节",
@@ -162,16 +165,81 @@ def _parse_skeleton_table(text: str) -> list[dict]:
                 or title.startswith("<") or raw_type.startswith("<")):
             continue
 
+        sections = _parse_section_cell(cell_at("sections"))
         auto_number += 1
         raw_number = cell_at("number")
         number = int(raw_number) if raw_number.isdigit() else auto_number
         canonical = normalize_type(raw_type)
         chapters.append({
             "number": number, "title": title,
-            "type": canonical, "sections": [],
+            "type": canonical, "sections": sections,
             "unrecognized": raw_type if canonical == DEFAULT_TYPE else "",
         })
     return chapters
+
+
+_SECTION_ENTRY_NUM_RE = re.compile(r"^\s*\d+(?:\.\d+)*[.)、]?\s+")
+
+
+def _parse_section_cell(cell: str) -> list[dict]:
+    """骨架表「小节」列:`5.2 Main Results: results; 5.4 Ablation: ablation`。
+
+    分号(中英文皆可)分隔小节;每项最后一个冒号后是 type,可省略(省略 = 沿用章 type)。
+    前导编号只给人看,丢掉。type 写错不静默丢弃:记在 type_unrecognized 里,展开前的
+    骨架清单会标出来。产物与标题语法里作者手写的 `### 小节` + `- type:` 完全一样,
+    `--expand` 按"作者已有的小节"原样保留标题与 type,只补要点。
+    """
+    if not cell or cell.strip().startswith("<"):
+        return []
+    sections = []
+    for raw in re.split(r"[;；]", cell):
+        raw = raw.strip()
+        if not raw:
+            continue
+        title, sec_type, unrecognized = raw, "", ""
+        m = re.match(r"^(.*\S)\s*[:：]\s*([^:：]+)$", raw)
+        if m:
+            title, raw_type = m.group(1), m.group(2).strip().strip("`")
+            canonical = normalize_type(raw_type)
+            if canonical == DEFAULT_TYPE:
+                unrecognized = raw_type
+            else:
+                sec_type = canonical
+        title = _SECTION_ENTRY_NUM_RE.sub("", title).strip()
+        if not title:
+            continue
+        sections.append({
+            "number": len(sections) + 1, "title": title,
+            "target_words": DEFAULT_SECTION_WORDS, "words_explicit": False,
+            "type": sec_type, "type_unrecognized": unrecognized, "bullets": [],
+        })
+    return sections
+
+
+_DATA_CHAPTER_TYPES = {"experiments", "results", "analysis", "ablation"}
+
+
+def untyped_section_warnings(chapters: list[dict]) -> list[str]:
+    """实验类章节有多个小节、却一个都没标小节 type 时的提醒行(不阻塞)。
+
+    章声明了 type 时,程序不再按小节标题猜类型(标题猜测会把 "Evaluation Protocol"
+    误判成 results)。代价是:把主结果、消融并进一个 Experiments 章的写法,所有小节都按
+    experiments 契约写——它讲的是实验设置,不是结果分析。给小节标上 type 就能各用各的契约。
+    """
+    out = []
+    for chapter in chapters:
+        real = [s for s in chapter.get("sections", []) if not s.get("synthetic")]
+        if chapter.get("type") in _DATA_CHAPTER_TYPES and len(real) >= 2 \
+                and not any(s.get("type") for s in real):
+            out.append(f"第 {chapter['number']} 章 {chapter['title']}({chapter['type']})有 "
+                       f"{len(real)} 个小节,都没标 type:全部按 {chapter['type']} 的写法与评审标准处理。"
+                       f"若其中有主结果 / 消融 / 分析,在对应小节下加一行 `- type: results` / "
+                       f"`- type: ablation` / `- type: analysis`。")
+        for sec in chapter.get("sections", []):
+            if sec.get("type_unrecognized"):
+                out.append(f"第 {chapter['number']} 章小节 '{sec['title']}' 的 type "
+                           f"'{sec['type_unrecognized']}' 无法识别,已忽略(按章 type 处理)。")
+    return out
 
 
 def _slug(text: str) -> str:
@@ -262,7 +330,7 @@ def apply_page_budget(chapters: list[dict], pages: int, per_page: int) -> None:
         room = max(plan[chapter["number"]] - fixed_here, 0)
         base = sum(s["target_words"] for s in flex)
         for s in flex:
-            s["target_words"] = max(100, int(round(room * s["target_words"] / base / 25.0)) * 25)
+            s["target_words"] = max(200, int(round(room * s["target_words"] / base / 25.0)) * 25)
 
 
 def _finalize_chapters(chapters: list[dict]) -> list[dict]:
@@ -273,7 +341,7 @@ def _finalize_chapters(chapters: list[dict]) -> list[dict]:
             guessed = normalize_type(chapter["title"])
             chapter["type"] = guessed if guessed != DEFAULT_TYPE else DEFAULT_TYPE
         chapter["family"], chapter["gate"] = route_for_type(chapter["type"])
-        # 没显式标字数的小节,按 type 给经验默认值(小节级 type 优先 → 章 type → 兜底 250)。
+        # 没显式标字数的小节,按 type 给经验默认值(小节级 type 优先 → 章 type → 兜底 400)。
         # 显式标过的保持不动(words_explicit=True,不在这里覆盖)。
         for section in chapter["sections"]:
             if not section.get("words_explicit"):
@@ -442,6 +510,8 @@ def parse_outline(outline_path=None) -> list[dict]:
             if section is not None:
                 if canonical != DEFAULT_TYPE:
                     section["type"] = canonical
+                else:
+                    section["type_unrecognized"] = raw
                 continue
             if not chapter["type"]:
                 chapter["type"] = canonical

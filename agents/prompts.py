@@ -391,7 +391,7 @@ approach, and a closing chapter that returns to the contributions.
 <stage_1a_chapter_plan>
 Turn a chapter spec plus its evidence into a construction plan the drafter can execute part
 by part without re-deriving anything.
-1. Use brief.md (the chapter's `type:` and numbered sections with word targets) and
+1. Use brief.md (the chapter's `type:` and numbered sections with reference word figures) and
    input.md (the references chosen for this chapter).
 2. Study idea.md in full: the author's own statement of the contribution and the
    highest-priority input. For a data or mixed section also use the data index (one grid
@@ -419,7 +419,8 @@ The plan contains:
   definition or protocol one owner; do not add prose simply to cover a source document;
 - for each Python-fixed part (do not move sections between parts): target claims (each with
   the evidence it rests on), required reference keys, forbidden overlap with the other parts,
-  the word budget of the part (from brief.md; plan no more material than fits), output file.
+  the length of the part (follows its material: plan only what the evidence supports, as
+  concisely as possible; brief.md's word figure is a rough reference, not a quota), output file.
   Name for every recurring fact or definition the one part that owns it; the other parts get
   a "do not restate" line. Plan no inventory of what the work did not do. Keep essential
   claim qualifications local and broader limitations in the outline's designated section.

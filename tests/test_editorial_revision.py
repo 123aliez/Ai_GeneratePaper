@@ -75,7 +75,7 @@ class EditorialRevisionTests(unittest.TestCase):
         self.assertIn("WHOLE-CHAPTER EDIT", drafts[0][1])
         self.assertNotIn("do not rewrite unaffected paragraphs", drafts[0][1])
         self.assertNotIn("WHOLE-CHAPTER EDIT", drafts[1][1])
-        self.assertIn("do not rewrite unaffected paragraphs", drafts[1][1])
+        self.assertIn("Fix ONLY these open items", drafts[1][1])
         self.assertIn("draft-v2.round-1.md", drafts[1][2])
         for _, prompt, _, _ in verifications:
             self.assertIn("Do NOT raise new issues", prompt)

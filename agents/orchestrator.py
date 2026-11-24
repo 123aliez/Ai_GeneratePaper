@@ -398,8 +398,15 @@ def build_stage1_parts(sections: list[dict], chapter_type: str = "") -> list[dic
     elif count >= 6:
         groups = [sections[:2], sections[2:4], sections[4:]]
     elif count >= 3:
-        size = (count + 2) // 3
-        groups = [sections[:size], sections[size:size * 2], sections[size * 2:]]
+        # 3-5 节均分成三段,多出的小节放前面(4 → 2+1+1,5 → 2+2+1)。原先按
+        # size=(count+2)//3 切,4 节时前两段就分完了,第三段是空列表,又被补成一个
+        # 700 词、没有任何小节的 "Chapter part 3"。
+        base, extra = divmod(count, 3)
+        groups, start = [], 0
+        for i in range(3):
+            size = base + (1 if i < extra else 0)
+            groups.append(sections[start:start + size])
+            start += size
     elif count:
         groups = [[section] for section in sections]   # 1 或 2 个小节 → 1 或 2 段
     else:
@@ -447,18 +454,31 @@ def part_family(part: dict, route: dict) -> str:
 def format_stage1_parts(parts: list[dict]) -> str:
     """把段边界渲染成规划提示词里的一段说明。
 
-    字数区间按比例放宽,不用固定的 ±词数。原先是 `max(300, target-100)` 到
+    正文段(≥400 词)不给区间:篇幅由 Draft agent 按本段实际实验结果自定,尽量精炼,
+    大纲字数只作参考。短段(摘要/结论等)仍给按比例的窄区间,不用固定的 ±词数。原先是 `max(300, target-100)` 到
     `target+150`:那个 300 下限是照 survey 章节(每段 700+ 词)定的,用在一个 150
     词的摘要上会被抬成 "300-300 words" —— 目标翻倍,区间还塌成一个点。
     """
     blocks = []
     for part in parts:
         target = max(1, part["target_words"])
-        lower = max(60, int(target * 0.85))
-        upper = max(lower + 40, int(target * 1.2) + 30)
+        if target < 400:
+            # 摘要/结论这类短段:篇幅本身就是体裁要求,保持原来的窄区间
+            lower = max(60, int(target * 0.85))
+            upper = max(lower + 40, int(target * 1.2) + 30)
+            length = f"Target length: {lower}-{upper} words"
+        else:
+            # 正文段:篇幅由 Draft 按本段实际结果自定,尽量精炼;大纲字数只作规划参考
+            length = (f"Length: decided by the material, as concise as possible — write what the "
+                      f"actual results and evidence of this part need, then stop. ~{target} words "
+                      f"is only a planning reference from the outline, not a target or a floor: "
+                      f"go shorter when the results are few, longer only for results that need it. "
+                      f"Never pad. Do not walk through a table cell by cell; quote only the key "
+                      f"differences and test results that support a claim, each as its "
+                      f"{{{{RES-xxx}}}} placeholder")
         blocks.append(
             f"Part {part['index']} -> {part['output']}\n"
-            f"Target length: {lower}-{upper} words\n"
+            f"{length}\n"
             f"This is a space allocation, not a minimum to fill; write less when the argument is complete.\n"
             f"Covers: " + "; ".join(part["titles"])
         )
@@ -773,17 +793,37 @@ def run_convergence_loop(draft_agent, review_agent, folder_path, folder_rel,
         print(f"\n▶ 正在修改【{os.path.basename(folder_path)}】:第 {round_no}/{MAX_REVISION_ROUNDS} 轮,按审查清单逐条改", flush=True)
         if not os.path.exists(os.path.join(folder_path, draft_round)):
             set_agent_context("Draft")
-            # 首轮允许整章删并与重组；后续只收敛冻结问题，避免反复扩写。
-            revision_scope = (EDITORIAL_REVISION_INSTRUCTIONS if round_no == 1 else
-                              "Repair only the unresolved frozen items. Preserve resolved fixes "
-                              "and the chapter's edited structure; do not rewrite unaffected paragraphs. ")
+            if round_no == 1:
+                # 首轮允许整章删并与重组，同时处理冻结问题和有依据的 SHOULD FIX。
+                work_order = (
+                    f"Resolve EVERY item in this frozen acceptance checklist (JSON):\n{checklist_text}\n\n"
+                    f"{EDITORIAL_REVISION_INSTRUCTIONS}"
+                    f"The SHOULD FIX items of review-v1.md are not part of the frozen acceptance "
+                    f"checklist; address them where supported without inventing evidence. ")
+            else:
+                # 第 2 轮起:只给上一轮没通过的条目 + 核验者写的原因。原先每轮重发整张清单,
+                # 起草者不知道哪条没过、为什么没过,只能整章重写碰运气,还会把已通过的条目改坏。
+                prev_verdict = read_json_artifact(
+                    folder_path, f"review-verify.round-{round_no - 1}.json")
+                open_items = _open_checklist_items(frozen, prev_verdict)
+                passed = len(frozen) - len(open_items)
+                work_order = (
+                    f"{prev_draft} was verified against the frozen acceptance checklist (JSON). "
+                    f"{passed} of {len(frozen)} item(s) already passed. These {len(open_items)} are "
+                    f"STILL OPEN; each `note` is the verifier's explanation of what is still missing:\n"
+                    f"{json.dumps(open_items, ensure_ascii=False, indent=2)}\n\n"
+                    f"Fix ONLY these open items, and fix what the note says is missing — the previous "
+                    f"attempt at each of them was not accepted, so do not repeat it. Keep every other "
+                    f"paragraph of {prev_draft} verbatim: the passages that resolved the other items "
+                    f"must not change. If an open item cannot be resolved from the attached evidence, "
+                    f"put the matching gap marker ([MISSING DATA] / [DESIGN DETAIL NEEDED] / "
+                    f"[CITATION NEEDED] / [UNKNOWN: ...]) at its location instead of inventing content. ")
             last_result = run_agent_stage(draft_agent, "Draft", (
                 f"{idea_clause(family, res_ids_path)}"
                 f"Attached: brief.md (this chapter's spec), input.md, {prev_draft} (the draft to revise) "
                 f"and review-v1.md (the review). "
                 f"{mode_clause}"
-                f"Resolve EVERY item in this frozen acceptance checklist (JSON):\n{checklist_text}\n\n"
-                f"{revision_scope}"
+                f"{work_order}"
                 f"Return the full revised draft as {draft_round}.\n\n"
                 f"{reference_excerpt}"
                 f"{skills_clause}"
@@ -805,7 +845,9 @@ def run_convergence_loop(draft_agent, review_agent, folder_path, folder_rel,
                 f"Do NOT raise new issues.\n{checklist_text}\n\n"
                 f"Return {verdict_round} with EXACTLY this schema (valid JSON only):\n"
                 f"{VERIFY_JSON_SCHEMA_HINT}\n"
-                f"Set 'all_resolved' true only if every checklist item is resolved.\n\n"
+                f"Set 'all_resolved' true only if every checklist item is resolved. For every "
+                f"unresolved item, the `note` must say exactly what is still missing or wrong and "
+                f"where — the next revision round sees only that note.\n\n"
                 f"{reference_excerpt}"
             ), base + local_docs(folder_path, draft_round, "brief.md"), [verdict_round])
             set_agent_context("Manager")
@@ -1256,6 +1298,15 @@ def final_integrity_reasons(folder_path: str) -> list[str]:
                     todo.write_text(old + head + line, encoding="utf-8")
     except Exception as exc:
         reasons.append(f"终稿 RES/引用残留扫描出错,未核验: {str(exc)[:120]}")
+    # 定稿润色丢了引用/占位符/缺口标记 = 交付物与核验过的修订稿不一致,不能算核验通过。
+    try:
+        from .draft_checks import read_polish_findings
+        polish = read_polish_findings(folder_path)
+        if polish:
+            reasons.append(f"定稿润色与修订稿不一致 {len(polish)} 处(见 polish-check.md): "
+                           + "; ".join(polish[:3]))
+    except Exception as exc:
+        reasons.append(f"润色保真检查读取出错: {str(exc)[:120]}")
     return reasons
 
 
@@ -2020,15 +2071,24 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
             print(f"[Manager  ] skip       | {part['output']} exists", flush=True)
             results["stage1_parts"].append("skipped")
             continue
+        # 衔接:给出**之前所有已写段的全文**,不再只给上一段末尾 1200 字符——第 3 段
+        # 看不到第 1 段时,重复与定义冲突都发生在它看不见的地方。一章不过两三千词,
+        # 全文代价很小;超长时才退回每段的末尾。
         prev_context = ""
         if position > 0:
-            prev_output = stage1_parts[position - 1]["output"]
-            prev_tail = tail_text(os.path.join(folder_path, prev_output), 1200)
-            if prev_tail:
+            budget = 60_000 // position
+            prev_blocks = []
+            for earlier in stage1_parts[:position]:
+                text = tail_text(os.path.join(folder_path, earlier["output"]), budget)
+                if text:
+                    prev_blocks.append(f"--- Part {earlier['index']} ({earlier['output']}) ---\n{text}")
+            if prev_blocks:
                 prev_context = (
-                    f"PREVIOUS CONTEXT — the ending of Part {position} (already written). "
-                    f"Continue seamlessly from it: do not repeat it, do not contradict its definitions, "
-                    f"and keep terminology and symbols identical:\n\"\"\"\n{prev_tail}\n\"\"\"\n\n"
+                    f"PREVIOUS CONTEXT — the full text of the earlier part(s), already written. "
+                    f"Continue seamlessly from the last one: do not repeat any of them, do not "
+                    f"contradict their definitions, do not re-expand an abbreviation they already "
+                    f"expanded, and keep terminology and symbols identical:\n\"\"\"\n"
+                    + "\n\n".join(prev_blocks) + "\n\"\"\"\n\n"
                 )
         set_agent_context("Draft")
         evidence_draft_clause = ""
@@ -2071,6 +2131,7 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
     record_stage(["draft-v1.md"], "draft")
     # 契约粗检:只提示,不进指纹,不改核验状态。每次重算。
     write_contract_check(folder_path, "draft-v1.md", scope_types(route))
+    from .draft_checks import write_polish_check
 
     # ── Deterministic number gate (experiment mode) ─────────────────
     # Cross-check every number in draft-v1 against the results store BEFORE the
@@ -2306,6 +2367,13 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
            + xchap_docs + abstract_docs,
            ["final.md", "final.zh.md", "decision.md", "todo.md"])
         set_agent_context("Manager")
+        # 润色保真检查:必须在 RES 占位符被替换成数值之前(之后终稿里已无占位符可比)。
+        # 续跑跳过 Stage 4 时沿用已有 polish-check.md。
+        if all_exist(["final.md"]):
+            _polish = write_polish_check(folder_path, "draft-v2.md")
+            print(f"[Manager  ] polish     | "
+                  f"{'OK' if not _polish else f'{len(_polish)} loss finding(s)'} → "
+                  f"{folder_rel}/polish-check.md", flush=True)
     all_ok = verify(final_outputs)
     record_stage(["final.md", "final.zh.md"], "final")
 

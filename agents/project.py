@@ -146,6 +146,25 @@ def _settings_unfilled(text: str) -> bool:
     return all(re.fullmatch(r"<.*>", ln) for ln in body)
 
 
+def model_config_errors() -> list[str]:
+    """三组模型配置的离线检查:必填项没填、模型名含非常规字符。"""
+    import config
+    errors = []
+    for role in ("DRAFT", "REVIEW", "MANAGER"):
+        missing = [n for n in ("MODEL", "API_KEY", "API_BASE")
+                   if not getattr(config, f"{role}_{n}", "")]
+        if missing:
+            errors.append(f".env 里 {role}_{'/'.join(missing)} 没填")
+        # 模型名笔误(真实测试里 MANAGER_MODEL 多了一个 'ß')要到请求发出才收到 404。
+        # 非 ASCII 字符与空白不会出现在任何模型 ID 里,不联网就能拦下。
+        model_id = str(getattr(config, f"{role}_MODEL", "") or "")
+        odd = sorted({ch for ch in model_id if ord(ch) > 127 or ch.isspace()})
+        if odd:
+            errors.append(f".env 里 {role}_MODEL = {model_id!r} 含非常规字符 "
+                          f"{' '.join(repr(c) for c in odd)},多半是笔误")
+    return errors
+
+
 def check_materials(need_models: bool = False) -> Check:
     import config
     from .content_source import idea_is_skeleton, load_idea_document
@@ -247,11 +266,7 @@ def check_materials(need_models: bool = False) -> Check:
             chk.errors.append(f"paper.toml 解析失败: {exc}")
 
     if need_models:
-        for role in ("DRAFT", "REVIEW", "MANAGER"):
-            missing = [n for n in ("MODEL", "API_KEY", "API_BASE")
-                       if not getattr(config, f"{role}_{n}", "")]
-            if missing:
-                chk.errors.append(f".env 里 {role}_{'/'.join(missing)} 没填")
+        chk.errors += model_config_errors()
     return chk
 
 
@@ -338,6 +353,17 @@ def assemble_output(extra_notes: list[str] | None = None) -> dict:
         notes.append(f"篇幅:正文约 {words} 词,按每页 {per_page} 词约 {est:.1f} 页(目标 {pages} 页,不含参考文献)"
                      + ("" if est <= pages * 1.1 else ";超出预算,投稿前需压缩"))
     notes += [f"LaTeX 静态检查: {p}" for p in latex["checks"]]
+    # 整篇一致性检查(--go 在组装前跑;--paper-review 可单独跑)的发现。终稿改过而检查
+    # 没重跑时只提醒,不把过期的发现当成当前问题。
+    from .paper_review import PAPER_REVIEW_NAME, read_paper_review, finals_fingerprint, _SHA_RE
+    review_path = Path(config.WORK_ROOT) / PAPER_REVIEW_NAME
+    if review_path.is_file():
+        m = _SHA_RE.search(review_path.read_text(encoding="utf-8", errors="replace"))
+        if m and m.group(1) == finals_fingerprint(meta, Path(config.WORKSPACE_ROOT)):
+            notes += [f"整篇一致性: {f}" for f in read_paper_review(review_path)]
+        else:
+            notes.append("整篇一致性检查结果已过期(之后改过终稿):重跑 "
+                         "`python run.py --project <项目> --paper-review`")
     (out / "待补清单.md").write_text(A.build_todo_report(chapters, notes, num, tables), encoding="utf-8")
     folder_titles = {c.folder: f"{c.number}. {c.title}" for c in chapters}
     (out / "图表清单.md").write_text(A.build_figure_report(num, tables, folder_titles), encoding="utf-8")

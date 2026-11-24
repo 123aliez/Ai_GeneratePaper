@@ -43,6 +43,32 @@ METHOD_PERSPECTIVES = [
     IDEA_PERSPECTIVES[2],   # Precision reviewer
     IDEA_PERSPECTIVES[3],   # Design-alternative reviewer
 ]
+# 相关工作/背景章的主材料是文献笔记,不是 idea 的机制。原先它们按 idea 族拿到
+# Mechanism / Precision / Design-alternative 视角、答案只许锚定 idea.md——没有一个视角去读
+# 笔记,证据包里全是"我们的设计为什么对",真实测试里相关工作章因此只写出三句话。
+# Positioning 仍排第一:与前人工作的差异只能来自 idea.md 第 5 节,不从笔记推导。
+LITERATURE_PERSPECTIVES = [
+    IDEA_PERSPECTIVES[0],   # Positioning reviewer
+    ("Thematic-grouping reviewer",
+     "Into which lines of work do the papers selected in input.md fall, which keys belong to "
+     "each line, and what single idea ties a line together according to the notes?"),
+    ("Approach-and-limitation reviewer",
+     "For each A-level and B-level paper selected in input.md: what does its note say the "
+     "approach is, what problem it addresses, and which limitation does the NOTE itself state? "
+     "Never infer a limitation the note does not state."),
+    ("Coverage reviewer",
+     "Which brief.md sections or bullets have no selected paper behind them, and which "
+     "selected papers have no note (so they can be cited but not described)?"),
+]
+BACKGROUND_PERSPECTIVES = [
+    ("Concept-source reviewer",
+     "Which base concepts and notation does the method (idea.md sections 3-4) rely on, and "
+     "which selected paper's note is the source of each?"),
+    ("Definition reviewer",
+     "How does the source note define each concept (symbols, assumptions)? Quote the note; "
+     "do not complete a definition from memory."),
+    LITERATURE_PERSPECTIVES[3],   # Coverage reviewer
+]
 DATA_PERSPECTIVES = [
     ("Headline-result reviewer", "Which comparisons answer the central research question, what do they establish, and which negative results or exceptions materially constrain the finding?"),
     ("Baseline reviewer", "Against which baselines is the gain shown, and what do the matched comparisons demonstrate?"),
@@ -73,7 +99,25 @@ def perspectives_for_route(family: str, types: list[str]) -> list[tuple[str, str
     """本章覆盖的类型全部是方法/理论时用 Attribution 视角;否则按 family。"""
     if types and set(types) <= {"method", "theory"}:
         return METHOD_PERSPECTIVES
+    if types and set(types) <= {"background"}:
+        return BACKGROUND_PERSPECTIVES
+    if _is_literature(types):
+        return LITERATURE_PERSPECTIVES
     return perspectives_for_mode(family)
+
+
+def _is_literature(types: list[str] | None) -> bool:
+    """本次运行覆盖的类型全部是相关工作/背景 → 证据来自文献笔记。"""
+    return bool(types) and set(types) <= {"related", "background"}
+
+
+_LITERATURE_GROUNDING = (
+    "Ground it in the author's NOTE on a specific paper (the attached note:<key> documents of "
+    "the papers selected in input.md) and name the key next to every statement about that "
+    "paper. A C-level paper has only its one-line summary in ref-index.md — say nothing beyond "
+    "it. Statements about OUR work, and every difference between our work and prior work, are "
+    "grounded in a quoted passage of idea.md (section 5 for differences) — never derived from "
+    "the notes.")
 
 
 # "把答案锚定在证据上"对每个取材源含义不同:idea 答案锚定在作者自己的设计陈述,
@@ -92,8 +136,16 @@ _GROUNDING_RULE = {
 }
 
 
-def _evidence_boundary(family: str) -> str:
-    """一句话点明本节的证据边界:idea 是全局最高优先输入;data 类额外读 data-index。"""
+def _evidence_boundary(family: str, types: list[str] | None = None) -> str:
+    """一句话点明本节的证据边界:idea 是全局最高优先输入;data 类额外读 data-index;
+    相关工作/背景章以本章选定文献的笔记为主证据。"""
+    if _is_literature(types):
+        return (
+            "The document idea.md (attached) states OUR contribution and (section 5) how it "
+            "differs from prior work. input.md (attached) lists the references selected for this "
+            "chapter; the attached note:<key> documents are the author's notes on them. The notes "
+            "are the evidence for everything said about prior work; idea.md is the evidence for "
+            "everything said about ours.")
     idea_line = (
         "The document idea.md (attached) is the author's own statement of the contribution "
         "(novelty, mechanism, design). It is the highest-priority input for every "
@@ -117,11 +169,12 @@ def build_evidence_mining_prompt(section_title: str, reference_excerpt: str,
         f"- **{name}**: {focus}" for name, focus in perspectives_for_route(family, types or [])
     )
     evidence_hint = ""
-    grounding = _GROUNDING_RULE.get(family, _GROUNDING_RULE[MIXED])
+    grounding = (_LITERATURE_GROUNDING if _is_literature(types)
+                 else _GROUNDING_RULE.get(family, _GROUNDING_RULE[MIXED]))
     family_note = (f"This is an evidence pack for a {family}-family section: "
                    f"the questions below are the ones this section's own evidence can "
                    f"answer. Do not import criteria from another section type.\n\n")
-    boundary = _evidence_boundary(family)
+    boundary = _evidence_boundary(family, types)
     return (
         f"You are running PRE-DRAFT EVIDENCE MINING for section: \"{section_title}\".\n"
         f"Do not write prose for the paper yet. Your only output is an evidence pack.\n\n"
