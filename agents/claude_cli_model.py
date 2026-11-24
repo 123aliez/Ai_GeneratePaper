@@ -1,4 +1,4 @@
-"""Claude Code 订阅适配器：无工具、无持久会话的纯内容调用。"""
+"""Claude Code 订阅适配器：无持久会话，可按需读取阶段材料。"""
 from __future__ import annotations
 
 import errno
@@ -10,6 +10,7 @@ import struct
 import subprocess
 import tempfile
 import time
+from pathlib import Path
 
 from smolagents.models import ChatMessage, ChatMessageStreamDelta, MessageRole, Model, TokenUsage
 
@@ -67,6 +68,7 @@ class ClaudeCliModel(Model):
         self.timeout = timeout
         self.cli_path = cli_path or os.getenv("CLAUDE_CLI_PATH") or "claude"
         self.owner = owner
+        self.read_materials = os.getenv("CLAUDE_CLI_READ_MATERIALS") == "1"
 
     @staticmethod
     def _text(content) -> str:
@@ -181,7 +183,7 @@ class ClaudeCliModel(Model):
             retryable=retryable, status_code=status, stdout=stdout, stderr=stderr)
 
     def generate(self, messages, stop_sequences=None, response_format=None,
-                 tools_to_call_from=None, **kwargs) -> ChatMessage:
+                 tools_to_call_from=None, *, material_files=None, **kwargs) -> ChatMessage:
         for name, value in (("stop_sequences", stop_sequences), ("response_format", response_format),
                             ("tools_to_call_from", tools_to_call_from)):
             if value:
@@ -189,16 +191,39 @@ class ClaudeCliModel(Model):
         if kwargs:
             raise ClaudeCliError("claude_cli 不支持额外生成参数：" + ", ".join(sorted(kwargs)))
         system, prompt = self._messages(messages)
-        args = [self.cli_path, "-p", "--output-format", "json", "--tools", "",
+        use_materials = self.read_materials and material_files is not None
+        if material_files is not None and not use_materials:
+            raise ClaudeCliError("未启用 Claude CLI 材料目录模式。")
+        args = [self.cli_path, "-p", "--output-format", "json",
+                "--tools", "Read,Glob,Grep" if use_materials else "",
                 "--safe-mode", "--no-session-persistence", "--model", self.model_id]
         if self.effort is not None:
             args += ["--effort", self.effort]
-        if system:
-            args += ["--system-prompt", system]
         env = {k: v for k, v in os.environ.items()
                if k != "CLAUDECODE" and not k.startswith("ANTHROPIC_")}
-        self._check_argument_size(args, env)
         with tempfile.TemporaryDirectory(prefix="paper-claude-cli-") as cwd:
+            if use_materials:
+                materials_dir = Path(cwd) / "materials"
+                materials_dir.mkdir()
+                for name, body in material_files.items():
+                    if not re.fullmatch(r"[0-9]+\.md", name):
+                        raise ClaudeCliError("Claude CLI 材料文件名不合法。")
+                    (materials_dir / name).write_text(body, encoding="utf-8")
+                args += ["--permission-mode", "dontAsk", "--allowedTools",
+                         "Read(./materials/**),Glob,Grep"]
+                system_path = Path(cwd) / "system.txt"
+                system_path.write_text(
+                    "For this call, the <documents> entries with path attributes are a read-only "
+                    f"manifest rooted at {cwd}. Read, Glob and Grep are available for the materials "
+                    "directory only. Use these tools to fetch the listed inputs when needed. This "
+                    "replaces any instruction below that says sources are inline or tools are "
+                    "unavailable. Continue to return deliverables as text blocks.\n\n" + system,
+                    encoding="utf-8",
+                )
+                args += ["--system-prompt-file", str(system_path)]
+            elif system:
+                args += ["--system-prompt", system]
+            self._check_argument_size(args, env)
             try:
                 process = subprocess.Popen(
                     args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,

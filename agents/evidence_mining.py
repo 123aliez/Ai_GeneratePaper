@@ -31,8 +31,8 @@ IDEA_PERSPECTIVES = [
      "contribution from, and what difference does the author state? Do not judge whether "
      "the contribution is novel."),
     ("Mechanism reviewer", "WHY should this work? What is the causal story from design choice to expected effect?"),
-    ("Precision reviewer", "Is every component, input, output, and symbol defined precisely enough to reimplement?"),
-    ("Design-alternative reviewer", "Which alternative designs were possible, and why is this one chosen over them?"),
+    ("Precision reviewer", "Which definitions, assumptions and implementation details are essential to understand and reproduce the core mechanism, and which are routine supplementary details?"),
+    ("Design-alternative reviewer", "Which central design choices need a rationale to understand the contribution, and what rationale does the author actually give? Do not inventory hypothetical alternatives."),
 ]
 # 方法/理论章不问"和谁比"。只问采用了哪些基础技术、各自能否用一句引用交代清楚。
 METHOD_PERSPECTIVES = [
@@ -44,13 +44,13 @@ METHOD_PERSPECTIVES = [
     IDEA_PERSPECTIVES[3],   # Design-alternative reviewer
 ]
 DATA_PERSPECTIVES = [
-    ("Headline-result reviewer", "Which comparisons show the clearest gains, and what is the strongest accurate way to state them?"),
+    ("Headline-result reviewer", "Which comparisons answer the central research question, what do they establish, and which negative results or exceptions materially constrain the finding?"),
     ("Baseline reviewer", "Against which baselines is the gain shown, and what do the matched comparisons demonstrate?"),
     ("Setup reviewer", "Which setup details (data, protocol, hyperparameters) does a reader need to trust these comparisons?"),
     ("Over-claim reviewer", "Which stated conclusion is stronger than the numbers support, so it must be phrased more precisely?"),
 ]
 MIXED_PERSPECTIVES = [
-    ("Claim-evidence reviewer", "For each claim about the contribution, which specific number supports it?"),
+    ("Claim-evidence reviewer", "Which established findings support the interpretation of the contribution? Identify their support internally; do not require each prose claim to repeat a number."),
     ("Mechanism reviewer", "Do the results actually confirm the proposed mechanism, or only correlate with it?"),
     ("Over-claim reviewer", "Which stated conclusion is stronger than the numbers support?"),
     ("Takeaway reviewer", "Which result best supports the contribution, and what does it mean for the reader?"),
@@ -127,8 +127,9 @@ def build_evidence_mining_prompt(section_title: str, reference_excerpt: str,
         f"Do not write prose for the paper yet. Your only output is an evidence pack.\n\n"
         f"{family_note}"
         f"EVIDENCE BOUNDARY: {boundary}\n\n"
-        f"Adopt each of these perspectives in turn and, for each, pose 3-5 hard, "
-        f"specific questions this section must answer, then answer them ONLY from the "
+        f"Adopt each of these perspectives in turn and, for each, pose at most 3 "
+        f"nonredundant questions needed to assess this chapter's argument (fewer or none "
+        f"when not applicable), then answer them ONLY from the "
         f"evidence described above:\n{persona_block}\n\n"
         f"Rules for every answer:\n"
         f"- {grounding}\n"
@@ -137,6 +138,10 @@ def build_evidence_mining_prompt(section_title: str, reference_excerpt: str,
         f"- Never invent numbers, citations, mechanisms, or experimental details.\n\n"
         f"Return the result as evidence-pack.md with this structure:\n"
         f"## <Perspective>\n### Q: <question>\nA: <grounded answer or the gap declaration>\n\n"
+        f"Before Open Gaps, add '## Content selection': the central takeaway; main-text "
+        f"essentials; material counterevidence; optional supplementary details; internal-only "
+        f"provenance and checks. This is an internal evidence map, not a required paragraph "
+        f"list. Do not create an appendix or promise unavailable supplementary material.\n\n"
         f"End with '## Open Gaps' listing every unanswered question — these mark what the "
         f"paper must NOT claim; they are not material to write about.\n\n"
         f"{evidence_hint}"

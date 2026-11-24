@@ -50,8 +50,10 @@ CONTRACTS: dict[str, dict[str, str]] = {
         "forbidden": "Comparing prior work with our method; claiming novelty.",
     },
     "method": {
-        "focus": "OUR idea in full: core insight, architecture, every formula and the training "
-                 "objective, from idea.md sections 3-4.",
+        "focus": "OUR core insight, architecture and training objective, from idea.md sections 3-4. "
+                 "Explain the mechanism and necessary formulas, definitions and assumptions; "
+                 "select details by their role in understanding and reproducing the contribution, "
+                 "rather than reproducing the implementation inventory.",
         "references": "Prior work may appear ONLY as attribution of a base technique we adopt: one "
                       "citation plus at most one clause, e.g. 'We use X \\cite{x} as the image "
                       "encoder.'",
@@ -62,7 +64,9 @@ CONTRACTS: dict[str, dict[str, str]] = {
     },
     "experiments": {
         "focus": "OUR experimental design: datasets, protocol, baselines, metrics and "
-                 "implementation details, from the experiment settings file.",
+                 "implementation details needed to interpret and reproduce the comparisons, from "
+                 "the experiment settings file. State shared protocol once; keep metric definitions "
+                 "and fairness conditions, without a run-by-run audit trail.",
         "references": "Cite datasets, baselines and metric definitions; describe each baseline in "
                       "at most one sentence.",
         "forbidden": "Re-explaining our method; numbers reported by other papers unless they are "
@@ -70,14 +74,16 @@ CONTRACTS: dict[str, dict[str, str]] = {
     },
     "results": {
         "focus": "Objective analysis of OUR comparison and ablation results; every number is a "
-                 "placeholder or a rendered table.",
+                 "placeholder or a rendered table. Organize around findings and decisive comparisons, "
+                 "including material exceptions, rather than narrating each table cell.",
         "references": "Cite only to identify a dataset or a baseline.",
         "forbidden": "Claims stronger than the data; re-explaining the method; explaining an "
                      "outcome through another paper's mechanism in detail.",
     },
     "discussion": {
         "focus": "What OUR findings mean, the conditions under which OUR method applies, and "
-                 "its limitations (idea.md section 7).",
+                 "its limitations (idea.md section 7) where assigned by the outline. Synthesize "
+                 "established findings without repeating results or auditing every claim anew.",
         "references": "Cite only briefly, to place a finding in context.",
         "forbidden": "New results or new contributions; an extended review of other work.",
     },

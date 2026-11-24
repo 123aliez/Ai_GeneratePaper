@@ -366,7 +366,7 @@ def test_check_and_assemble():
     check("T18 核验状态不变", chs[0].status == "verified" and "核验通过" in report, report)
 
     import agents.skills_registry as reg
-    check("T18 合并后的提示词版本号为 4", STAGE_PROMPT_VERSION == 4)
+    check("T18 论证取舍与整章编辑后的提示词版本号为 5", STAGE_PROMPT_VERSION == 5)
     before = skills_fingerprint()
     copy = Path(tempfile.mkdtemp()) / "chapter_contract.py"
     copy.write_text(reg.CONTRACT_PATH.read_text(encoding="utf-8") + "\n# changed\n", encoding="utf-8")

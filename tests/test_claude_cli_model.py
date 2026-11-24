@@ -18,8 +18,9 @@ from smolagents.models import ChatMessage, MessageRole
 from agents.claude_cli_model import (ClaudeCliError, ClaudeCliModel,
                                     ClaudeSubscriptionQuotaExceeded, TRANSCRIPT_HEADER,
                                     MAX_ARGUMENT_BYTES, PROCESS_REAP_TIMEOUT)
-from agents.content_stage import ContentAgent, run_content_stage
-from agents.retry_policy import classify_error
+from agents.content_stage import ContentAgent, Doc, run_content_stage
+from agents.retry_policy import RetrySchedule, classify_error
+from agents.resilient_model import ResilientModel
 
 
 def success(result="正文", **extra):
@@ -126,6 +127,32 @@ class ClaudeCliTests(unittest.TestCase):
         self.generate()
         self.assertNotIn("--system-prompt", self.spawned[1][0])
         self.assertNotIn("--effort", self.spawned[1][0])
+
+    def test_content_stage_can_supply_materials_by_directory(self):
+        self.process = FakeProcess(success('<file name="out.md">\n正文\n</file>'))
+
+        def spawn(args, **kwargs):
+            cwd = Path(kwargs["cwd"])
+            self.assertEqual(args[args.index("--tools") + 1], "Read,Glob,Grep")
+            self.assertEqual(args[args.index("--permission-mode") + 1], "dontAsk")
+            self.assertEqual(args[args.index("--allowedTools") + 1], "Read(./materials/**),Glob,Grep")
+            self.assertEqual((cwd / "materials/01.md").read_text(encoding="utf-8"), "材料原文")
+            system_file = Path(args[args.index("--system-prompt-file") + 1])
+            self.assertTrue(system_file.read_text(encoding="utf-8").endswith("系统指令"))
+            self.spawned.append((args, kwargs))
+            return self.process
+
+        self.popen.side_effect = spawn
+        with patch.dict(os.environ, {"CLAUDE_CLI_READ_MATERIALS": "1"}), tempfile.TemporaryDirectory() as output:
+            model = ResilientModel(ClaudeCliModel("sonnet"), RetrySchedule())
+            stage = run_content_stage(ContentAgent(model, "系统指令", "Draft"), "起草",
+                                      [Doc("材料.md", text="材料原文")], ["out.md"], output)
+            self.assertEqual(stage.written, ["out.md"])
+            self.assertEqual((Path(output) / "out.md").read_text(encoding="utf-8"), "正文\n")
+        prompt, _ = self.process.calls[0]
+        self.assertIn('<document name="材料.md" path="materials/01.md"/>', prompt)
+        self.assertNotIn("材料原文", prompt)
+        self.assertFalse(Path(self.spawned[0][1]["cwd"]).exists())
 
     def test_multi_turn_transcript_preserves_roles_and_order(self):
         ClaudeCliModel("sonnet").generate([

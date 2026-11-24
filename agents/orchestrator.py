@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 from .tools import set_agent_context
 from .content_stage import Doc
+from .prompts import EDITORIAL_REVISION_INSTRUCTIONS
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from config import (
@@ -382,19 +383,19 @@ def parse_brief_sections(folder_path: str) -> list[dict]:
     return sections
 
 
-def build_stage1_parts(sections: list[dict]) -> list[dict]:
-    """把小节分成起草段。段数随小节数自适应,最多三段。
+_DRAFT_BATCH_LIMITS = {"related": 2, "experiments": 2, "discussion": 1, "limitations": 1}
 
-    分组只依据小节数量,不做任何按标题的特例判断。此前从 survey 引擎继承来一个
-    Alignment 章特例(含 "rlvr" + "constitutional" 小节时改用异常分组),对实验型
-    论文没有意义,只会在小节命名恰好命中时把边界打乱,已删除。
 
-    段数不再固定为三:Abstract 这类章只有 1-2 个小节,硬凑三段会生出
-    "Chapter part 2/3" 这种没有来源的空段,并给它们 700 词的目标——150 词的摘要
-    因此被要求写成两千词。段数 = min(小节数, 3),没有小节时退回单段。
-    """
+def build_stage1_parts(sections: list[dict], chapter_type: str = "") -> list[dict]:
+    """按章类型与小节数分批，保留小节顺序。无小节时用单段兜底。"""
     count = len(sections)
-    if count >= 6:
+    batch_limit = _DRAFT_BATCH_LIMITS.get(chapter_type)
+    if count and batch_limit == 1:
+        groups = [sections]
+    elif count >= 2 and batch_limit == 2:
+        cut = (count + 1) // 2
+        groups = [sections[:cut], sections[cut:]]
+    elif count >= 6:
         groups = [sections[:2], sections[2:4], sections[4:]]
     elif count >= 3:
         size = (count + 2) // 3
@@ -458,6 +459,7 @@ def format_stage1_parts(parts: list[dict]) -> str:
         blocks.append(
             f"Part {part['index']} -> {part['output']}\n"
             f"Target length: {lower}-{upper} words\n"
+            f"This is a space allocation, not a minimum to fill; write less when the argument is complete.\n"
             f"Covers: " + "; ".join(part["titles"])
         )
     return "\n\n".join(blocks)
@@ -732,6 +734,7 @@ def run_convergence_loop(draft_agent, review_agent, folder_path, folder_rel,
             f"Attached: brief.md (this chapter's spec), input.md, draft-v1.md (the draft to revise) "
             f"and review-v1.md (its review). "
             f"{mode_clause}"
+            f"{EDITORIAL_REVISION_INSTRUCTIONS}"
             f"Address ALL 'MUST FIX' items and return the complete revised chapter as draft-v2.md, "
             f"plus todo.md listing what remains.\n\n{reference_excerpt}"
             f"{skills_clause}"
@@ -741,13 +744,14 @@ def run_convergence_loop(draft_agent, review_agent, folder_path, folder_rel,
         return result
 
     if not frozen:
-        print("[Manager  ] 收敛      | 没有 MUST FIX 项,只做一轮 SHOULD FIX 润色", flush=True)
+        print("[Manager  ] 收敛      | 没有 MUST FIX 项,执行一轮整章编辑与 SHOULD FIX 修订", flush=True)
         set_agent_context("Draft")
         result = run_agent_stage(draft_agent, "Draft", (
             f"{idea_clause(family, res_ids_path)}"
             f"Attached: brief.md (this chapter's spec), input.md, draft-v1.md (the draft to polish) "
             f"and review-v1.md (its review). "
             f"{mode_clause}"
+            f"{EDITORIAL_REVISION_INSTRUCTIONS}"
             f"There are no MUST FIX items. Address SHOULD FIX items where supported by evidence, "
             f"then return a clean draft-v2.md and todo.md.\n\n{reference_excerpt}"
             f"{skills_clause}"
@@ -769,14 +773,18 @@ def run_convergence_loop(draft_agent, review_agent, folder_path, folder_rel,
         print(f"\n▶ 正在修改【{os.path.basename(folder_path)}】:第 {round_no}/{MAX_REVISION_ROUNDS} 轮,按审查清单逐条改", flush=True)
         if not os.path.exists(os.path.join(folder_path, draft_round)):
             set_agent_context("Draft")
+            # 首轮允许整章删并与重组；后续只收敛冻结问题，避免反复扩写。
+            revision_scope = (EDITORIAL_REVISION_INSTRUCTIONS if round_no == 1 else
+                              "Repair only the unresolved frozen items. Preserve resolved fixes "
+                              "and the chapter's edited structure; do not rewrite unaffected paragraphs. ")
             last_result = run_agent_stage(draft_agent, "Draft", (
                 f"{idea_clause(family, res_ids_path)}"
                 f"Attached: brief.md (this chapter's spec), input.md, {prev_draft} (the draft to revise) "
                 f"and review-v1.md (the review). "
                 f"{mode_clause}"
                 f"Resolve EVERY item in this frozen acceptance checklist (JSON):\n{checklist_text}\n\n"
-                f"Make the concrete change at each item's location. Preserve everything already correct — "
-                f"do not rewrite unaffected paragraphs. Return the full revised draft as {draft_round}.\n\n"
+                f"{revision_scope}"
+                f"Return the full revised draft as {draft_round}.\n\n"
                 f"{reference_excerpt}"
                 f"{skills_clause}"
             ), base + local_docs(folder_path, "brief.md", "input.md", prev_draft, "review-v1.md") + extra,
@@ -853,9 +861,10 @@ ROUTING_CLAUSES = {
     ),
     MIXED: (
         "CHAPTER TYPE: {type} — a MIXED chapter: it must connect the contribution "
-        "to the evidence. Draw the claim from idea.md and support it with numbers "
-        "from the data index (RES catalog), each cited as a `{{RES-xxx}}` placeholder copied "
-        "VERBATIM from the ID column ([MISSING DATA] otherwise). Do not introduce "
+        "to the evidence. Draw the claim from idea.md and ground interpretation in established "
+        "findings; do not repeat a numerical proof for each claim. When a number is necessary, "
+        "use the data index (RES catalog), cited as a `{{RES-xxx}}` placeholder copied "
+        "VERBATIM from the ID column ([MISSING DATA] only for a required missing number). Do not introduce "
         "a new contribution here, and do not restate the full method design."
     ),
 }
@@ -918,7 +927,9 @@ REVIEW_ROUTING_CLAUSES = {
     ),
     DATA: (
         "This is a {type} chapter — a DATA chapter, judged on whether the reported "
-        "evidence is complete, fairly compared, and traceable to the results. Raise "
+        "evidence is sufficient for the stated claims, fairly compared, and traceable to the results. "
+        "Do not demand exhaustive reporting of every recorded run or cell. Preserve material "
+        "exceptions and contrary evidence. Raise "
         "MUST FIX for any result number TYPED as a literal instead of a "
         "`{{RES-xxx}}` placeholder from the data index (RES catalog) (the placeholder IS the "
         "traceability), any placeholder ID that does not exist in the catalog, "
@@ -935,6 +946,8 @@ REVIEW_ROUTING_CLAUSES = {
         "results, when a result number is typed literally instead of a "
         "`{{RES-xxx}}` placeholder from the data index (RES catalog), or when the "
         "chapter introduces a contribution the author never claimed."
+        " A qualitative synthesis can refer to established findings without repeating their "
+        "numbers. Do not require a new numerical proof for every discussion or conclusion sentence."
     ),
 }
 
@@ -1829,7 +1842,8 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
                         source_group = ", ".join(source_models)
                     record_stage_fingerprint(
                         folder_path, name, brief_fp, stage,
-                        source_group, _inputs_fp)
+                        source_group, _inputs_fp,
+                        draft_chapter_type=stage1_chapter_type if name == "draft-v1.plan.md" else None)
         except Exception as exc:
             # 记账失败会让"存在但未记账"的产物在下次运行被判陈旧硬停(保守失败,
             # 不会冒充新跑),所以这里 notice 即可,不上抛。
@@ -1931,8 +1945,17 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
     record_stage(["evidence-pack.md"], "evidence")
 
     # ── Stage 1: Draft ──────────────────────────────────────────────
-    # `sections` was parsed above for chapter-type routing; reuse it.
-    stage1_parts = build_stage1_parts(sections)
+    from .skills_registry import load_manifest
+    draft_folder = Path(folder_path)
+    stage1_chapter_type = route["type"]
+    reuse_combined_draft = stage1_chapter_type in _DRAFT_BATCH_LIMITS and (draft_folder / "draft-v1.md").is_file()
+    if (draft_folder / "draft-v1.plan.md").is_file():
+        plan_entry = load_manifest(folder_path).get("draft-v1.plan.md")
+        # 旧提纲没有分批策略，按生成时的分组继续，避免已有草稿与新批次错位。
+        stage1_chapter_type = plan_entry.get("draft_chapter_type", "") if isinstance(plan_entry, dict) else ""
+    elif any(draft_folder.glob("draft-v1.part-*.md")):
+        stage1_chapter_type = ""
+    stage1_parts = build_stage1_parts(sections, stage1_chapter_type)
     part_count = len(stage1_parts)
     stage1_plan = format_stage1_parts(stage1_parts)
     if not sections:
@@ -1974,6 +1997,10 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
             f"All {part_count} part{'s' if part_count > 1 else ''} must obey this table verbatim, "
             f"so keep it explicit and unambiguous. "
             f"For each part, specify target claims, required reference keys, forbidden overlap, transition role, and output file. "
+            f"Include an 'Argument and content selection' section: central takeaway, paragraph roles, "
+            f"main-text essentials, optional supplementary details and internal-only checks. Select "
+            f"evidence for the argument, including material counterevidence; do not turn every Q&A "
+            f"answer into a paragraph. Do not create or promise supplementary material. "
             f"Also return todo.md for known planning gaps. Do not write draft prose.\n\n"
             f"{reference_excerpt}"
         ), chapter_base() + local_docs(folder_path, "brief.md", "input.md", "evidence-pack.md")
@@ -1984,7 +2011,10 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
         record_stage(["draft-v1.plan.md"], "plan")
 
     results["stage1_parts"] = []
-    for position, part in enumerate(stage1_parts):
+    if reuse_combined_draft:
+        print("[Manager  ] skip       | draft-v1.md exists", flush=True)
+        results["stage1_parts"].append("skipped")
+    for position, part in enumerate([] if reuse_combined_draft else stage1_parts):
         print(f"\n▶ 正在写【{_chap}】的初稿:第 {position + 1}/{len(stage1_parts)} 部分", flush=True)
         if os.path.exists(os.path.join(folder_path, part["output"])):
             print(f"[Manager  ] skip       | {part['output']} exists", flush=True)
@@ -2005,7 +2035,8 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
         if os.path.exists(os.path.join(folder_path, "evidence-pack.md")):
             evidence_draft_clause = (
                 f"The document evidence-pack.md (attached) holds the grounded Q&A behind the "
-                f"claims; use the entries for your part's topics. "
+                f"claims; consult entries needed for your part's argument. It is internal research "
+                f"context, not a checklist to reproduce in prose. "
             )
         result = run_agent_stage(draft_agent, "Draft", (
             f"{idea_clause(part_family(part, route), res_ids_path)}"
@@ -2031,11 +2062,12 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
             return _finish_with_table(folder_path, results)
         record_stage([part["output"]], "draft")
 
-    concatenate_stage1_parts(folder_path, len(stage1_parts))
-    print(f"[Manager  ] write_file | {folder_rel}/draft-v1.md", flush=True)
+    if not reuse_combined_draft:
+        concatenate_stage1_parts(folder_path, part_count)
+        print(f"[Manager  ] write_file | {folder_rel}/draft-v1.md", flush=True)
     if not verify(["draft-v1.md", "todo.md"]):
         return _finish_with_table(folder_path, results)
-    # draft-v1.md 由 Python 拼接各 part,同一指纹下重拼结果不变,照常记账。
+    # 拼接产物与已有的合稿都走同一套记账。
     record_stage(["draft-v1.md"], "draft")
     # 契约粗检:只提示,不进指纹,不改核验状态。每次重算。
     write_contract_check(folder_path, "draft-v1.md", scope_types(route))

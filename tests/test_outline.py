@@ -411,6 +411,20 @@ def test_part_count_adapts_to_section_count():
                   bool(part["numbers"]), str(part))
 
     # 单小节章的目标字数就是那一节的字数,不是 700
+    for chapter_type, count, expected in (
+        ("related", 3, [[1, 2], [3]]),
+        ("related", 1, [[1]]),
+        ("experiments", 4, [[1, 2], [3, 4]]),
+        ("experiments", 5, [[1, 2, 3], [4, 5]]),
+        ("discussion", 2, [[1, 2]]),
+        ("limitations", 2, [[1, 2]]),
+    ):
+        parts = orch.build_stage1_parts(sections(count), chapter_type)
+        check(f"{chapter_type} 的小节分组",
+              [part["numbers"] for part in parts] == expected
+              and [part["target_words"] for part in parts] == [150 * len(batch) for batch in expected],
+              str(parts))
+
     single = orch.build_stage1_parts(sections(1))
     check("单小节章的目标字数取自该小节", single[0]["target_words"] == 150,
           str(single[0]["target_words"]))

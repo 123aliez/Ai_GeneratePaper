@@ -502,8 +502,8 @@ def _guard_block(chunk: list[str], env: str | None = None) -> list[str]:
     if (env is not None and env not in _SAFE_ENVS) or _DANGEROUS_RE.search(text):
         safe = [ln.replace(r"\end{verbatim}", r"\end {verbatim}") for ln in chunk]
         return [r"\todo{unsafe LaTeX block shown verbatim}", r"\begin{verbatim}", *safe, r"\end{verbatim}"]
-    if chunk and chunk[0] == r"\[" and chunk[-1] == r"\]" and r"\label{" in text:
-        # 带 \label 的公式必须是带编号的环境:\[ \] 里的 \label 没有编号,\eqref 会解析成 ??
+    if chunk and chunk[0] == r"\[" and chunk[-1] == r"\]":
+        # 独立公式由 LaTeX 自动编号，显式指定的数学环境照原样输出。
         return [r"\begin{equation}", *chunk[1:-1], r"\end{equation}"]
     return list(chunk)
 
@@ -570,7 +570,7 @@ def md_to_tex(md: str, num: Numbering, tables: dict, *, level_offset: int = 0) -
             out += [r"\begin{verbatim}", *code, r"\end{verbatim}", ""]
             i = j + 1
             continue
-        if stripped.startswith("$$") or stripped == r"\[" or stripped.startswith(r"\begin{"):
+        if stripped.startswith(("$$", r"\[", r"\begin{")):
             flush_para(); close_lists()
             if stripped.startswith(r"\begin{"):
                 env = re.match(r"\\begin\{([^}]+)\}", stripped).group(1)
@@ -584,23 +584,16 @@ def md_to_tex(md: str, num: Numbering, tables: dict, *, level_offset: int = 0) -
                 out += _guard_block(chunk, env) + [""]
                 i = j + 1
                 continue
-            if stripped.startswith(r"\[") and stripped.endswith(r"\]") and len(stripped) > 4:
-                out += _guard_block([stripped]) + [""]
-                i += 1
-                continue
-            m_dd = re.match(r"^\$\$(.+?)\$\$(.*)$", stripped)
-            if m_dd and m_dd.group(2).strip():
-                out += _guard_block([r"\[", m_dd.group(1).strip(), r"\]"]) + [""]
-                para.append(m_dd.group(2).strip())
-                i += 1
-                continue
-            if stripped.startswith("$$") and stripped.endswith("$$") and len(stripped) > 4:
-                out += _guard_block([r"\[", stripped[2:-2].strip(), r"\]"]) + [""]
-                i += 1
-                continue
             closer = "$$" if stripped.startswith("$$") else r"\]"
+            first_line, end, suffix = stripped[2:].partition(closer)
+            if end:
+                out += _guard_block([r"\[", first_line.strip(), r"\]"]) + [""]
+                if suffix.strip():
+                    para.append(suffix.strip())
+                i += 1
+                continue
             j = i + 1
-            chunk = [stripped[2:].strip()] if stripped.startswith("$$") and len(stripped) > 2 else []
+            chunk = [first_line.strip()] if first_line.strip() else []
             while j < len(lines) and lines[j].strip() != closer and not lines[j].strip().endswith(closer):
                 chunk.append(lines[j])
                 j += 1

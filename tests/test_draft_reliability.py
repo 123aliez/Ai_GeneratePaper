@@ -505,6 +505,12 @@ def test_clean_run_is_verified_and_prompts_are_wired():
                                for p in part_prompts))
     check("修订轮注入 draft skills",
           revise_prompts and all("experiment-writing.md" in p for p in revise_prompts))
+    check("有 MUST FIX 的首轮也执行整章编辑",
+          revise_prompts and "WHOLE-CHAPTER EDIT" in revise_prompts[0]
+          and "do not rewrite unaffected paragraphs" not in revise_prompts[0])
+    plan_prompts = [p for p in agent.prompts if "acting only as the planner for Stage 1" in p]
+    check("规划入口要求按论证取舍材料",
+          plan_prompts and all("Argument and content selection" in p for p in plan_prompts))
     check("评审注入 review rubric",
           review_prompts and all("review-rubric.md" in p for p in review_prompts))
     check("定稿注入 review rubric", "review-rubric.md" in fp)

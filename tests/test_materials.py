@@ -191,7 +191,7 @@ def test_assembler_pieces():
     main = (d / "latex" / "main.tex").read_text(encoding="utf-8")
     check("LaTeX:转义、引用、环境",
           "a\\_b \\& 5\\%" in tex and "\\cite{he2016}" in tex and "\\begin{itemize}" in tex
-          and "\\[\nE = mc^2\n\\]" in tex, tex)
+          and "\\begin{equation}\nE = mc^2\n\\end{equation}" in tex, tex)
     check("LaTeX:摘要环境与 \\todo 标记", "\\begin{abstract}" in main and "\\todo{MISSING DATA}" in main
           and "\\todo{unknown result RES-9}" in main, main)
     check("LaTeX:中文表名标签不重复", len(set(__import__("re").findall(r"\\label\{(tab:[^}]+)\}", tex))) == 2, tex)
@@ -272,6 +272,12 @@ def test_codex_review_fixes():
     _tex = A.md_to_tex("$$\nx=1.\n\\label{eq:a}\n$$\n\nSee Eq. $\\eqref{eq:a}$ here.\n", A.Numbering(), {})
     check("带 label 的公式 → equation 环境", "\\begin{equation}" in _tex and "\\[" not in _tex, _tex)
     check("$\\eqref{}$ 去掉外层 $", "$\\eqref" not in _tex and "\\eqref{eq:a}" in _tex, _tex)
+    for display in ("$$x=1$$", "$$\nx=1\n$$", r"\[x=1\]", "\\[x=1\n\\]"):
+        out = A.md_to_tex(display, A.Numbering(), {})
+        check("无标签的独立公式也编号", out == "\\begin{equation}\nx=1\n\\end{equation}\n", out)
+    explicit = "\\begin{align*}\nx&=1\n\\end{align*}"
+    out = A.md_to_tex("Inline $x=1$.\n\n" + explicit, A.Numbering(), {})
+    check("行内公式和显式无编号环境照原样输出", out == "Inline $x=1$.\n\n" + explicit + "\n", out)
     # 章节交叉引用:[[SEC:标题]] → Section N / N.M;裸章名与流程用语被检出
     schs = [A.Chapter(folder="01-a", title="Abstract", ctype="abstract", number=1, en="Short."),
             A.Chapter(folder="02-i", title="Introduction", ctype="intro", number=2,
@@ -344,7 +350,7 @@ def test_codex_review_fixes():
     nt = [t for t in rt.collect_tables(d2) if t.name == "n"][0]
     check("Name,Score,Time 不再被误判成长表", nt.is_grid and "Time" in nt.cols, str(nt.cols))
     a_tex = A.md_to_tex("Intro\n\n$$E=mc^2$$ (1)\n\nNext para\n", A.Numbering(), {})
-    check("公式后跟文字不吞后文", "Next para" in a_tex and a_tex.index("Next para") > a_tex.index("\\]"), a_tex)
+    check("公式后跟文字不吞后文", "\\end{equation}\n\n(1)\n\nNext para" in a_tex, a_tex)
     figs = A.parse_figure_blocks("[FIGURE f1: Cap]\nType: bar\nNote: n\n\x00H1\x00B\n\ntext")
     check("图块遇到标题行就结束", figs[0]["end"] == 3, str(figs))
     check("$5 and $10 不被当成数学", "\\$5 and \\$10" in A._inline_to_tex("costs $5 and $10 total", A.Numbering()))

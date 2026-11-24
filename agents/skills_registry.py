@@ -41,7 +41,8 @@ FINGERPRINT_VERSION = 2
 #   1 → 2:Stage 4 定稿改为只基于 draft-v2(不再与 draft-v1 合并)。
 #   2 → 3:正面写法与证据亮点视角。
 #   3 → 4:合入文献分级、章节契约、按类型证据视角与创新性评审边界。
-STAGE_PROMPT_VERSION = 4
+#   4 → 5:按论点选择证据，正文与内部核验分离，首轮修订执行整章编辑。
+STAGE_PROMPT_VERSION = 5
 
 # 各角色允许装载的 Skill 白名单。不在白名单里的 skills/ 文件编排器不注入,
 # Agent 的自助 read_file 仍可用(向后兼容),但指纹只覆盖白名单文件。
@@ -210,7 +211,8 @@ def save_manifest(folder_path: str, manifest: dict) -> None:
 def record_stage_fingerprint(folder_path: str, artifact: str,
                              brief_fingerprint: str, stage: str,
                              model_group: str = "",
-                             inputs: dict | None = None) -> None:
+                             inputs: dict | None = None, *,
+                             draft_chapter_type: str | None = None) -> None:
     """按当前文件内容与阶段指纹记账；两者都未变时保留原条目及模型来源。
 
     缺少内容哈希的旧条目需要重记；内容哈希只用于记账，不改变手改终稿的核验流程。
@@ -221,7 +223,8 @@ def record_stage_fingerprint(folder_path: str, artifact: str,
     previous = manifest.get(artifact)
     if isinstance(previous, dict) and previous.get("content_sha256") == content_sha256 \
             and previous.get("fingerprint") == fingerprint \
-            and previous.get("fingerprint_version") == FINGERPRINT_VERSION:
+            and previous.get("fingerprint_version") == FINGERPRINT_VERSION \
+            and (draft_chapter_type is None or previous.get("draft_chapter_type") == draft_chapter_type):
         return
     manifest[artifact] = {
         "fingerprint": fingerprint,
@@ -231,6 +234,8 @@ def record_stage_fingerprint(folder_path: str, artifact: str,
         "model_group": model_group,
         "inputs": dict(inputs or {}),
     }
+    if draft_chapter_type is not None:
+        manifest[artifact]["draft_chapter_type"] = draft_chapter_type
     save_manifest(folder_path, manifest)
 
 

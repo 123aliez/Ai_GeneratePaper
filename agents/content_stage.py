@@ -6,7 +6,7 @@
 - 这些都不是内容质量问题,而是"让模型做编排"带来的。
 
 做法:
-1. 脚本把本阶段要读的文件原文放进提示词(<documents>);
+1. 脚本提供本阶段材料(<documents>)，通常附原文，Claude CLI 可选按目录查阅;
 2. 模型只返回文本,每个产物放在一个 `<file name="...">...</file>` 块里;
 3. 脚本解析、校验文件名(必须是本阶段声明的产物)、原子写入本章文件夹;
 4. 缺产物 → 脚本带着缺哪几个再请求一次(最多 rounds 轮),而不是整段重跑。
@@ -21,6 +21,7 @@ import os
 import re
 import sys
 from dataclasses import dataclass, field
+from html import escape
 from pathlib import Path
 from typing import Callable
 
@@ -57,7 +58,7 @@ class Doc:
 
 
 class ContentAgent:
-    """一个角色 = 模型 + 系统提示词。没有工具,没有步数循环。"""
+    """一个角色 = 模型 + 系统提示词；阶段和产物由脚本管理。"""
 
     _offline_test_stub = False
 
@@ -85,12 +86,17 @@ class StageOutcome:
 
 # ── 提示词与解析 ───────────────────────────────────────────────────────
 
-def build_user_message(task: str, docs: list[Doc], deliverables: list[str]) -> str:
+def build_user_message(task: str, docs: list[Doc], deliverables: list[str],
+                       *, material_files: dict[str, str] | None = None) -> str:
     parts = ["<documents>"]
-    for doc in docs:
+    for index, doc in enumerate(docs, start=1):
         body = doc.load()
         if body is None:
             parts.append(f'<document name="{doc.name}" status="missing"/>')
+        elif material_files is not None:
+            filename = f"{index:02d}.md"
+            material_files[filename] = body
+            parts.append(f'<document name="{escape(doc.name)}" path="materials/{filename}"/>')
         else:
             parts.append(f'<document name="{doc.name}">\n{body}\n</document>')
     parts.append("</documents>")
@@ -134,18 +140,18 @@ def _write_atomic(path: Path, text: str) -> None:
     os.replace(tmp, path)
 
 
-def _call_model(model, messages: list) -> str:
+def _call_model(model, messages: list, **kwargs) -> str:
     """取完整文本。优先走流式接口(长连接不会被网关空闲超时切断)。"""
     from smolagents.models import ChatMessage, MessageRole
     msgs = [ChatMessage(role=MessageRole(m["role"]), content=m["content"]) for m in messages]
     if hasattr(model, "generate_stream"):
         chunks = []
-        for delta in model.generate_stream(msgs):
+        for delta in model.generate_stream(msgs, **kwargs):
             piece = getattr(delta, "content", None)
             if piece:
                 chunks.append(piece)
         return "".join(chunks)
-    return getattr(model.generate(msgs), "content", "") or ""
+    return getattr(model.generate(msgs, **kwargs), "content", "") or ""
 
 
 def run_content_stage(agent: ContentAgent, task: str, docs: list[Doc],
@@ -162,16 +168,19 @@ def run_content_stage(agent: ContentAgent, task: str, docs: list[Doc],
         if not SAFE_NAME_RE.match(name) or name in PROGRAM_OWNED:
             raise ValueError(f"非法产物名: {name!r}")
     out = Path(out_dir)
+    material_files = {} if getattr(agent.model, "read_materials", False) is True else None
     messages = [
         {"role": "system", "content": agent.instructions},
-        {"role": "user", "content": build_user_message(task, docs, deliverables)},
+        {"role": "user", "content": build_user_message(task, docs, deliverables,
+                                                      material_files=material_files)},
     ]
+    model_kwargs = {"material_files": material_files} if material_files is not None else {}
     outcome = StageOutcome()
     lookup_rounds = 0
     pending = list(deliverables)
     # 总调用上限:每个 round 一次,加上最多 max_lookup_rounds 次补查
     for call_no in range(1, rounds + max_lookup_rounds + 1):
-        reply = _call_model(agent.model, messages)
+        reply = _call_model(agent.model, messages, **model_kwargs)
         outcome.rounds = call_no
         outcome.reply = reply
         got = parse_file_blocks(reply, pending)
