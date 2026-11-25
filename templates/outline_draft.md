@@ -10,12 +10,8 @@
      分号分隔小节;冒号后是这个小节的 type(取自末尾词表),不写就沿用本章 type。
      你写的小节标题和 type 展开时原样保留,规划者只补要点。
 
-     会议 vs 期刊:下面的默认写法是会议常见的"实验设置 / 结果 / 消融"三章分开。期刊论文
-     常把它们合成一章 Experiments——这时请给小节标 type,例如
-       | 5 | Experiments | experiments | 5.1 Setup; 5.2 Main Results: results; 5.3 Ablation: ablation |
-     小节 type 决定该小节按哪套规则写和审:experiments 讲实验设置,results 讲结果对比,
-     ablation 讲消融,analysis 讲进一步分析。不标的话整章都按 experiments(实验设置)处理。
-     不填这一列时,规划者展开大纲也会给每个小节标 type,你审 outline.zh.md 时核对即可。 -->
+     默认将实验设置、主结果、稳健性与消融放在同一章，保留小节 type。可按研究内容增删。
+     新引言用连续自然段。相关工作参考 800–1000 词，实验设置参考 500–700 词。 -->
 
 | #   | 章标题               | type         | 小节(可选) |
 | --- | ------------------- | ------------ | ---------- |
@@ -23,10 +19,9 @@
 | 2   | Introduction        | intro        |            |
 | 3   | Related Work        | related      |            |
 | 4   | Method              | method       |            |
-| 5   | Experimental Setup  | experiments  |            |
-| 6   | Results             | results      |            |
-| 7   | Ablation Study      | ablation     |            |
-| 8   | Conclusion          | conclusion   |            |
+| 5   | Experiments         | experiments  | 5.1 Experimental Setup; 5.2 Main Results: results; 5.3 Robustness Analysis: results; 5.4 Ablation Study: ablation |
+| 6   | Discussion and Limitations | discussion | |
+| 7   | Conclusion          | conclusion   | |
 
 ## type 词表
 

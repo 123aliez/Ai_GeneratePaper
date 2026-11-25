@@ -42,7 +42,7 @@ FINGERPRINT_VERSION = 2
 #   2 → 3:正面写法与证据亮点视角。
 #   3 → 4:合入文献分级、章节契约、按类型证据视角与创新性评审边界。
 #   4 → 5:按论点选择证据，正文与内部核验分离，首轮修订执行整章编辑。
-STAGE_PROMPT_VERSION = 5
+STAGE_PROMPT_VERSION = 7
 
 # 各角色允许装载的 Skill 白名单。不在白名单里的 skills/ 文件编排器不注入,
 # Agent 的自助 read_file 仍可用(向后兼容),但指纹只覆盖白名单文件。

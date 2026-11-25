@@ -747,6 +747,15 @@ def cmd_assemble() -> int:
         for p in info["latex_checks"]:
             print(f"  · {p}")
     print("交付物: paper.md / paper.zh.md / latex/ / 待补清单.md / 图表清单.md / 数字溯源表.md")
+    from agents.pdf_compile import compile_pdf
+    import subprocess
+    latex_dir = Path(info["out"]) / "latex"
+    try:
+        pdf = compile_pdf(latex_dir)
+    except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+        print(f"[PDF 编译失败] {exc}。详见 {latex_dir / 'compile.log'}")
+        return 1
+    print(f"已生成 PDF: {pdf}")
     return 0
 
 

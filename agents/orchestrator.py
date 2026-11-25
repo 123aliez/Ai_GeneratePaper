@@ -452,34 +452,15 @@ def part_family(part: dict, route: dict) -> str:
 
 
 def format_stage1_parts(parts: list[dict]) -> str:
-    """把段边界渲染成规划提示词里的一段说明。
-
-    正文段(≥400 词)不给区间:篇幅由 Draft agent 按本段实际实验结果自定,尽量精炼,
-    大纲字数只作参考。短段(摘要/结论等)仍给按比例的窄区间,不用固定的 ±词数。原先是 `max(300, target-100)` 到
-    `target+150`:那个 300 下限是照 survey 章节(每段 700+ 词)定的,用在一个 150
-    词的摘要上会被抬成 "300-300 words" —— 目标翻倍,区间还塌成一个点。
-    """
+    """把固定的分批边界与目标篇幅传给规划和起草阶段。"""
     blocks = []
     for part in parts:
         target = max(1, part["target_words"])
-        if target < 400:
-            # 摘要/结论这类短段:篇幅本身就是体裁要求,保持原来的窄区间
-            lower = max(60, int(target * 0.85))
-            upper = max(lower + 40, int(target * 1.2) + 30)
-            length = f"Target length: {lower}-{upper} words"
-        else:
-            # 正文段:篇幅由 Draft 按本段实际结果自定,尽量精炼;大纲字数只作规划参考
-            length = (f"Length: decided by the material, as concise as possible — write what the "
-                      f"actual results and evidence of this part need, then stop. ~{target} words "
-                      f"is only a planning reference from the outline, not a target or a floor: "
-                      f"go shorter when the results are few, longer only for results that need it. "
-                      f"Never pad. Do not walk through a table cell by cell; quote only the key "
-                      f"differences and test results that support a claim, each as its "
-                      f"{{{{RES-xxx}}}} placeholder")
+        length = f"Target length: {round(target * 0.85)}-{round(target * 1.05)} words"
         blocks.append(
             f"Part {part['index']} -> {part['output']}\n"
             f"{length}\n"
-            f"This is a space allocation, not a minimum to fill; write less when the argument is complete.\n"
+            f"Develop distinct evidence-supported claims. Put selection principles in setup and spend the analytical budget on findings, exceptions and trade-offs.\n"
             f"Covers: " + "; ".join(part["titles"])
         )
     return "\n\n".join(blocks)
@@ -1263,7 +1244,11 @@ def derived_values(folder_path: str) -> list[float]:
         return []
 
 
-def final_integrity_reasons(folder_path: str) -> list[str]:
+def checks_result_prose(types: list[str]) -> bool:
+    return bool(set(types) - {"method", "theory", "background", "related"})
+
+
+def final_integrity_reasons(folder_path: str, route: dict | None = None) -> list[str]:
     """终稿完整性检查(确定性,不调模型):数字缺口 / 未知引用 key / 未知表名。
 
     每次核验都重扫 final.md 与 final.zh.md,不依赖"这次是否刚做过替换"——否则首次定稿
@@ -1274,14 +1259,20 @@ def final_integrity_reasons(folder_path: str) -> list[str]:
     try:
         from .result_ids import residual_res_problems
         from .citation_supplement import citable_keys, unknown_cite_keys
-        from .results_tables import unknown_tables, table_names
+        from .chapter_contract import scope_types
+        from .draft_checks import body_text
+        from .results_tables import unknown_tables, collect_tables, table_style_warnings
         allowed = citable_keys()
-        known_tables = set(table_names(DATA_ROOT))
+        style_tables = {t.name: t for t in collect_tables(DATA_ROOT) if t.is_grid}
+        known_tables = set(style_tables)
+        result_prose = checks_result_prose(scope_types(route or {}))
         for fname in ("final.md", "final.zh.md"):
             fp = Path(folder_path, fname)
             if not fp.is_file():
                 continue
             txt = fp.read_text(encoding="utf-8", errors="replace")
+            reasons.extend(f"{fname}: {msg}" for msg in table_style_warnings(
+                body_text(txt), style_tables, result_prose=result_prose))
             for msg in residual_res_problems(txt):
                 reasons.append(f"{fname} {msg}")
             bad_tables = unknown_tables(txt, known_tables)
@@ -1319,7 +1310,9 @@ def reverify_chapter(folder_path: str) -> dict:
     folder_path = folder_path.replace("\\", "/")
     if not os.path.isfile(os.path.join(folder_path, "final.md")):
         return {"status": "missing", "reasons": ["没有 final.md"]}
-    reasons = final_integrity_reasons(folder_path)
+    sections = parse_brief_sections(folder_path)
+    route = resolve_run_route(folder_path, sections)
+    reasons = final_integrity_reasons(folder_path, route)
     # MUST FIX 验收是针对评审当时那份终稿做的。终稿被手改后,旧的“已解决”结论不再可信:
     # 只要有过 MUST FIX 清单,就要求重新评审(或确认),不能靠确定性检查通过就恢复“已核验”。
     vtext = Path(folder_path, VERIFICATION_FILENAME).read_text(encoding="utf-8", errors="replace") \
@@ -1330,8 +1323,6 @@ def reverify_chapter(folder_path: str) -> dict:
         reasons.append("终稿在评审之后被手改:MUST FIX 验收是针对旧文本做的,需要人工确认或重新评审本章")
     if not os.path.isfile(os.path.join(folder_path, "final.zh.md")):
         reasons.append("缺少 final.zh.md(中文审阅版)")
-    sections = parse_brief_sections(folder_path)
-    route = resolve_run_route(folder_path, sections)
     gate = route["gate"]
     if gate != OFF:
         try:
@@ -1450,6 +1441,10 @@ def base_docs(folder_path: str, family: str, res_ids_path, *, code: bool = False
         sp = settings_path(DATA_ROOT)
         if sp.is_file():
             docs.append(Doc(sp.name, sp))
+    elif (sp := settings_path(DATA_ROOT)).is_file():
+        figures = re.search(r"(?ms)^## (?:已有图|Figures)\s*\n(.*?)(?=^## |\Z)", sp.read_text(encoding="utf-8"))
+        if figures:
+            docs.append(Doc("author-figures.md", text=figures[1]))
     docs.append(Doc("ref-index.md", config.REF_INDEX_PATH))
     if code and Path(config.CODE_INDEX_PATH).is_file():
         docs.append(Doc("code-index.md", config.CODE_INDEX_PATH))
@@ -1530,7 +1525,7 @@ def idea_clause(family: str = MIXED, res_ids_path=None) -> str:
                 f"`{{{{RES-014}}}}%`. For the gap or relative gain between two results write "
                 f"`{{{{DIFF:RES-a,RES-b}}}}` (a−b) or `{{{{REL:RES-a,RES-b}}}}` ((a−b)/b×100, put the % "
                 f"outside) — the program computes it; do not compute it yourself. To show a whole "
-                f"result table write ONE line `[TABLE: <table name> | caption: <caption> | note: "
+                f"result table write ONE line `[TABLE: <table name> | cols: <primary columns> | caption: <caption> | note: "
                 f"<optional note>]` using a table name from the index — the program renders the "
                 f"table from the CSV, so never write table cells by hand. For a result absent "
                 f"from the index write [MISSING DATA]; do not guess. An unknown or mistyped ID "
@@ -2131,7 +2126,13 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
     record_stage(["draft-v1.md"], "draft")
     # 契约粗检:只提示,不进指纹,不改核验状态。每次重算。
     write_contract_check(folder_path, "draft-v1.md", scope_types(route))
-    from .draft_checks import write_polish_check
+    from .draft_checks import write_polish_check, body_text
+    from .results_tables import collect_tables, table_style_warnings
+    style_tables = {t.name: t for t in collect_tables(DATA_ROOT)}
+    findings = table_style_warnings(body_text(Path(folder_path, "draft-v1.md").read_text(encoding="utf-8")),
+                                    style_tables, result_prose=checks_result_prose(scope_types(route)))
+    style_report = Path(folder_path, "table-style-check.md")
+    style_report.write_text("\n".join(findings) or "OK", encoding="utf-8")
 
     # ── Deterministic number gate (experiment mode) ─────────────────
     # Cross-check every number in draft-v1 against the results store BEFORE the
@@ -2213,6 +2214,7 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
             f"{build_review_routing_clause(route)}"
             f"{mode_review_clause}"
             f"{number_check_clause}"
+            f"Use table-style-check.md to identify MUST FIX violations. Preserve mathematical definitions. "
             f"Return a detailed review as review-v1.md and the open issues as todo.md, "
             f"categorizing issues as MUST FIX / SHOULD FIX / CONSIDER.\n\n"
             + ("" if not _skip_structured else
@@ -2222,7 +2224,7 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
                f"(MF1, MF2, ...), a precise location, the issue, and a concrete suggestion.\n\n")
             + f"{reference_excerpt}"
             + f"{review_skills}"
-        ), chapter_base() + local_docs(folder_path, "draft-v1.md", "brief.md", "input.md", "number-check.md", "contract-check.md")
+        ), chapter_base() + local_docs(folder_path, "draft-v1.md", "brief.md", "input.md", "number-check.md", "contract-check.md", "table-style-check.md")
            + xchap_docs + abstract_docs,
            ["review-v1.md", "todo.md"] + (["review-v1.json"] if _skip_structured else []))
         set_agent_context("Manager")
@@ -2500,7 +2502,7 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
             verification_reasons.append("终稿产物不全或前置步骤失败,RES 填充/终稿数字门禁未执行")
         # 每次运行都重扫终稿(含 Stage 4 被 skip 的续跑):RES 缺口与未知引用 key
         # 不能因为"本次没重新替换"就从核验状态里消失。
-        verification_reasons.extend(final_integrity_reasons(folder_path))
+        verification_reasons.extend(final_integrity_reasons(folder_path, route))
         try:
             verification_reasons.extend(checklist_status(folder_path))
         except Exception as exc:

@@ -23,25 +23,33 @@ CONTRACTS: dict[str, dict[str, str]] = {
         "forbidden": "Describing other papers; any contribution not listed in idea.md section 6.",
     },
     "intro": {
-        "focus": "OUR research background, the scientific problem and OUR motivation "
-                 "(idea.md sections 1-2), ending with the contribution list of idea.md section 6.",
+        "focus": "OUR research background, the concrete problem and OUR motivation "
+                 "(idea.md sections 1-2), ending with a concise contribution list from "
+                 "idea.md section 6. Flow continuously without adding subsection headers beyond the approved outline. "
+                 "Explain the failure scenario, gap and solution intuition, then introduce the list in one sentence. Keep each contribution item to 1-2 tight sentences (<= 45 words): state what "
+                 "is introduced and its supporting section pointer, without prefacing summaries, "
+                 "detailed ablation breakdowns, or defensive 'standard component' disclaimers.",
         "references": "Cite prior work only to show that the problem matters and is not yet solved: "
                       "at most one clause per cited work and no paragraph about a single paper. "
                       "State the gap in at most one sentence taken from idea.md section 2; the "
                       "detailed comparison with the closest works belongs to the related-work chapter.",
         "forbidden": "Explaining another paper's method in detail; numbers reported by other papers; "
-                     "any contribution not listed in idea.md section 6.",
+                     "any contribution not listed in idea.md section 6; unrequested subsection headers inside "
+                     "Introduction; multi-paragraph restatements of the contribution list.",
     },
     "related": {
-        "focus": "Prior research grouped by theme: how each line of work approaches the problem "
-                 "and where it falls short, then how OUR work differs from the closest works.",
-        "references": "A-level papers: approach and limitation in at most three sentences each. "
+        "focus": "Concise synthesis of prior research grouped by 2-3 technical themes: "
+                 "summarize each line's shared mechanism and limitation, then state in one "
+                 "sentence how OUR work differs from the closest works.",
+        "references": "A-level papers: approach and limitation in 2-3 sentences where the evidence warrants it, "
+                      "synthesized within a theme rather than one paragraph per paper. "
                       "B-level papers: cited as members of a theme with at most one clause each. "
                       "C-level papers: citation only. The difference between our work and any prior "
                       "work comes ONLY from idea.md section 5 - never derive or invent a difference "
                       "from the notes.",
-        "forbidden": "Details of our own method (they belong to the method chapter); numbers "
-                     "reported by other papers; judging whether our contribution is novel.",
+        "forbidden": "Details of our own method (they belong to the method chapter); paper-by-paper "
+                     "isolated mini-reviews; repeating our method pitch at the end of "
+                     "every subsection; numbers reported by other papers; judging whether our contribution is novel.",
     },
     "background": {
         "focus": "The base concepts and notation a reader needs before the method chapter.",
@@ -51,39 +59,56 @@ CONTRACTS: dict[str, dict[str, str]] = {
     },
     "method": {
         "focus": "OUR core insight, architecture and training objective, from idea.md sections 3-4. "
-                 "Explain the mechanism and necessary formulas, definitions and assumptions; "
+                 "Introduce key equations with intuition and explain each design choice alongside its formulation. Summarize multistage training/inference and overhead when the source supports them; "
                  "select details by their role in understanding and reproducing the contribution, "
-                 "rather than reproducing the implementation inventory.",
+                 "rather than repeating premises across subsections or reproducing an implementation inventory.",
         "references": "Prior work may appear ONLY as attribution of a base technique we adopt: one "
                       "citation plus at most one clause, e.g. 'We use X \\cite{x} as the image "
                       "encoder.'",
         "forbidden": "Comparative wording about cited work (unlike, in contrast to, compared with, "
                      "different from, outperforms, prior/previous/existing methods); describing "
                      "another paper's innovations or motivation; positioning against prior work "
-                     "(it belongs to the related-work chapter); result numbers.",
+                     "(it belongs to the related-work chapter); result numbers; standalone "
+                     "'Design Rationale' recap subsections that restate earlier explanations.",
     },
     "experiments": {
-        "focus": "OUR experimental design: datasets, protocol, baselines, metrics and "
-                 "implementation details needed to interpret and reproduce the comparisons, from "
-                 "the experiment settings file. State shared protocol once; keep metric definitions "
-                 "and fairness conditions, without a run-by-run audit trail.",
-        "references": "Cite datasets, baselines and metric definitions; describe each baseline in "
-                      "at most one sentence.",
-        "forbidden": "Re-explaining our method; numbers reported by other papers unless they are "
-                     "in the result tables.",
+        "focus": "Concise, high-level experimental design from the experiment settings file: "
+                 "summarize datasets compactly (prefer one small summary table over multi-paragraph "
+                 "prose), describe each baseline in at most one clause or short sentence, define "
+                 "ONLY task-specific/custom metrics concisely (never lecture on standard metrics "
+                 "such as Accuracy or Macro-F1), and state core training and evaluation settings once. "
+                 "For result-bearing subsections, analyze major comparisons, effect magnitudes, exceptions and trade-offs using controlled evidence. Summarize tuning by its validation objective even when the brief lists individual candidates and fallback branches. Omit experimental logs, hyperparameter grids, "
+                 "tie-breaking rules, and exhaustive per-family multiple-testing bookkeeping.",
+        "references": "Cite datasets, baselines and non-standard metric definitions; describe each "
+                      "baseline in at most one clause or short sentence.",
+        "forbidden": "Re-explaining our method; dedicating a standalone section, subsection, or "
+                     "multi-paragraph tutorial to standard evaluation metrics; step-by-step "
+                     "experimental process logs, exhaustive search-grid/fallback-rule inventories, "
+                     "or per-family statistical-family enumerations in main text; reporting or "
+                     "mentioning standard deviations (std / standard error / ±); numbers reported "
+                     "by other papers unless they are in the result tables.",
     },
     "results": {
-        "focus": "Objective analysis of OUR comparison and ablation results; every number is a "
-                 "placeholder or a rendered table. Organize around findings and decisive comparisons, "
-                 "including material exceptions, rather than narrating each table cell.",
+        "focus": "Objective, takeaway-driven analysis of OUR comparison and ablation results; "
+                 "every number is a placeholder or a rendered table. Select ONLY primary metrics "
+                 "for main-text tables using `cols:` in [TABLE: ...] (at most 6 metric columns). "
+                 "Report mean performance only without standard deviations. Explain all ablation "
+                 "variants, evaluation conventions, and data comparisons directly in the main prose; "
+                 "Discuss the key magnitude, variation across conditions and exceptions for each major table. Use controlled evidence for attribution and identify competing explanations when causes are uncertain. Keep table notes strictly to <= 2 short lines (<= 30 words) of symbol/formatting "
+                 "conventions.",
         "references": "Cite only to identify a dataset or a baseline.",
         "forbidden": "Claims stronger than the data; re-explaining the method; explaining an "
-                     "outcome through another paper's mechanism in detail.",
+                     "outcome through another paper's mechanism in detail; dumping secondary or "
+                     "redundant columns into main-text tables; packing variant definitions or "
+                     "data explanations into long table notes; reporting or mentioning standard "
+                     "deviations (std / standard deviation / standard error / ±) in tables or prose; "
+                     "reciting exhaustive lists of p-values in prose when table markers or a concise "
+                     "summary suffice.",
     },
     "discussion": {
         "focus": "What OUR findings mean, the conditions under which OUR method applies, and "
                  "its limitations (idea.md section 7) where assigned by the outline. Synthesize "
-                 "established findings without repeating results or auditing every claim anew.",
+                 "established findings into applicability boundaries, plausible explanations of exceptions and practical trade-offs supported by the materials.",
         "references": "Cite only briefly, to place a finding in context.",
         "forbidden": "New results or new contributions; an extended review of other work.",
     },

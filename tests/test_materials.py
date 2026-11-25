@@ -133,13 +133,22 @@ def test_results_tables_and_render():
     shown, pairs = rt.pair_std_columns(t.cols)
     check("std 列配对并隐藏", pairs == {"Top-1↑": "Top-1_std"} and "Top-1_std" not in shown, str((shown, pairs)))
     md = rt.render_table_markdown(t, "Cap", "note", 1)
-    check("± 标准差、最优加粗、原文小数位",
-          "**78.30 ± 0.20**" in md and "76.10 ± 0.30" in md and "**25.6**" in md, md)
+    check("只报主指标、最优加粗、原文小数位",
+          "**78.30**" in md and "76.10" in md and "±" not in md and "**25.6**" in md, md)
     tex = rt.render_table_latex(t, "Cap", "n", "tab:x")
-    check("LaTeX 表含 booktabs 与 \\pm", "\\toprule" in tex and "$\\pm$" in tex and "\\textbf{25.6}" in tex, tex)
+    check("LaTeX 表含 booktabs 且无 \\pm", "\\toprule" in tex and "$\\pm$" not in tex and "\\textbf{25.6}" in tex, tex)
     res_map, path = ensure_res_ids(str(d), str(d / "idx" / "r.md"))
     index = rt.render_data_index(tables, res_map, "实验设置.md")
     check("数据索引每格带 RES 编号与原文", "{{RES-" in index and "=78.30" in index and "实验设置.md" in index, index)
+    check("数据索引隐藏标准差", "Top-1_std" not in index and "=0.20" not in index)
+    p = rt.parse_table_placeholder("主结果 | cols: params(m), Top-1")
+    selected = rt.table_matrix(t, cols=p["cols"])[0]
+    check("选列按指定顺序且兼容无箭头列名", selected == ["Method", "Params(M) ↓", "Top-1 ↑"], str(selected))
+    check("正常指标与孤立误差列区分", rt.pair_std_columns(["RMSE", "Dose", "std", "F1_SE"])[0] == ["RMSE", "Dose"])
+    check("错误列与长表注报告给审稿", len(rt.table_style_warnings(
+        "[TABLE: 主结果 | cols: Typo | note: " + "word " * 31 + "]", {t.name: t})) == 2)
+    check("图注检查与公式区分", bool(rt.table_style_warnings("Note. Mean ± standard deviation.", {}))
+          and not rt.table_style_warnings("Roots are $±x$.", {}))
     ph = rt.parse_table_placeholder("主结果 | caption: Main results | note: † from paper")
     check("表格占位符解析", ph == {"name": "主结果", "caption": "Main results", "note": "† from paper"}, str(ph))
     check("未知表名被找出", rt.unknown_tables("[TABLE: 没有 | caption: x]", {"主结果"}) == ["没有"])

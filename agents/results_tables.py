@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 
 from .number_gate import _csv_cells, results_prefix, is_example_file
 
-_STD_SUFFIX_RE = re.compile(r"^(?P<base>.+?)[\s_\-]*(?:std|stderr|stddev|se|sem)$", re.IGNORECASE)
+_STD_SUFFIX_RE = re.compile(r"^(?:(?P<base>.+?)[\s_\-]+)?(?:std|sd|stderr|stddev|se|sem|standard[ _-]+(?:deviation|error)|标准差|标准误)$", re.IGNORECASE)
 _MAX_INDEX_ROWS = 40          # 数据索引里每张表最多列出的行数(多出的写明省略)
 
 
@@ -42,6 +42,7 @@ class Table:
     flat: list = field(default_factory=list)      # 没有行名的数值(长表/单行)→ [(key, value, raw)]
     collided: bool = False                        # 同一 (行名,列名) 出现多个值(如多 seed 未聚合)
     text_cells: dict = field(default_factory=dict)   # (行名, 列名) → 非数值单元格原文(76.1† / N/A / OOM)
+    dispersion_keys: set = field(default_factory=set)  # 含行号的扁平键不能按末段猜列名
     col_order: list = field(default_factory=list)    # 表头里的列序
 
     @property
@@ -59,20 +60,53 @@ def strip_arrow(col: str) -> tuple[str, str]:
     return c, ""
 
 
+def _is_std_column(col: str) -> bool:
+    """判断列名是否为标准差/标准误列(如 Acc_std, F1-se)。"""
+    return bool(_STD_SUFFIX_RE.match(strip_arrow(col)[0]))
+
+
+def is_sd_column(col: str) -> bool:
+    """作图只取标准差，区分同样在正文隐藏的标准误。"""
+    match = _STD_SUFFIX_RE.fullmatch(strip_arrow(col)[0])
+    return bool(match and re.search(r"(?:std|stddev|sd|standard[ _-]+deviation|标准差)$",
+                                    match[0], re.I))
+
+
 def pair_std_columns(cols: list) -> tuple[list, dict]:
-    """找出 (指标列, 标准差列) 配对。返回 (要显示的列, {指标列: 标准差列})。
-    标准差列的基名与某个指标列的显示名一致(忽略 ↑/↓ 与大小写)才算配对。"""
-    base_by_name = {strip_arrow(c)[0].lower(): c for c in cols}
+    """找出 (指标列, 标准差列) 配对。返回 (不含标准差列的显示列, {指标列: 标准差列})。
+    所有匹配标准差命名规则的列均被隐藏(即使未找到对应均值列), 防止泄漏进数据索引与正文表。"""
+    base_by_name = {strip_arrow(c)[0].lower(): c for c in cols if not _is_std_column(c)}
     pairs: dict = {}
+    hidden: set = set()
     for c in cols:
         m = _STD_SUFFIX_RE.match(strip_arrow(c)[0])
         if not m:
             continue
-        target = base_by_name.get(m.group("base").strip().lower())
+        hidden.add(c)
+        target = base_by_name.get((m.group("base") or "").strip().lower())
         if target and target != c:
             pairs[target] = c
-    hidden = set(pairs.values())
     return [c for c in cols if c not in hidden], pairs
+
+
+def _filter_shown_cols(shown: list[str], selected: list[str] | None) -> list[str]:
+    """按占位符指定的 cols: 过滤显示列(支持完整列名或去 ↑/↓ 基名, 忽略大小写)。"""
+    if selected is None:
+        return shown
+    by_exact = {c.strip().lower(): c for c in shown}
+    by_base = {strip_arrow(c)[0].lower(): c for c in shown}
+    filtered: list[str] = []
+    for item in selected:
+        key = item.strip().lower()
+        base_key = strip_arrow(item)[0].lower()
+        match = by_exact.get(key) or by_base.get(base_key)
+        if not match:
+            raise ValueError(f"无法选取列 {item!r}，可用列为 {', '.join(shown)}")
+        if match not in filtered:
+            filtered.append(match)
+    if not filtered:
+        raise ValueError("cols 需要至少一个正文指标列")
+    return filtered
 
 
 def collect_tables(results_root) -> list[Table]:
@@ -100,6 +134,8 @@ def collect_tables(results_root) -> list[Table]:
                     table.label_header = first[0].strip()
                 for cell in _csv_cells(path, name):
                     c = Cell(cell["key"], cell["value"], cell["raw"])
+                    if _is_std_column(cell["col"]):
+                        table.dispersion_keys.add(c.key)
                     if cell["label"]:
                         if (cell["label"], cell["col"]) in table.cells:
                             table.collided = True        # 不静默取最后一次:整表退化为逐项引用
@@ -115,6 +151,21 @@ def collect_tables(results_root) -> list[Table]:
             except Exception:
                 continue            # 读不了的文件由结果库的 unreadable 报告,这里不重复
     return [tables[n] for n in order]
+
+
+_MEAN_SPREAD_CELL = re.compile(
+    r"(?P<mean>[+-]?[\d,.]+(?:[eE][+-]?\d+)?%?)\s*(?:±|\+/-)\s*"
+    r"[\d,.]+(?:[eE][+-]?\d+)?(?P<unit>%?)(?P<mark>[†‡*]*)"
+)
+
+
+def _main_cell(raw: str) -> str:
+    """部分旧 CSV 把均值与波动写在同一格，正文显示时保留单位与脚注。"""
+    match = _MEAN_SPREAD_CELL.fullmatch(raw)
+    if not match:
+        return raw
+    mean = match["mean"]
+    return mean + (match["unit"] if not mean.endswith("%") else "") + match["mark"]
 
 
 def _collect_text_cells(path: str, table: Table) -> None:
@@ -159,32 +210,32 @@ def render_data_index(tables: list, res_map: dict, settings_path: str = "") -> s
         "",
         "正文里的结果数字只能写成 `{{RES-xxx}}` 占位符(逐字复制下表格子里的编号,单位写在花括号外),",
         "两个结果的差/相对提升写 `{{DIFF:RES-a,RES-b}}`(a−b)/`{{REL:RES-a,RES-b}}`((a−b)/b×100,单位 % 写在花括号外)。",
-        "结果表整张放进正文用 `[TABLE: 表名 | caption: 表题 | note: 表注]`,表里的数字由程序按 CSV 生成,不要自己写。",
+        "结果表整张放进正文用 `[TABLE: 表名 | cols: 核心列1, 核心列2 | caption: 表题 | note: 极简表注]`,",
+        "表里的数字由程序按 CSV 生成,不要自己写。表格与正文仅报告均值/主指标。",
     ]
     if settings_path:
-        lines.append(f"实验设置(数据集/硬件/超参/seed 数)在 `{settings_path}`,实验类章节整份读取。")
+        lines.append(f"实验设置(数据集/硬件/超参/seed 数)在 `{settings_path}`,实验类章节仅提取高层次核心协议。")
     lines.append("")
     if not tables:
         lines.append("(inbox/results/ 里没有结果表)")
         return "\n".join(lines) + "\n"
     for t in tables:
         if t.is_grid:
-            shown_cols, pairs = pair_std_columns(t.cols)
+            shown_cols, _pairs = pair_std_columns(t.cols)
             lines.append(f"## {t.name}  (`{t.file}` · {len(t.labels)} 行 × {len(shown_cols)} 列)")
             lines.append("")
             lines.append("列方向: " + "; ".join(
-                f"{strip_arrow(c)[0]}{strip_arrow(c)[1] or '(无方向)'}" for c in shown_cols)
-                + ("。X_std 列是 X 的标准差,表格里自动拼成 ‘均值 ± 标准差’。" if pairs else ""))
+                f"{strip_arrow(c)[0]}{strip_arrow(c)[1] or '(无方向)'}" for c in shown_cols))
             lines.append("")
-            head = [t.label_header or "名称"] + [c for c in t.cols]
+            head = [t.label_header or "名称"] + list(shown_cols)
             lines.append("| " + " | ".join(head) + " |")
             lines.append("|" + "|".join(["---"] * len(head)) + "|")
             for label in t.labels[:_MAX_INDEX_ROWS]:
                 row = [label]
-                for c in t.cols:
+                for c in shown_cols:
                     cell = t.cells.get((label, c))
                     if cell is None:
-                        row.append(t.text_cells.get((label, c), ""))
+                        row.append(_main_cell(t.text_cells.get((label, c), "")))
                     else:
                         rid = rid_by_key.get(cell.key, "?")
                         row.append(f"{{{{{rid}}}}}={cell.raw}")
@@ -196,6 +247,8 @@ def render_data_index(tables: list, res_map: dict, settings_path: str = "") -> s
             lines.append(f"## {t.name}  (`{t.file}` · 无行名的数值)")
             lines.append("")
             for key, _value, raw in t.flat[:_MAX_INDEX_ROWS]:
+                if key in t.dispersion_keys:
+                    continue
                 rid = rid_by_key.get(key, "?")
                 lines.append(f"- {key}: {{{{{rid}}}}}={raw}")
             lines.append("")
@@ -213,12 +266,15 @@ def _best_labels(table: Table, col: str, direction: str) -> set:
     return {l for l, v in vals if v == best}
 
 
-def table_matrix(table: Table) -> tuple[list, list, list]:
-    """渲染用的中间表示:(表头显示名, 对齐方向, 行) 。行是 [(是否加粗, 文本)] 列表。
-
-    均值/标准差列合并为 `均值 ± 标准差`(原文拼接,不重新格式化);每列按 ↑/↓ 加粗最优值。
-    """
+def table_matrix(
+    table: Table,
+    cols: list[str] | None = None,
+    include_std: bool = False,
+) -> tuple[list, list]:
+    """渲染用的中间表示:(表头显示名, 行)。行是 [(是否加粗, 文本)] 列表。
+    默认 include_std=False: 不拼接标准差(± std), 仅渲染均值/主指标; 每列按 ↑/↓ 加粗最优值。"""
     shown, pairs = pair_std_columns(table.cols)
+    shown = _filter_shown_cols(shown, cols)
     header = [table.label_header or "Method"]
     for c in shown:
         name, arrow = strip_arrow(c)
@@ -230,19 +286,28 @@ def table_matrix(table: Table) -> tuple[list, list, list]:
         for c in shown:
             cell = table.cells.get((label, c))
             if cell is None:
-                row.append((False, table.text_cells.get((label, c), "—")))
+                raw = table.text_cells.get((label, c), "—")
+                row.append((False, raw if include_std else _main_cell(raw)))
                 continue
             text = cell.raw
-            std = table.cells.get((label, pairs[c])) if c in pairs else None
-            if std is not None:
-                text = f"{text} ± {std.raw}"
+            if include_std and c in pairs:
+                std = table.cells.get((label, pairs[c]))
+                if std is not None:
+                    text = f"{text} ± {std.raw}"
             row.append((label in best[c], text))
         rows.append(row)
     return header, rows
 
 
-def render_table_markdown(table: Table, caption: str = "", note: str = "", number: int = 0) -> str:
-    header, rows = table_matrix(table)
+def render_table_markdown(
+    table: Table,
+    caption: str = "",
+    note: str = "",
+    number: int = 0,
+    cols: list[str] | None = None,
+    include_std: bool = False,
+) -> str:
+    header, rows = table_matrix(table, cols=cols, include_std=include_std)
     out = []
     if caption:
         out.append(f"**Table {number or ''}. {caption}**".replace("Table . ", "Table. "))
@@ -283,23 +348,35 @@ def tex_escape_keep_cite(text: str) -> str:
     return "".join(pieces)
 
 
-def render_table_latex(table: Table, caption: str = "", note: str = "", label: str = "") -> str:
-    header, rows = table_matrix(table)
+def render_table_latex(
+    table: Table,
+    caption: str = "",
+    note: str = "",
+    label: str = "",
+    cols: list[str] | None = None,
+    include_std: bool = False,
+) -> str:
+    header, rows = table_matrix(table, cols=cols, include_std=include_std)
     colspec = "l" + "r" * (len(header) - 1)
-    out = [r"\begin{table}[t]", r"\centering"]
+    long_labels = any(len(row[0][1]) > 28 for row in rows)
+    if long_labels:
+        colspec = r">{\raggedright\arraybackslash}p{0.28\linewidth}" + colspec[1:]
+    env = "table*" if len(header) >= 4 or long_labels else "table"
+    out = [rf"\begin{{{env}}}[t]", r"\centering"]
     if caption:
         out.append(rf"\caption{{{tex_escape_keep_cite(caption)}}}")
     if label:
         out.append(rf"\label{{{label}}}")
-    out += [rf"\begin{{tabular}}{{{colspec}}}", r"\toprule",
+    out += [r"\setbox0=\hbox{", rf"\begin{{tabular}}{{{colspec}}}", r"\toprule",
             " & ".join(tex_escape(h) for h in header) + r" \\", r"\midrule"]
     for row in rows:
         cells = [rf"\textbf{{{tex_escape(t)}}}" if bold else tex_escape(t) for bold, t in row]
         out.append(" & ".join(cells) + r" \\")
-    out += [r"\bottomrule", r"\end{tabular}"]
+    out += [r"\bottomrule", r"\end{tabular}}",
+            r"\ifdim\wd0>\linewidth\resizebox{\linewidth}{!}{\box0}\else\box0\fi"]
     if note:
         out.append(rf"\par\vspace{{2pt}}{{\footnotesize {tex_escape_keep_cite(note)}}}")
-    out.append(r"\end{table}")
+    out.append(rf"\end{{{env}}}")
     return "\n".join(out)
 
 
@@ -308,13 +385,18 @@ TABLE_PLACEHOLDER_RE = re.compile(r"^[ \t]*\[TABLE:\s*(?P<body>[^\]\n]+)\][ \t]*
 
 
 def parse_table_placeholder(body: str) -> dict:
-    """`表名 | caption: ... | note: ...` → {name, caption, note}。"""
+    """`表名 | cols: 列1, 列2 | caption: ... | note: ...` → {name, cols, caption, note, label}。"""
     parts = [p.strip() for p in body.split("|")]
-    out = {"name": parts[0] if parts else "", "caption": "", "note": ""}
+    out: dict = {"name": parts[0] if parts else "", "caption": "", "note": ""}
     for part in parts[1:]:
-        m = re.match(r"(caption|note|label)\s*[:：]\s*(.*)$", part, re.IGNORECASE | re.DOTALL)
-        if m:
-            out[m.group(1).lower()] = m.group(2).strip()
+        m = re.match(r"(caption|note|label|cols)\s*[:：]\s*(.*)$", part, re.IGNORECASE | re.DOTALL)
+        if not m:
+            continue
+        key, val = m.group(1).lower(), m.group(2).strip()
+        if key == "cols":
+            out["cols"] = [c.strip() for c in re.split(r"[,，;；]", val) if c.strip()]
+        else:
+            out[key] = val
     return out
 
 
@@ -324,3 +406,43 @@ def find_table_placeholders(text: str) -> list[dict]:
 
 def unknown_tables(text: str, known: set) -> list[str]:
     return sorted({p["name"] for p in find_table_placeholders(text) if p["name"] not in known})
+
+
+_RESULT_SPREAD_RE = re.compile(
+    r"(?:\d|\}\})\s*\$?\s*(?:±|\\pm\b|\+/-)\s*\$?\s*(?:\d|\{\{)|"
+    r"\b(?:standard (?:deviations?|errors?)|std(?:dev)?|stderr)\b|标准差|标准误",
+    re.I,
+)
+
+
+def table_style_warnings(text: str, tables_by_name: dict, *, result_prose: bool = True) -> list[str]:
+    """检查正文表的实际选列、表注及结果表述。数学符号本身不是统计量。"""
+    warnings = []
+    for p in find_table_placeholders(text):
+        if len(p["note"].split()) > 30:
+            warnings.append(f"Table {p['name']}: note exceeds 30 words.")
+        table = tables_by_name.get(p["name"])
+        if table and table.is_grid:
+            try:
+                shown = _filter_shown_cols(pair_std_columns(table.cols)[0], p.get("cols"))
+            except ValueError as exc:
+                warnings.append(f"Table {p['name']}: {exc}")
+            else:
+                if len(shown) > 6:
+                    warnings.append(f"Table {p['name']}: {len(shown)} columns. Select up to six with cols:.")
+    for line in text.splitlines():
+        # 标识符与来源只用于程序定位，检查的是读者看到的文字。
+        if line.startswith(("Data:", "Source:", "Supports:", "Type:")):
+            continue
+        if line.lstrip().startswith("[TABLE:"):
+            fields = find_table_placeholders(line)
+            if fields:
+                line = fields[0]["caption"] + " " + fields[0]["note"]
+                check = True
+            else:
+                check = result_prose
+        else:
+            check = result_prose or line.lstrip().startswith(("Note.", "[FIGURE", "|"))
+        if check and _RESULT_SPREAD_RE.search(line):
+            warnings.append(f"Check experimental dispersion in manuscript: {line.strip()[:140]}")
+    return warnings

@@ -8,7 +8,7 @@
 - 图表清单.md               每张图的编号、图题、数据来源和**绘图提示词**
 - 数字溯源表.md             正文每个数字 → 值 → CSV 文件:行
 
-LaTeX 不在本系统编译;md→tex 是一个保守的转换器(标题/段落/列表/表格/公式/引用),
+CLI 在组装后编译 LaTeX;md→tex 是一个保守的转换器(标题/段落/列表/表格/公式/引用),
 转换后会做静态检查(括号配平、引用 key 都在 refs.bib 里、标签不重复)。
 """
 
@@ -141,6 +141,11 @@ def load_chapters(chapters_meta: list[dict], workspace: Path) -> list[Chapter]:
                      todo=_read(folder / "todo.md"),
                      sections=[str(x) for x in meta.get("sections", [])])
         ch.en, ch.zh = unify_inline_math(ch.en), unify_inline_math(ch.zh)
+        if ch.ctype in {"intro", "abstract", "conclusion"}:
+            # 已审大纲的小节保留为写作要点，交付时按连续正文排版。
+            for lang in ("en", "zh"):
+                body, _ = normalize_headings(getattr(ch, lang), ch.title, ch.sections)
+                setattr(ch, lang, re.sub(r"(?m)^\x00H\d+\x00.*$\n?", "", body))
         if ch.ctype == "abstract":
             ch.en, ch.zh = collapse_abstract(ch.en), collapse_abstract(ch.zh)
         vtext = _read(folder / "verification.md")
@@ -190,6 +195,27 @@ def parse_figure_blocks(text: str) -> list[dict]:
                        "fields": fields})
         i = j
     return blocks
+
+
+def fill_figure_fields(text: str, settings: str) -> str:
+    """仅用同一图标识下作者明确填写的字段补缺，按行倒序替换以保持块的位置。"""
+    lines = text.splitlines()
+    sources = {}
+    for section in re.split(r"(?m)^#{1,6}\s+", settings):
+        match = re.search(r"(?:图标识|Figure ID)\s*[:：]?\s*\x60([\w-]+)\x60", section, re.I)
+        if match:
+            fields = re.findall(r"(?im)^-\s*(Note|Source|Data|Supports|Type)(?:（[^）]*）)?\s*[:：]\s*(.+)$", section)
+            sources[match[1]] = {k.capitalize(): v.strip() for k, v in fields}
+    for block in reversed(parse_figure_blocks(text)):
+        fields = block["fields"]
+        changed = False
+        for key, value in sources.get(block["id"], {}).items():
+            if not fields.get(key) or _MARKER_RE.fullmatch(fields[key]):
+                fields[key] = value
+                changed = True
+        if changed:
+            lines[block["start"]+1:block["end"]] = [f"{k}: {v}" for k, v in fields.items()]
+    return "\n".join(lines)
 
 
 def _slug(text: str) -> str:
@@ -309,6 +335,9 @@ def number_items(chapters: list[Chapter]) -> Numbering:
             n_chapter += 1
             num.chapter_labels[ch.folder] = str(n_chapter)
             num.sections.setdefault(_norm_title(ch.title), str(n_chapter))
+            if ch.ctype in {"intro", "conclusion"}:
+                for title in ch.sections:
+                    num.sections.setdefault(_norm_title(title), str(n_chapter))
             _, heads = normalize_headings(ch.en, ch.title, ch.sections)
             n_sub = 0
             for rel, title in heads:
@@ -351,7 +380,10 @@ def _expand_tables_md(text: str, tables: dict, num: Numbering) -> str:
         t = by_name.get(p["name"])
         if t is None or not t.is_grid:
             return f"**[TABLE `{p['name']}` 在结果目录里不存在 — 见待补清单]**"
-        return rt.render_table_markdown(t, p["caption"], p["note"], num.tables.get(p["name"], 0))
+        try:
+            return rt.render_table_markdown(t, p["caption"], p["note"], num.tables.get(p["name"], 0), cols=p.get("cols"))
+        except ValueError as exc:
+            return f"**[TABLE {p['name']}: {exc}]**"
     return rt.TABLE_PLACEHOLDER_RE.sub(sub, text)
 
 
@@ -419,7 +451,7 @@ _SAFE_ENVS = {"equation", "equation*", "align", "align*", "gather", "gather*", "
               "split", "cases", "aligned", "array", "matrix", "pmatrix", "bmatrix"}
 _TEX_SPECIALS = {"&": r"\&", "%": r"\%", "_": r"\_", "#": r"\#", "{": r"\{", "}": r"\}",
                  "~": r"\textasciitilde{}", "^": r"\textasciicircum{}", "$": r"\$"}
-_UNICODE_TEX = {"≥": r"$\geq$", "≤": r"$\leq$", "×": r"$\times$", "±": r"$\pm$", "→": r"$\rightarrow$",
+_UNICODE_TEX = {"α": r"$\alpha$", "λ": r"$\lambda$", "ŷ": r"$\hat{y}$", "≥": r"$\geq$", "≤": r"$\leq$", "×": r"$\times$", "±": r"$\pm$", "→": r"$\rightarrow$",
                 "←": r"$\leftarrow$", "↑": r"$\uparrow$", "↓": r"$\downarrow$", "≈": r"$\approx$",
                 "≠": r"$\neq$", "∈": r"$\in$", "∞": r"$\infty$", "−": "-", "–": "--", "—": "---",
                 "“": "``", "”": "''", "‘": "`", "’": "'", "…": r"\ldots{}", "†": r"\dag{}"}
@@ -473,12 +505,29 @@ def _style(escaped: str) -> str:
 
 
 def _md_table_to_tex(rows: list[list[str]], num: Numbering) -> str:
-    header, body = rows[0], rows[1:]
-    out = [r"\begin{table}[t]", r"\centering", rf"\begin{{tabular}}{{{'l' + 'r' * (len(header) - 1)}}}",
-           r"\toprule", " & ".join(_inline_to_tex(c, num) for c in header) + r" \\", r"\midrule"]
-    for r in body:
-        out.append(" & ".join(_inline_to_tex(c, num) for c in r) + r" \\")
-    out += [r"\bottomrule", r"\end{tabular}", r"\end{table}"]
+    columns = max(map(len, rows))
+    cells = [row + [""] * (columns - len(row)) for row in rows]
+    wide = columns >= 4 or max(sum(map(len, row)) for row in cells) >= 65
+    env = "table*" if wide else "table"
+    widths = [max(map(len, column)) for column in zip(*cells)]
+    wrapped = any(w > 22 for w in widths)
+    colspec = "".join(r">{\raggedright\arraybackslash}X" if w > 22 else "l" for w in widths)
+    out = [rf"\begin{{{env}}}[t]", r"\centering", r"\small"]
+    if wrapped:
+        out.append(rf"\begin{{tabularx}}{{\linewidth}}{{{colspec}}}")
+    else:
+        out.extend([r"\setbox0=\hbox{", rf"\begin{{tabular}}{{{colspec}}}"])
+    out.append(r"\toprule")
+    for i, row in enumerate(cells):
+        out.append(" & ".join(_inline_to_tex(cell, num) for cell in row) + r" \\")
+        if i == 0:
+            out.append(r"\midrule")
+    out.append(r"\bottomrule")
+    if wrapped:
+        out.append(r"\end{tabularx}")
+    else:
+        out.extend([r"\end{tabular}}", r"\ifdim\wd0>\linewidth\resizebox{\linewidth}{!}{\box0}\else\box0\fi"])
+    out.append(rf"\end{{{env}}}")
     return "\n".join(out)
 
 
@@ -491,7 +540,7 @@ def _figure_tex(block: dict, number: int) -> str:
            r"{\fbox{\parbox[c][3cm][c]{0.8\linewidth}{\centering Figure " + str(number) +
            r" --- to be supplied\\ (see the figure list)}}}}")
     return "\n".join([r"\begin{figure}[t]", r"\centering", box,
-                      rf"\caption{{{_escape_plain(caption)}}}", rf"\label{{fig:{_slug(block['id'])}}}",
+                      rf"\caption{{{_style(_escape_plain(caption))}}}", rf"\label{{fig:{_slug(block['id'])}}}",
                       r"\end{figure}"])
 
 
@@ -504,7 +553,19 @@ def _guard_block(chunk: list[str], env: str | None = None) -> list[str]:
         return [r"\todo{unsafe LaTeX block shown verbatim}", r"\begin{verbatim}", *safe, r"\end{verbatim}"]
     if chunk and chunk[0] == r"\[" and chunk[-1] == r"\]":
         # 独立公式由 LaTeX 自动编号，显式指定的数学环境照原样输出。
-        return [r"\begin{equation}", *chunk[1:-1], r"\end{equation}"]
+        body = chunk[1:-1]
+        # 作者用独立的 \qquad 分隔两个完整定义时可安全折行，保留同一公式编号。
+        left, separator, right = "\n".join(body).partition("\n" + r"\qquad" + "\n")
+        if (separator and left.rstrip().endswith(",") and "=" in right
+                and left.count("{") == left.count("}")
+                and left.count(r"\left") == left.count(r"\right") and r"\begin" not in left):
+            body = [r"\begin{gathered}", left + r" \\", right, r"\end{gathered}"]
+        elif len(body) == 1 and re.fullmatch(r"[^%&#$]+", body[0]) and not re.search(
+                r"\\(?:begin|end|label|tag|notag|nonumber)\b|\\\\", body[0]):
+            # 单行公式按实际宽度缩小，公式编号仍由外层 equation 生成。
+            body = [r"\setbox0=\hbox{$\displaystyle " + body[0] + r"$}",
+                    r"\ifdim\wd0>\columnwidth\resizebox{\columnwidth}{!}{\box0}\else\box0\fi"]
+        return [r"\begin{equation}", *body, r"\end{equation}"]
     return list(chunk)
 
 
@@ -553,7 +614,10 @@ def md_to_tex(md: str, num: Numbering, tables: dict, *, level_offset: int = 0) -
             p = rt.parse_table_placeholder(tm.group("body"))
             t = by_name.get(p["name"])
             if t is not None and t.is_grid:
-                out.append(rt.render_table_latex(t, p["caption"], p["note"], f"tab:{_slug(p['name'])}"))
+                try:
+                    out.append(rt.render_table_latex(t, p["caption"], p["note"], f"tab:{_slug(p['name'])}", cols=p.get("cols")))
+                except ValueError as exc:
+                    out.append(rf"\todo{{{_escape_plain(str(exc))}}}")
             else:
                 out.append(rf"\todo{{table {_escape_plain(p['name'])} not found}}")
             out.append("")
@@ -700,12 +764,29 @@ def build_latex(chapters: list[Chapter], num: Numbering, tables: dict, out_dir: 
         tpl = template_main.read_text(encoding="utf-8", errors="replace")
     else:
         tpl = _BUILTIN_TEMPLATE
+    # 在组装副本上切换期刊模式，保留模板中的作者、摘要及参考文献设置。
+    def column_options(match):
+        opts = [o.strip() for o in (match[1] or "").split(",") if o.strip()]
+        drop = {"onecolumn", "twocolumn"}
+        if match[2] == "elsarticle":
+            drop.update({"preprint", "review", "final", "1p", "3p", "5p", "10pt", "11pt", "12pt"})
+        opts = [o for o in opts if o not in drop]
+        if match[2] == "elsarticle":
+            opts.extend(["final", "5p"])
+        opts.append("twocolumn")
+        return rf"\documentclass[{','.join(opts)}]{{{match[2]}}}"
+
+    tpl = re.sub(r"(?m)^[ \t]*\\documentclass\s*(?:\[([^\]]*)\]\s*)?\{([^}]+)\}",
+                 column_options, tpl, count=1)
+    # 某些类会在标题页切回单栏，正文开始前按实际状态校正。
+    body_columns = r"\makeatletter\if@twocolumn\else\twocolumn\fi\makeatother"
     if r"\newcommand{\todo}" not in tpl and r"\providecommand{\todo}" not in tpl:
         tpl = tpl.replace(r"\begin{document}", "\\providecommand{\\todo}[1]{\\textbf{[#1]}}\n\\begin{document}", 1)
     tpl = (tpl.replace("%TITLE%", _escape_plain(title))
               .replace("%AUTHORS%", _escape_plain(", ".join(authors) or "Anonymous"))
               .replace("%ABSTRACT%", ""))
-    body = "\n".join(inputs)
+    tpl = tpl.replace(r"\begin{document}", r"\usepackage{tabularx,booktabs,graphicx,placeins}" + "\n" + r"\begin{document}", 1)
+    body = body_columns + "\n" + "\n".join(line + "\n" + r"\FloatBarrier" for line in inputs)
     block = (abstract_tex + "\n" if abstract_tex else "") + body
     if "% PAPER_BODY" in tpl:
         tpl = tpl.replace("% PAPER_BODY", block, 1)
@@ -821,6 +902,7 @@ def build_todo_report(chapters: list[Chapter], extra_notes: list[str], num: Numb
         for kind, ctx in collect_markers(c.en):
             desc = dict(MARKERS).get(kind, kind)
             items.append(f"[{kind}] {desc}:…{ctx}…")
+        items.extend(rt.table_style_warnings(c.en, tables, result_prose=False))
         for name in rt.unknown_tables(c.en, known_tables):
             items.append(f"[TABLE] 表 `{name}` 在结果目录里不存在")
         for m in _REF_RE.finditer(c.en):
@@ -883,6 +965,13 @@ def _prompt_for_figure(fig: Figure, tables: dict) -> str:
             if t.is_grid and (t.name in f["Data"]):
                 lines.append(f"数据(取自 {t.file},原样):")
                 lines.append(rt.render_table_markdown(t))
+                for col in t.cols:
+                    if not rt.is_sd_column(col):
+                        continue
+                    values = [f"{label}={t.cells[label, col].raw}" for label in t.labels
+                              if (label, col) in t.cells]
+                    if values:
+                        lines.append(f"仅供图内绘制标准差（{col}）：{', '.join(values)}")
     if f.get("Source"):
         lines.append(f"设计依据:{f['Source']}(见 idea.md 对应小节)")
     if f.get("Supports"):

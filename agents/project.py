@@ -165,6 +165,35 @@ def model_config_errors() -> list[str]:
     return errors
 
 
+def macro_f1_warnings(settings, tables):
+    """仅在作者明确采用全类别分母、缺席记零，且给出单次测试覆盖率时核对主结果。"""
+    if not re.search(r"Macro-F1[^\n]*全部类别为分母[^\n]*没有样本的类记\s*0", settings, re.I):
+        return []
+    test_counts = re.search(r"测试集中出现的类别数[：:]([^\n]+)", settings)
+    counts_table = re.search(r"\|\s*数据集\s*\|\s*类别数\s*\|[^\n]*\n((?:\|[^\n]*\n)+)", settings)
+    if not test_counts or not counts_table:
+        return []
+    totals = {name.strip(): int(count.replace(",", "")) for name, count in
+              re.findall(r"(?m)^\|\s*([^|\n]+?)\s*\|\s*([\d,]+)\s*\|", counts_table[1])}
+    main_files = set(re.findall(r"(?m)^\|\s*\x60([^\x60]+\.csv)\x60\s*\|\s*表[：:]主结果", settings))
+    warnings = []
+    for dataset, total in totals.items():
+        count = re.search(r"(?:^|[，；;])\s*" + re.escape(dataset) + r"\s+([\d,]+)", test_counts[1])
+        if not count or total <= 0:
+            continue
+        present = int(count[1].replace(",", ""))
+        for table in tables:
+            if table.file not in main_files:
+                continue
+            values = [cell.value for (_, col), cell in table.cells.items()
+                      if col.rstrip("↑↓").strip().casefold() == f"{dataset} Macro-F1".casefold()]
+            if values and 0 <= max(values) <= 1 and max(values) > present / total + 0.00005:
+                warnings.append(f"{dataset} Macro-F1：按实验设置的全类别分母和缺席记零规则，上限为 "
+                                f"{present}/{total} = {present / total:.4f}，{table.file} 报告值最高 "
+                                f"{max(values):.4f}。请作者核对评测实现的类别集合、缺席类处理和结果尺度。")
+    return warnings
+
+
 def check_materials(need_models: bool = False) -> Check:
     import config
     from .content_source import idea_is_skeleton, load_idea_document
@@ -216,7 +245,7 @@ def check_materials(need_models: bool = False) -> Check:
     for t in tables:
         if t.collided:
             chk.warnings.append(f"结果表 `{t.name}` 里同一个 (行名, 列名) 有多个值(多 seed 未聚合?),"
-                                f"不能用 [TABLE] 整表渲染,只能逐个引用数字;要整表渲染请先聚合成均值 ± 标准差")
+                                f"不能用 [TABLE] 整表渲染,只能逐个引用数字;要整表渲染请先聚合成主指标，绘图用标准差另存为 X_std 列")
         elif not t.is_grid:
             chk.warnings.append(f"结果表 `{t.name}` 第一列不是方法名(或没有行名),"
                                 f"不能用 [TABLE] 整表渲染,只能逐个引用数字")
@@ -234,6 +263,9 @@ def check_materials(need_models: bool = False) -> Check:
         chk.warnings.append(f"缺少 inbox/results/{config.SETTINGS_FILENAME}:实验设置章只能标 [UNKNOWN]")
     elif _settings_unfilled(settings.read_text(encoding="utf-8", errors="replace")):
         chk.warnings.append(f"inbox/results/{config.SETTINGS_FILENAME} 还是模板,没填内容")
+
+    if settings.is_file():
+        chk.warnings.extend(macro_f1_warnings(settings.read_text(encoding="utf-8"), tables))
 
     # 文献室
     lib = scan_library(config.REFERENCES_ROOT, config.REFS_BIB_PATH)
@@ -325,6 +357,11 @@ def assemble_output(extra_notes: list[str] | None = None) -> dict:
              "sections": [x.get("title", "") for x in c.get("sections", [])]} for c in outline]
     chapters = A.load_chapters(meta, Path(config.WORKSPACE_ROOT))
     tables = {t.name: t for t in collect_tables(config.DATA_ROOT)}
+    settings_path = Path(config.DATA_ROOT) / config.SETTINGS_FILENAME
+    settings = settings_path.read_text(encoding="utf-8") if settings_path.is_file() else ""
+    for chapter in chapters:
+        chapter.en = A.fill_figure_fields(chapter.en, settings)
+        chapter.zh = A.fill_figure_fields(chapter.zh, settings)
     num = A.number_items(chapters)
 
     paper_toml = {}
@@ -344,6 +381,7 @@ def assemble_output(extra_notes: list[str] | None = None) -> dict:
                           Path(config.REFS_BIB_PATH))
 
     notes = list(extra_notes or [])
+    notes.extend(macro_f1_warnings(settings, tables.values()))
     from .outline import page_budget
     budget = page_budget()
     if budget:

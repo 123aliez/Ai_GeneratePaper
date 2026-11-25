@@ -293,13 +293,13 @@ def test_short_chapter_single_pass():
     Path(folder, "input.md").write_text("source material\n", encoding="utf-8")
     agent, _ = run_pipeline_in_outline(folder, make_data(None), str(outline))
     check("short chapter runs (not blocked)", len(agent.prompts) > 0)
-    # 起草段恰好 1 个（Write only Part 1），目标字数 ~200（0.85*200=170 ~ 1.2*200+30=270）
+    # 起草段恰好 1 个（Write only Part 1），目标字数 ~200（0.85*200=170 ~ 1.05*200=210）
     part_prompts = [p for p in agent.prompts if "Write only Part" in p]
     check("short chapter drafts in a single part", len(part_prompts) == 1,
           str([p[:50] for p in agent.prompts if "Part" in p]))
     if part_prompts:
         check("short chapter target length ≈ 200 (not 700)",
-              "170" in part_prompts[0] and "270" in part_prompts[0], part_prompts[0][:200])
+              "170-210 words" in part_prompts[0], part_prompts[0][:200])
 
 
 # ── 6. a whole-paper brief routes each draft part separately ─────────────

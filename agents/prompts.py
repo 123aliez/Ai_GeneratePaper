@@ -35,14 +35,26 @@ Write a research argument for a reader deciding what is new, how it works, and w
 evidence establishes. Source documents are a pool of evidence, not a coverage checklist.
 - Select content by its role in that argument. Preserve the author's contributions and
   approved outline; fidelity concerns scientific meaning, not reproducing every source detail.
-- Main text contains the core mechanism, necessary definitions and assumptions, decisive
-  comparisons, and conditions needed to interpret them. Keep metric denominators, data
-  splits, comparison fairness, uncertainty and material exceptions when they affect a claim.
-  Never obtain a cleaner narrative by hiding contradictory or negative evidence.
-- Routine implementation inventories, exhaustive configurations and secondary derivations
-  belong in supplementary material only if that material is actually supplied or requested.
-  Otherwise record useful deferred details in the plan/todo, without creating an appendix,
-  promising one, or removing a detail essential to understanding or evaluating the work.
+- Main text contains the core mechanism, necessary non-standard definitions, decisive
+  comparisons on primary metrics, and high-level protocol conditions including splits and metric denominators. Keep material
+  counterevidence and adverse results; never obtain a cleaner narrative by hiding
+  contradictory evidence.
+- Do NOT lecture on standard evaluation metrics (e.g., Accuracy, Macro-F1, F1) or devote a
+  standalone section/subsection to metrics. Do NOT include step-by-step experimental logs,
+  exhaustive hyperparameter search grids, tie-breaking rules, or per-family multiple-testing
+  enumerations in main text. Do NOT report or mention standard deviations (std / standard
+  error / ±) in tables, captions, notes, or body prose—report primary values only. Authors may show measured dispersion inside result plots. Preserve mathematical definitions used by the method.
+- Do NOT dump every column of a wide CSV into a main-text table: use `cols:` in
+  `[TABLE: ...]` to retain only primary metrics (typically 3-6 metric columns). Keep table
+  notes strictly to <= 2 short lines (<= 30 words) for formatting/symbol conventions only;
+  place all variant definitions, comparison conventions, and data explanations directly in
+  the body prose.
+- Routine implementation inventories, exhaustive configurations, and secondary metrics should
+  be omitted from main text (and noted in todo.md if needed for optional supplementary
+  material or code release) rather than crammed into main prose or table notes. Do not invent
+  or promise an appendix if none is supplied.
+
+
 - Evidence provenance, run identifiers, file paths, validation steps and issue resolution
   belong in internal artifacts. In prose name the scientific method, dataset and protocol;
   RES placeholders and references provide traceability without narrating the audit trail.
@@ -51,8 +63,8 @@ evidence establishes. Source documents are a pool of evidence, not a coverage ch
 - Explain a definition or protocol once in its owner section. Discuss a table's finding and
   material exceptions, not each cell. Discussion synthesizes already established findings;
   it need not repeat a numerical proof for every sentence. Conclusion states the takeaway.
-- Word budgets allocate space; they are not quotas to fill. A complete, shorter argument is
-  preferable to repetition. Keep author-mandated content and venue length requirements.
+- Aim for 85%-105% of the approved section budgets in English prose. Develop the reasoning behind
+  equations, design choices, empirical differences and exceptions. Qualify untested explanations. Keep author-mandated content and venue length requirements.
 - Assess whole chapters before polishing sentences: identify the takeaway, retain the
   evidence needed to establish it, and delete or merge passages that add no distinct role.
   Do not force every paragraph into the same claim/evidence/explanation/link template.
@@ -250,6 +262,18 @@ unless it blocks understanding.
 </checklist>
 
 <issue_classification>
+- The following are MUST FIX:
+  (1) reporting or mentioning standard deviations / standard errors / `±` in tables, notes,
+      generated captions, or result prose (delete them; NEVER ask the drafter to add std, variance, or error bars);
+  (2) dedicating a standalone section/subsection or multi-paragraph tutorial to standard
+      metrics, or dumping step-by-step experimental logs / exhaustive hyperparameter search
+      grids / fallback rules / per-family statistical enumerations into main text;
+  (3) table notes exceeding ~30 words or containing variant definitions, protocol explanations,
+      or result commentary that belong in body prose;
+  (4) main-text tables rendering > 6 metric columns or redundant columns without using `cols:`;
+  (5) Introduction split beyond the approved outline into 1.1/1.2 subheadings or padded with redundant contribution
+      restatements, or Related Work written as paper-by-paper summaries exceeding 2 sentences
+      per paper with repeated method pitches at the end of every subsection.
 - MUST FIX: unsupported or overclaimed statements, missing critical content, logical gaps,
   wrong scope, fabricated references or numbers.
 - Repeated defensive disclaimers and inventories of unperformed experiments are SHOULD FIX:
@@ -419,8 +443,8 @@ The plan contains:
   definition or protocol one owner; do not add prose simply to cover a source document;
 - for each Python-fixed part (do not move sections between parts): target claims (each with
   the evidence it rests on), required reference keys, forbidden overlap with the other parts,
-  the length of the part (follows its material: plan only what the evidence supports, as
-  concisely as possible; brief.md's word figure is a rough reference, not a quota), output file.
+  the length of the part (plan for 85%-105% of the budget in brief.md, assigning distinct
+  evidence-backed questions, comparisons or mechanisms to its sections), output file.
   Name for every recurring fact or definition the one part that owns it; the other parts get
   a "do not restate" line. Plan no inventory of what the work did not do. Keep essential
   claim qualifications local and broader limitations in the outline's designated section.
@@ -445,9 +469,12 @@ verification. Read the whole draft and review, including SHOULD FIX items. Ident
 central takeaway and each paragraph's role. Delete or merge redundant explanations,
 audit narration, routine inventories and prose that merely recites tables; reorganize
 within the approved headings when needed to make the argument clear. Keep useful text
-already serving the argument. Do not force a shorter length or fill a word quota.
+already serving the argument. Preserve substantive reasoning and aim for 85%-105% of the planned English word count. Restore missing links using available evidence.
 Preserve the author's contributions, necessary definitions, metric denominators, protocol
 conditions, uncertainty, material counterevidence and essential reproducibility details.
+Remove experimental standard deviation / `±` descriptions, exhaustive experimental process logs,
+standard-metric tutorials, redundant table columns (via `cols:`), and bloated table notes
+(moving all explanations directly into body prose).
 Use only existing sources. Keep retained RES/DIFF/REL placeholders, citations, table/figure
 IDs and gap markers valid and associated with the same facts; remove one only with a
 genuinely redundant passage whose evidence or unresolved gap remains represented where

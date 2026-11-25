@@ -137,7 +137,6 @@ type: abstract
 
 type: intro
 
-### 2.1 背景与问题
 - 领域现状与现有方法的不足
 
 ## 3. 谱域重标定
@@ -193,7 +192,7 @@ def test_structural_tampering_is_caught():
     check("改 type 被拦", any("type 被改" in p for p in retyped), str(retyped))
 
     dropped = validate_expansion(original, _expanded(
-        {"## 2. Introduction\n\ntype: intro\n\n### 2.1 背景与问题\n"
+        {"## 2. Introduction\n\ntype: intro\n\n"
          "- 领域现状与现有方法的不足\n\n": ""}))
     check("丢章被拦", any("丢了" in p for p in dropped), str(dropped))
     check("丢章同时报出章节数变化",
@@ -226,7 +225,6 @@ type: abstract
 
 type: intro
 
-### 2.1 背景与问题
 - 领域现状与现有方法的不足
 
 ## 3. 谱域重标定

@@ -64,7 +64,7 @@ DEFAULT_SECTION_WORDS = 400
 # 这类章在 outline 里直接把要点挂在 ## 章标题下，parse_outline 会合成一个 synthetic 小节
 # 让它走既有 section 机制（单段起草、按 type 默认字数）。家园放在 outline.py：render_brief /
 # outline_banner 要用它做文案感知，而 outline.py 不能 import outline_expand.py（循环导入）。
-SHORT_CHAPTER_TYPES = frozenset({"abstract", "conclusion", "limitations", "discussion"})
+SHORT_CHAPTER_TYPES = frozenset({"abstract", "intro", "conclusion", "limitations", "discussion"})
 
 BRIEF_FINGERPRINT_PREFIX = "<!-- outline-fingerprint:"
 _BRIEF_FINGERPRINT_RE = re.compile(r"^<!--\s*outline-fingerprint:\s*(.*?)\s*-->\s*$")
@@ -249,9 +249,9 @@ def _slug(text: str) -> str:
 
 
 # 篇幅预算:paper.toml 的 `pages`(正文页数,不含参考文献)× `words_per_page`(双栏会议格式含
-# 表格/公式的经验值 700 词/页)。设了页数,就把"按 type 的默认字数"的小节按比例缩放到预算内;
-# 摘要/结论等短章与作者显式标过字数的小节不动。没设 pages 则保持原默认。
-WORDS_PER_PAGE = 700
+# 表格/公式的默认估算 650 词/页)。设了页数,就把"按 type 的默认字数"的小节按比例缩放到预算内;
+# 摘要/结论等短章与作者显式标过字数的小节不动。项目配置中没设 pages 则按 12 页估算。
+WORDS_PER_PAGE = 650
 _BUDGET_FIXED_TYPES = {"abstract", "conclusion", "limitations", "discussion"}
 
 
@@ -265,7 +265,7 @@ def page_budget() -> tuple[int, int] | None:
         cfg = tomllib.loads(path.read_text(encoding="utf-8"))
     except (OSError, tomllib.TOMLDecodeError):
         return None
-    pages = cfg.get("pages")
+    pages = cfg.get("pages", 12)
     if not isinstance(pages, (int, float)) or isinstance(pages, bool) or pages <= 0:
         return None
     per_page = cfg.get("words_per_page", WORDS_PER_PAGE)
@@ -277,9 +277,9 @@ def page_budget() -> tuple[int, int] | None:
 # 弹性章节的页数权重(相对值):方法与结果是论文的内容核心,占比最大;引言、相关工作约一页上下。
 # 摘要/结论/局限/讨论是短章,字数固定,不参与缩放。
 CHAPTER_PAGE_WEIGHTS = {
-    "intro": 1.0, "related": 0.9, "background": 0.9,
-    "method": 2.2, "theory": 2.2,
-    "experiments": 1.5, "results": 2.0, "analysis": 1.2, "ablation": 1.0,
+    "intro": 0.95, "related": 1.2, "background": 0.9,
+    "method": 2.0, "theory": 2.2,
+    "experiments": 2.5, "results": 2.0, "analysis": 1.2, "ablation": 1.0,
 }
 
 
@@ -308,6 +308,14 @@ def plan_chapter_words(chapters: list[dict], pages: int, per_page: int) -> dict[
         fixed += sum(s["target_words"] for s in secs if _section_is_fixed(chapter, s))
         if flex_here:
             flexible[chapter["number"]] = CHAPTER_PAGE_WEIGHTS.get(chapter["type"], 1.0)
+    fixed_in_flexible = {
+        c["number"]: sum(s["target_words"] for s in sections_of(c) if _section_is_fixed(c, s))
+        for c in chapters if c["number"] in flexible
+    }
+    gross = max(0, total - fixed + sum(fixed_in_flexible.values()))
+    weight_sum = sum(flexible.values())
+    flexible = {n: max(0, gross * weight / weight_sum - fixed_in_flexible[n])
+                for n, weight in flexible.items()}
     weight_sum = sum(flexible.values())
     room = max(total - fixed, 0)
     plan = {}

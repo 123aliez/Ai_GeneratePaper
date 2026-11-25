@@ -147,7 +147,7 @@ def test_flow():
         check(f"LaTeX 工程 {name}", (o / "latex" / name).is_file())
 
     paper = (o / "paper.md").read_text(encoding="utf-8")
-    check("结果表按 CSV 渲染且加粗最优、拼 ± 标准差", "**78.30 ± 0.20**" in paper and "76.10 ± 0.30" in paper, paper)
+    check("结果表按 CSV 渲染且加粗最优、隐藏标准差", "**78.30**" in paper and "76.10" in paper and "±" not in paper, paper)
     check("占位符替换为带原文小数位的值", "78.30%" in paper, paper)
     check("DIFF 派生数字由程序算出(2.20)", "2.20 points" in paper, paper)
     check("REL 派生数字(2.89,两位小数)", "2.89%" in paper, paper)
