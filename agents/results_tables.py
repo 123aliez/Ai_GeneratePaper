@@ -299,6 +299,20 @@ def table_matrix(
     return header, rows
 
 
+def column_panels(table: Table, cols: list[str] | None) -> list[list[str]]:
+    """按列名前缀保留数据集分组，每个面板至多六个指标。"""
+    shown = _filter_shown_cols(pair_std_columns(table.cols)[0], cols)
+    groups = []
+    for col in shown:
+        prefix = col.split()[0]
+        if not groups or groups[-1][0].split()[0] != prefix or len(groups[-1]) == 6:
+            groups.append([])
+        groups[-1].append(col)
+    if all(len(group) == 1 for group in groups):
+        return [shown[i:i + 6] for i in range(0, len(shown), 6)]
+    return groups
+
+
 def render_table_markdown(
     table: Table,
     caption: str = "",
@@ -306,12 +320,20 @@ def render_table_markdown(
     number: int = 0,
     cols: list[str] | None = None,
     include_std: bool = False,
+    panels: bool = False,
 ) -> str:
     header, rows = table_matrix(table, cols=cols, include_std=include_std)
     out = []
     if caption:
         out.append(f"**Table {number or ''}. {caption}**".replace("Table . ", "Table. "))
         out.append("")
+    if panels:
+        for group in column_panels(table, cols):
+            out.append(render_table_markdown(table, cols=group, include_std=include_std))
+            out.append("")
+        if note:
+            out.append(f"*{note}*")
+        return "\n".join(out).rstrip()
     out.append("| " + " | ".join(header) + " |")
     out.append("|" + "|".join(["---"] + ["---:"] * (len(header) - 1)) + "|")
     for row in rows:
@@ -329,7 +351,7 @@ _TEX_SPECIALS = {"&": r"\&", "%": r"\%", "_": r"\_", "#": r"\#", "$": r"\$", "{"
 def tex_escape(text: str) -> str:
     text = text.replace("\\", r"\textbackslash{}")
     text = "".join(_TEX_SPECIALS.get(ch, ch) for ch in text)
-    return text.replace("↑", r"$\uparrow$").replace("↓", r"$\downarrow$").replace("±", r"$\pm$")
+    return text.replace("σ", r"$\sigma$").replace("↑", r"$\uparrow$").replace("↓", r"$\downarrow$").replace("±", r"$\pm$")
 
 
 # 表注/表题里模型写的 \cite{key}:原样保留成真正的引用。其余一律转义(防模型文本夹带命令)。
@@ -355,25 +377,32 @@ def render_table_latex(
     label: str = "",
     cols: list[str] | None = None,
     include_std: bool = False,
+    panels: bool = False,
 ) -> str:
     header, rows = table_matrix(table, cols=cols, include_std=include_std)
-    colspec = "l" + "r" * (len(header) - 1)
+    label_spec = "l"
     long_labels = any(len(row[0][1]) > 28 for row in rows)
     if long_labels:
-        colspec = r">{\raggedright\arraybackslash}p{0.28\linewidth}" + colspec[1:]
+        label_spec = r">{\raggedright\arraybackslash}p{0.28\linewidth}"
     env = "table*" if len(header) >= 4 or long_labels else "table"
     out = [rf"\begin{{{env}}}[t]", r"\centering"]
     if caption:
         out.append(rf"\caption{{{tex_escape_keep_cite(caption)}}}")
     if label:
         out.append(rf"\label{{{label}}}")
-    out += [r"\setbox0=\hbox{", rf"\begin{{tabular}}{{{colspec}}}", r"\toprule",
-            " & ".join(tex_escape(h) for h in header) + r" \\", r"\midrule"]
-    for row in rows:
-        cells = [rf"\textbf{{{tex_escape(t)}}}" if bold else tex_escape(t) for bold, t in row]
-        out.append(" & ".join(cells) + r" \\")
-    out += [r"\bottomrule", r"\end{tabular}}",
-            r"\ifdim\wd0>\linewidth\resizebox{\linewidth}{!}{\box0}\else\box0\fi"]
+    groups = column_panels(table, cols) if panels else [cols]
+    for index, group in enumerate(groups):
+        header, rows = table_matrix(table, cols=group, include_std=include_std)
+        if index:
+            out.append(r"\par\medskip")
+        colspec = label_spec + "r" * (len(header) - 1)
+        out += [r"\setbox0=\hbox{", rf"\begin{{tabular}}{{{colspec}}}", r"\toprule",
+                " & ".join(tex_escape(h) for h in header) + r" \\", r"\midrule"]
+        for row in rows:
+            cells = [rf"\textbf{{{tex_escape(t)}}}" if bold else tex_escape(t) for bold, t in row]
+            out.append(" & ".join(cells) + r" \\")
+        out += [r"\bottomrule", r"\end{tabular}}",
+                r"\ifdim\wd0>\linewidth\resizebox{\linewidth}{!}{\box0}\else\box0\fi"]
     if note:
         out.append(rf"\par\vspace{{2pt}}{{\footnotesize {tex_escape_keep_cite(note)}}}")
     out.append(rf"\end{{{env}}}")
@@ -389,7 +418,7 @@ def parse_table_placeholder(body: str) -> dict:
     parts = [p.strip() for p in body.split("|")]
     out: dict = {"name": parts[0] if parts else "", "caption": "", "note": ""}
     for part in parts[1:]:
-        m = re.match(r"(caption|note|label|cols)\s*[:：]\s*(.*)$", part, re.IGNORECASE | re.DOTALL)
+        m = re.match(r"(caption|note|label|cols|layout)\s*[:：]\s*(.*)$", part, re.IGNORECASE | re.DOTALL)
         if not m:
             continue
         key, val = m.group(1).lower(), m.group(2).strip()
@@ -402,6 +431,32 @@ def parse_table_placeholder(body: str) -> dict:
 
 def find_table_placeholders(text: str) -> list[dict]:
     return [parse_table_placeholder(m.group("body")) for m in TABLE_PLACEHOLDER_RE.finditer(text or "")]
+
+
+_LAYOUT_GAP = re.compile(r"^\s*\[UNKNOWN:\s*Renderer-supported layout for a single "
+                         r"([^\s|\]]+) insertion\b[^\]\n]*\][ \t]*$", re.I | re.M)
+
+
+def recover_table_layouts(text: str, tables: dict) -> str:
+    """旧稿中明确指向可渲染 CSV 的排版占位可转成标准插表指令。"""
+    def replace(match):
+        name = match[1]
+        table = tables.get(name)
+        if not table or not table.is_grid:
+            return match[0]
+        cols = pair_std_columns(table.cols)[0]
+        metric_list = re.search(r"retaining (.+?) for each dataset", match[0], re.I)
+        if metric_list:
+            metrics = re.split(r",\s*|\s+and\s+", metric_list[1])
+            selected = [c for c in cols if any(strip_arrow(c)[0].lower().endswith(" " + m.lower())
+                                               for m in metrics)]
+            if not selected or any(not any(strip_arrow(c)[0].lower().endswith(" " + m.lower())
+                                           for c in selected) for m in metrics):
+                return match[0]
+            cols = selected
+        return (f"\n[TABLE: {name} | cols: {', '.join(cols)} | layout: panels | "
+                f"caption: {name.replace('_', ' ').capitalize()}]\n")
+    return _LAYOUT_GAP.sub(replace, text)
 
 
 def unknown_tables(text: str, known: set) -> list[str]:
@@ -428,7 +483,7 @@ def table_style_warnings(text: str, tables_by_name: dict, *, result_prose: bool 
             except ValueError as exc:
                 warnings.append(f"Table {p['name']}: {exc}")
             else:
-                if len(shown) > 6:
+                if len(shown) > 6 and p.get("layout") != "panels":
                     warnings.append(f"Table {p['name']}: {len(shown)} columns. Select up to six with cols:.")
     for line in text.splitlines():
         # 标识符与来源只用于程序定位，检查的是读者看到的文字。

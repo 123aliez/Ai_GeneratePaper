@@ -381,7 +381,7 @@ def _expand_tables_md(text: str, tables: dict, num: Numbering) -> str:
         if t is None or not t.is_grid:
             return f"**[TABLE `{p['name']}` 在结果目录里不存在 — 见待补清单]**"
         try:
-            return rt.render_table_markdown(t, p["caption"], p["note"], num.tables.get(p["name"], 0), cols=p.get("cols"))
+            return rt.render_table_markdown(t, p["caption"], p["note"], num.tables.get(p["name"], 0), cols=p.get("cols"), panels=p.get("layout") == "panels")
         except ValueError as exc:
             return f"**[TABLE {p['name']}: {exc}]**"
     return rt.TABLE_PLACEHOLDER_RE.sub(sub, text)
@@ -615,7 +615,7 @@ def md_to_tex(md: str, num: Numbering, tables: dict, *, level_offset: int = 0) -
             t = by_name.get(p["name"])
             if t is not None and t.is_grid:
                 try:
-                    out.append(rt.render_table_latex(t, p["caption"], p["note"], f"tab:{_slug(p['name'])}", cols=p.get("cols")))
+                    out.append(rt.render_table_latex(t, p["caption"], p["note"], f"tab:{_slug(p['name'])}", cols=p.get("cols"), panels=p.get("layout") == "panels"))
                 except ValueError as exc:
                     out.append(rf"\todo{{{_escape_plain(str(exc))}}}")
             else:

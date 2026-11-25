@@ -3,6 +3,7 @@
 运行: python tests/test_materials.py
 """
 import os
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -200,7 +201,7 @@ def test_assembler_pieces():
     main = (d / "latex" / "main.tex").read_text(encoding="utf-8")
     check("LaTeX:转义、引用、环境",
           "a\\_b \\& 5\\%" in tex and "\\cite{he2016}" in tex and "\\begin{itemize}" in tex
-          and "\\begin{equation}\nE = mc^2\n\\end{equation}" in tex, tex)
+          and re.search(r"\\begin\{equation\}.*?E = mc\^2.*?\\end\{equation\}", tex, re.S), tex)
     check("LaTeX:摘要环境与 \\todo 标记", "\\begin{abstract}" in main and "\\todo{MISSING DATA}" in main
           and "\\todo{unknown result RES-9}" in main, main)
     check("LaTeX:中文表名标签不重复", len(set(__import__("re").findall(r"\\label\{(tab:[^}]+)\}", tex))) == 2, tex)
@@ -283,7 +284,7 @@ def test_codex_review_fixes():
     check("$\\eqref{}$ 去掉外层 $", "$\\eqref" not in _tex and "\\eqref{eq:a}" in _tex, _tex)
     for display in ("$$x=1$$", "$$\nx=1\n$$", r"\[x=1\]", "\\[x=1\n\\]"):
         out = A.md_to_tex(display, A.Numbering(), {})
-        check("无标签的独立公式也编号", out == "\\begin{equation}\nx=1\n\\end{equation}\n", out)
+        check("无标签的独立公式也编号", re.fullmatch(r"\\begin\{equation\}\n.*?x=1.*?\n\\end\{equation\}\n", out, re.S), out)
     explicit = "\\begin{align*}\nx&=1\n\\end{align*}"
     out = A.md_to_tex("Inline $x=1$.\n\n" + explicit, A.Numbering(), {})
     check("行内公式和显式无编号环境照原样输出", out == "Inline $x=1$.\n\n" + explicit + "\n", out)
@@ -369,6 +370,22 @@ def test_codex_review_fixes():
     check("crossref 依赖条目一并导出", "conf" in exp and "p1" in exp and "@misc" not in exp, exp)
     # 带说明的缺口标记
     check("带说明的缺口标记被识别", A.collect_markers("[REFERENCE NEEDED: more sources]"))
+
+
+def test_table_panels():
+    root = Path(tempfile.mkdtemp())
+    columns = [f"{group} M{i}" for group in ("A", "B") for i in range(4)]
+    w(root / "scores.csv", ",".join(["Method"] + columns) + "\nX,1,2,3,4,5,6,7,8\n")
+    table, = rt.collect_tables(root)
+    marker = "[UNKNOWN: Renderer-supported layout for a single scores insertion with separate panels.]"
+    normalized = rt.recover_table_layouts(marker, {"scores": table})
+    check("可恢复的排版请求生成一个表", len(rt.find_table_placeholders(normalized)) == 1)
+    check("缺少 CSV 时保留缺口", rt.recover_table_layouts(marker, {}) == marker)
+    tex = rt.render_table_latex(table, "Scores", label="tab:scores", panels=True)
+    check("两个面板共享同一表号", tex.count(r"\begin{tabular}") == 2
+          and tex.count(r"\label{tab:scores}") == 1 and tex.count(r"\caption{Scores}") == 1)
+    check("全部指标在两个正文版本中保留", all(c in tex and c in rt.render_table_markdown(
+          table, panels=True) for c in columns))
 
 
 def _o(body):

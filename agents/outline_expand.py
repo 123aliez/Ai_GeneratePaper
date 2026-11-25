@@ -44,6 +44,12 @@ def outline_skeleton_digest(chapters: list[dict]) -> str:
     return "\n".join(f"{c['number']}|{c['title']}|{c['type']}" for c in chapters)
 
 
+def proposed_title(path: Path) -> str:
+    """读取新大纲的显式拟题，兼容没有拟题的旧大纲。"""
+    match = re.search(r"^# Paper title:[ \t]+(\S.*)$", path.read_text(encoding="utf-8"), re.M)
+    return match.group(1).strip() if match else ""
+
+
 def render_outline(chapters: list[dict], title: str = "",
                    marker: str = "") -> str:
     """把章节清单序列化回 outline.md 的语法。
@@ -249,7 +255,7 @@ def build_expand_prompt(chapters: list[dict], out_en_path: str,
         f"venues also want Broader Impact / Ethics. If the author's chapter list "
         f"lacks these for such a venue, do NOT add chapters (structure is fixed) — "
         f"but a Limitations subsection inside the right chapter is fine.\n"
-        f"- Appendices hold hyperparameters, proofs, extra experiments; keep the main "
+        f"- Appendices hold hyperparameters and extra experiments; keep the main "
         f"text self-contained with essential assumptions, metric definitions and protocol conditions. "
         f"You are planning the MAIN text only; do not create or promise unavailable appendices.\n"
         f"- Without a Page budget section, you do not write word counts: the framework fills "
@@ -293,15 +299,16 @@ def build_expand_prompt(chapters: list[dict], out_en_path: str,
         f"numbers and the setup: point the data chapters at them and never write that the "
         f"values are unavailable.\n\n"
         f"## Chapter shapes that top venues expect\n"
-        f"- Introduction: open with a concrete problem (a specific example or "
-        f"phenomenon, not 'X is very important'); close with the "
-        f"contribution list: 2 to 4 specific, falsifiable contributions, each pointing forward to "
-        f"the chapter that supports it. Each contribution is 1 to 2 sentences (at most 45 words: what is done, "
-        f"where the evidence is) and never restates a point already made in the same list. No bullet about a paper roadmap ('the rest of this "
-        f"paper'); an introduction stays around one page.\n"
-        f"- Abstract: problem, gap, what we introduce, ONE headline result sentence with at most two "
-        f"numbers (data-index placeholders) that summarizes all compared settings, meaning. "
-        f"Nothing else.\n"
+        f"- Start each outline with a single H1 line: # Paper title: <proposed English title>. "
+        f"Use [Method] for [Problem] in [Scenario]. Drop the "
+        f"scenario if the title runs beyond about 15 words.\n"
+        f"- Introduction: plan continuous paragraphs. P1-2 expand the background and problem. "
+        f"P3-4 give one sentence per prior approach: proposal, strength and the limitation we address. "
+        f"Close with our intuitive method and the author's contributions with section pointers.\n"
+        f"- Abstract: one paragraph, at most 7 sentences. Background, problem, our method and "
+        f"contributions, then the headline result in the final sentence.\n"
+        f"- Method: final working equations with intuition only. Never plan proof, theoretical "
+        f"analysis or derivation subsections.\n"
         f"- Related Work: group 2-3 themes (~800-1000 words). Setup: ~500-700 words; keep standard metrics inline. Avoid a recap-only Design Rationale. Author budgets take precedence.\n"
         f"- Results: one subsection per claim; each opens with the finding, then the numbers, "
         f"then what it means.\n\n"
@@ -351,7 +358,7 @@ def build_translate_prompt(out_zh_path: str, out_en_path: str, old_en_path: str 
         f"- Translate chapter titles, subsection titles, and bullets to English.\n"
         f"- Keep `(~N words)` word counts and per-section `- type: X` lines VERBATIM "
         f"(do not translate `type` values or numbers).\n"
-        f"- Keep the first-line HTML comment marker as-is.\n"
+        f"- Keep the first-line HTML comment marker and the English paper title H1 as-is.\n"
         + (f"- The document outline.previous.md (attached) is the previous English outline. For every "
            f"chapter title, subsection title and bullet whose Chinese text did not change, REUSE its "
            f"previous English wording exactly (chapter folder names are derived from the English "
@@ -392,7 +399,7 @@ def _section_problems(original: dict, expanded: dict) -> list[str]:
             problems.append(
                 f"{prefix}小节 '{wanted['title']}' 的字数标注被抹掉"
                 f"(原为 ~{wanted['target_words']} words)")
-        elif actual["target_words"] != wanted["target_words"]:
+        elif wanted.get("words_explicit") and actual["target_words"] != wanted["target_words"]:
             problems.append(
                 f"{prefix}小节 '{wanted['title']}' 的字数被改:"
                 f"{wanted['target_words']} → {actual['target_words']}")
@@ -460,7 +467,13 @@ def validate_expansion(original: list[dict], expanded: list[dict]) -> list[str]:
         problems += _section_problems(chapter, got)
         # 规划者给小节标的 type 必须是标准类型之一:写错的 type 解析时会被忽略,
         # 那个小节就悄悄退回章 type,作者审大纲时看见的 type 和实际生效的不一致。
+        author_titles = {s["title"] for s in chapter["sections"]}
         for section in got["sections"]:
+            if (section["title"] not in author_titles and not section.get("synthetic")
+                    and (section.get("type") or got["type"]) in {"method", "theory"}
+                    and re.search(r"\b(?:proofs?|derivations?|theoretical analysis|lemmas?)\b|证明|推导|理论分析|引理",
+                                  section["title"], re.I)):
+                problems.append(f"方法小节 '{section['title']}' 应改为最终公式与直觉解释")
             if section.get("type_unrecognized"):
                 problems.append(
                     f"第 {chapter['number']} 章小节 '{section['title']}' 的 type "

@@ -1086,19 +1086,13 @@ def summary_clause(folder_path: str) -> str:
         "THIS CHAPTER IS WRITTEN LAST. Every other chapter is already finalized; their final "
         "texts are attached as documents:\n" + listing + "\n"
         "An abstract summarizes what those chapters establish: the problem, the method, the key "
-        "result, the takeaway. Every claim and every number must already appear in them (numbers "
+        "result. Every claim and every number must already appear in them (numbers "
         "as the same `{{RES-xxx}}` placeholders). Add no claim, number or citation they do not "
         "contain, and keep their terminology. Do not outline or promise content that is not there.\n"
-        "FORM: the abstract is ONE single paragraph of 150-250 words: no heading inside it, no "
-        "list, no section labels, no citations. Sentence order: why the problem matters; what is "
-        "missing or hard; what we introduce/compare (one sentence); the headline result, the way "
-        "computer-vision and machine-learning papers state it: one sentence with at most two "
-        "numbers, as `{{RES-xxx}}` / `{{DIFF:..}}` placeholders, that summarizes ALL compared "
-        "settings (for example the range of improvement over the baselines and the cost), not a "
-        "single pair, and says against what and on which benchmark; what it means. Describe the "
-        "mechanism in at most one sentence (details belong to Method) and do not recite table "
-        "cells or raw values of individual models. Write a unit such as GFLOPs plainly (no "
-        "spelled-out expansion in the abstract).\n")
+        "FORM: ONE single paragraph of at most 7 sentences, without headings, lists or citations. "
+        "Sentence 1 states the background, sentence 2 the problem, and sentences 3-4 the method "
+        "and contributions. End with the key supported quantitative comparison, naming the "
+        "benchmark and comparator and using {{RES-xxx}} or {{DIFF:..}} placeholders.\n")
 
 
 def abstract_prerequisites(folder_path: str) -> list[str]:
@@ -1261,7 +1255,7 @@ def final_integrity_reasons(folder_path: str, route: dict | None = None) -> list
         from .citation_supplement import citable_keys, unknown_cite_keys
         from .chapter_contract import scope_types
         from .draft_checks import body_text
-        from .results_tables import unknown_tables, collect_tables, table_style_warnings
+        from .results_tables import unknown_tables, collect_tables, table_style_warnings, recover_table_layouts
         allowed = citable_keys()
         style_tables = {t.name: t for t in collect_tables(DATA_ROOT) if t.is_grid}
         known_tables = set(style_tables)
@@ -1271,6 +1265,9 @@ def final_integrity_reasons(folder_path: str, route: dict | None = None) -> list
             if not fp.is_file():
                 continue
             txt = fp.read_text(encoding="utf-8", errors="replace")
+            txt = recover_table_layouts(txt, style_tables)
+            if re.search(r"\[UNKNOWN(?:\]|:)", body_text(txt), re.I):
+                reasons.append(f"{fname}: 正文残留 UNKNOWN 占位")
             reasons.extend(f"{fname}: {msg}" for msg in table_style_warnings(
                 body_text(txt), style_tables, result_prose=result_prose))
             for msg in residual_res_problems(txt):
@@ -1527,7 +1524,7 @@ def idea_clause(family: str = MIXED, res_ids_path=None) -> str:
                 f"outside) — the program computes it; do not compute it yourself. To show a whole "
                 f"result table write ONE line `[TABLE: <table name> | cols: <primary columns> | caption: <caption> | note: "
                 f"<optional note>]` using a table name from the index — the program renders the "
-                f"table from the CSV, so never write table cells by hand. For a result absent "
+                f"table from the CSV. Use layout: panels when required columns exceed six; keep all required rows. Never write table cells by hand. For a result absent "
                 f"from the index write [MISSING DATA]; do not guess. An unknown or mistyped ID "
                 f"surfaces as a visible gap, never as a fabricated number. ")
             if settings.is_file():

@@ -331,6 +331,13 @@ def test_pipeline_prompts():
 
 
 def test_check_and_assemble():
+    abstract = "# Abstract\n\n" + "A result (e.g. 1.5) holds. " * 7
+    check("七句摘要含缩写和小数", not check_contract(abstract, ["abstract"]))
+    check("八句摘要提示压缩", any("8 sentences" in msg for msg in
+                                    check_contract(abstract + "Results improve.", ["abstract"])))
+    check("最终梯度更新式合法", not check_contract(r"$x'=x-\eta\nabla_x L$", ["method"]))
+    check("混合章节仍检查证明块", any("proof" in msg for msg in
+                                       check_contract(r"\begin{proof}By induction.", ["method", "results"])))
     hits = check_contract("Unlike QMF \\cite{qmf}, our gate learns weights.", ["method"])
     check("T17 对比紧挨引用 → 1 条", len(hits) == 1 and hits[0].startswith("comparative wording"), str(hits))
     check("T17 纯归属 → 0 条",

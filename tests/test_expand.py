@@ -382,6 +382,13 @@ def test_authors_own_sections_are_protected():
     print("\n[作者已有小节的保护]")
     base = _one(_sec())
 
+    check("规划者可给作者未指定字数的小节分配预算",
+          not validate_expansion(_one(_sec(explicit=False)), _one(_sec(words=500))))
+    method = [{"number": 1, "title": "Method", "type": "method", "sections": []}]
+    for title in ("Gradient Derivation", "理论分析"):
+        proposed = [dict(method[0], sections=[_sec(title=title, stype="method")])]
+        check(f"拦截自动规划的推导小节 {title}", bool(validate_expansion(method, proposed)))
+
     cases = [
         ("小节被改名", _one(_sec(title="实验结果", bullets=("随便写",))), "改名或重排"),
         ("字数标注被抹掉", _one(_sec(words=250, explicit=False)), "字数标注被抹掉"),

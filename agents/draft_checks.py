@@ -38,6 +38,40 @@ def body_text(text: str) -> str:
     return (text or "")[:m.start()] if m else (text or "")
 
 
+_ABBREVIATION_RE = re.compile(r"\b(?:e\.g|i\.e|et al|Fig|Eq|Sec|vs|Dr)\.", re.I)
+_PROOF_RE = re.compile(
+    r"\\begin\{(?:proof|lemma|theorem|corollary)\}|"
+    r"^[ \t]*(?:#{1,6}\s+)?(?:\*{1,2})?(?:Proof(?:[.:\s]|$)|"
+    r"(?:Lemma|Theorem|Corollary)\s+\d|(?:Gradient |Algebraic )?Derivation\b)",
+    re.I | re.M,
+)
+
+
+def methodology_findings(text: str, types: list[str]) -> list[str]:
+    """只对正文作提示。梯度符号本身也是合法更新式的一部分。"""
+    body = _FENCE_RE.sub("", body_text(text)).strip()
+    findings = []
+    for match in _PROOF_RE.finditer(body):
+        findings.append(f'Check for a proof or derivation at "{match.group().strip()}". '
+                        "Keep only the working equation and its intuition.")
+    if len(types) != 1 or types[0] not in {"abstract", "intro", "conclusion"}:
+        return findings
+    chapter_type = types[0]
+    body = re.sub(r"^#{1,6}[ \t]+(?:\d+\.?\s+)?(?:Abstract|Introduction|Conclusion)[ \t]*\n?",
+                  "", body, count=1, flags=re.I).strip()
+    if re.search(r"^#{1,6}\s+\S", body, re.M):
+        findings.append(f"Subheading in {chapter_type}: use continuous prose.")
+    if chapter_type == "abstract":
+        if re.search(r"\n[ \t]*\n", body):
+            findings.append("Abstract must be a single paragraph.")
+        prose = _ABBREVIATION_RE.sub(lambda m: m.group().replace(".", ""), body)
+        sentences = re.split(r'(?<=[.!?])["”)]*(?:\s+|$)', prose)
+        count = sum(bool(part.strip()) for part in sentences)
+        if count > 7:
+            findings.append(f"Abstract has {count} sentences. Compress to at most 7.")
+    return findings
+
+
 def count_words(text: str) -> int:
     """正文词数的粗估:去掉围栏块、表格行、占位符行、引用命令后数英文词。"""
     text = _FENCE_RE.sub(" ", text or "")

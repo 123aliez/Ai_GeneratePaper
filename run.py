@@ -404,17 +404,20 @@ def expand_outline() -> int:
         return _discard([f"\nError: 中英文大纲互相对不上,拒绝采纳:"] + [f"  · {x}" for x in pair_problems])
 
     # 篇幅预算(paper.toml 的 pages):补缺、压到预算内、中英文字数对齐。脚本做,不靠模型自觉
-    from agents.outline_expand import normalize_budget
+    from agents.outline_expand import normalize_budget, proposed_title
     for note in normalize_budget(expanded_en, expanded_zh, chapters):
         print(f"  · {note}")
 
     # 重新序列化一遍再落盘:Manager 的原始输出可能夹带说明文字或代码围栏,
     # 而这份文件下一步要被作者改名成 outline.md,必须是干净的语法。
     title = f"Paper outline — {Path(os.environ.get('PAPER_PROJECT', 'paper')).name}"
+    proposal = proposed_title(en_path)
+    if proposal:
+        title = f"Paper title: {proposal}"
     en_path.write_text(render_outline(expanded_en, title, EN_EXPANDED_MARKER),
                        encoding="utf-8")
     zh_title = f"论文大纲 — {Path(os.environ.get('PAPER_PROJECT', 'paper')).name}"
-    zh_path.write_text(render_outline(expanded_zh, zh_title, ZH_EXPANDED_MARKER),
+    zh_path.write_text(render_outline(expanded_zh, title if proposal else zh_title, ZH_EXPANDED_MARKER),
                        encoding="utf-8")
     from agents import project
     project.record_expansion()

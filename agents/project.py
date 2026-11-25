@@ -362,6 +362,31 @@ def assemble_output(extra_notes: list[str] | None = None) -> dict:
     for chapter in chapters:
         chapter.en = A.fill_figure_fields(chapter.en, settings)
         chapter.zh = A.fill_figure_fields(chapter.zh, settings)
+    from . import results_tables as rt
+    for lang in ("en", "zh"):
+        for ch in chapters:
+            setattr(ch, lang, rt.recover_table_layouts(getattr(ch, lang), tables))
+        texts = [getattr(ch, lang) for ch in chapters]
+        targets = {p["name"] for text in texts for p in rt.find_table_placeholders(text)
+                   if p["name"] in tables and tables[p["name"]].is_grid}
+        for ch, text in zip(chapters, texts):
+            errors = []
+            for name in sorted(set(re.findall(r"\[\[TAB:([^\]]+)\]\]", text)) - targets):
+                errors.append(f"{lang}: 缺少表 {name} 的有效插表指令")
+            if re.search(r"\[UNKNOWN(?:\]|:)", text, re.I):
+                errors.append(f"{lang}: 正文残留 UNKNOWN 占位")
+            for entry in rt.find_table_placeholders(text):
+                name = entry["name"]
+                if name not in targets:
+                    errors.append(f"{lang}: 表 {name} 缺少可渲染的 CSV")
+                else:
+                    try:
+                        rt.table_matrix(tables[name], cols=entry.get("cols"))
+                    except ValueError as exc:
+                        errors.append(f"{lang}: {name}: {exc}")
+            if errors:
+                ch.status = "unverified"
+                ch.reasons.extend(errors)
     num = A.number_items(chapters)
 
     paper_toml = {}
@@ -371,7 +396,10 @@ def assemble_output(extra_notes: list[str] | None = None) -> dict:
             paper_toml = tomllib.loads(pt.read_text(encoding="utf-8"))
         except tomllib.TOMLDecodeError:
             paper_toml = {}
-    title = str(paper_toml.get("title") or Path(config.PROJECT_ROOT).name)
+    from .outline_expand import proposed_title
+    title = str(paper_toml.get("title") or "").strip()
+    if not title or title == "Paper Title":
+        title = proposed_title(Path(OUTLINE_PATH)) or Path(config.PROJECT_ROOT).name
     authors = [str(a) for a in (paper_toml.get("authors") or []) if isinstance(paper_toml.get("authors"), list)]
 
     (out / "paper.md").write_text(A.build_paper_md(chapters, num, tables, "en"), encoding="utf-8")
@@ -400,7 +428,7 @@ def assemble_output(extra_notes: list[str] | None = None) -> dict:
         if m and m.group(1) == finals_fingerprint(meta, Path(config.WORKSPACE_ROOT)):
             notes += [f"整篇一致性: {f}" for f in read_paper_review(review_path)]
         else:
-            notes.append("整篇一致性检查结果已过期(之后改过终稿):重跑 "
+            notes.append("整篇一致性检查结果已过期(终稿或评审规则已更新):重跑 "
                          "`python run.py --project <项目> --paper-review`")
     (out / "待补清单.md").write_text(A.build_todo_report(chapters, notes, num, tables), encoding="utf-8")
     folder_titles = {c.folder: f"{c.number}. {c.title}" for c in chapters}

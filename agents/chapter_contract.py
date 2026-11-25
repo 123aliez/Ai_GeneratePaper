@@ -13,43 +13,55 @@ import os
 import re
 from pathlib import Path
 
+from .draft_checks import methodology_findings
 from .chapter_type import normalize_type
 
 CONTRACTS: dict[str, dict[str, str]] = {
     "abstract": {
-        "focus": "Summarize OUR problem, OUR method, OUR headline results (as {{RES-xxx}} "
-                 "placeholders) and OUR contributions from idea.md section 6.",
+        "focus": "A single, clear, plain paragraph of AT MOST 7 sentences: "
+                 "Sentence 1 states the background; "
+                 "Sentence 2 states the exact problem we solve; "
+                 "Sentences 3-4 (or up to 2-3 middle sentences, keeping total <= 7) directly state "
+                 "OUR core method and contributions from idea.md section 6 so the reader never "
+                 "guesses the idea; "
+                 "the final sentence states OUR key experimental results (as {{RES-xxx}} placeholders).",
         "references": "Cite nothing: an abstract contains no \\cite.",
-        "forbidden": "Describing other papers; any contribution not listed in idea.md section 6.",
+        "forbidden": "Exceeding 7 sentences; vague or roundabout phrasing; two words where one "
+                     "suffices; describing other papers; any contribution not listed in idea.md section 6.",
     },
     "intro": {
-        "focus": "OUR research background, the concrete problem and OUR motivation "
-                 "(idea.md sections 1-2), ending with a concise contribution list from "
-                 "idea.md section 6. Flow continuously without adding subsection headers beyond the approved outline. "
-                 "Explain the failure scenario, gap and solution intuition, then introduce the list in one sentence. Keep each contribution item to 1-2 tight sentences (<= 45 words): state what "
-                 "is introduced and its supporting section pointer, without prefacing summaries, "
-                 "detailed ablation breakdowns, or defensive 'standard component' disclaimers.",
-        "references": "Cite prior work only to show that the problem matters and is not yet solved: "
-                      "at most one clause per cited work and no paragraph about a single paper. "
-                      "State the gap in at most one sentence taken from idea.md section 2; the "
-                      "detailed comparison with the closest works belongs to the related-work chapter.",
-        "forbidden": "Explaining another paper's method in detail; numbers reported by other papers; "
-                     "any contribution not listed in idea.md section 6; unrequested subsection headers inside "
-                     "Introduction; multi-paragraph restatements of the contribution list.",
+        "focus": "Follow a strict, clear progression with NO subsection headers (no 1.1/1.2): "
+                 "(1) Paragraphs 1-2 expand the Abstract clearly (background and the exact problem); "
+                 "(2) Paragraphs 3-4 summarize representative prior methods very concisely—use "
+                 "AT MOST ONE crisp sentence per method or line of work to state what it proposed, "
+                 "its strength, and its key weakness, where that weakness is precisely the problem "
+                 "OUR work solves (leave detailed elaboration to Related Work); "
+                 "(3) The final part briefly expands OUR method at an intuitive level so the reader "
+                 "immediately grasps the core idea (deferring technical details to later sections) "
+                 "and ends with a concise contribution list from idea.md section 6.",
+        "references": "In Paragraphs 3-4, cite representative prior works concisely: at most one "
+                      "sentence per work/approach covering what it proposed, its strength, and its "
+                      "weakness. Detailed comparison and multi-sentence method descriptions belong "
+                      "in the related-work chapter. Ground the gap in idea.md section 2.",
+        "forbidden": "Multi-sentence descriptions of a single prior paper (keep each to one concise "
+                     "sentence); numbers reported by other papers; hiding or obscuring our core idea; "
+                     "mathematical proofs or derivations; subsection headers (1.1/1.2); any "
+                     "contribution not listed in idea.md section 6.",
     },
     "related": {
-        "focus": "Concise synthesis of prior research grouped by 2-3 technical themes: "
-                 "summarize each line's shared mechanism and limitation, then state in one "
-                 "sentence how OUR work differs from the closest works.",
-        "references": "A-level papers: approach and limitation in 2-3 sentences where the evidence warrants it, "
-                      "synthesized within a theme rather than one paragraph per paper. "
+        "focus": "Detailed thematic synthesis of prior research grouped by 2-3 technical themes "
+                 "(expanding on the one-sentence summaries in Introduction): analyze how each line "
+                 "works, its strengths, assumptions, and limitations, then concisely state how OUR "
+                 "work differs from the closest works.",
+        "references": "A-level papers: approach, strength, and limitation in 2-3 sentences each, "
+                      "synthesized within a theme. "
                       "B-level papers: cited as members of a theme with at most one clause each. "
                       "C-level papers: citation only. The difference between our work and any prior "
                       "work comes ONLY from idea.md section 5 - never derive or invent a difference "
                       "from the notes.",
-        "forbidden": "Details of our own method (they belong to the method chapter); paper-by-paper "
-                     "isolated mini-reviews; repeating our method pitch at the end of "
-                     "every subsection; numbers reported by other papers; judging whether our contribution is novel.",
+        "forbidden": "Details of our own method (they belong to the method chapter); repeating our "
+                     "full method pitch at the end of every subsection; numbers reported by other "
+                     "papers; judging whether our contribution is novel.",
     },
     "background": {
         "focus": "The base concepts and notation a reader needs before the method chapter.",
@@ -58,18 +70,18 @@ CONTRACTS: dict[str, dict[str, str]] = {
         "forbidden": "Comparing prior work with our method; claiming novelty.",
     },
     "method": {
-        "focus": "OUR core insight, architecture and training objective, from idea.md sections 3-4. "
-                 "Introduce key equations with intuition and explain each design choice alongside its formulation. Summarize multistage training/inference and overhead when the source supports them; "
-                 "select details by their role in understanding and reproducing the contribution, "
-                 "rather than repeating premises across subsections or reproducing an implementation inventory.",
+        "focus": "Explain OUR idea and method with maximum clarity and simplicity from idea.md "
+                 "sections 3-4 so the reader never has to guess how it works. Present only the "
+                 "final working equations needed to understand or implement the method, paired "
+                 "with plain-language intuition. Use tight, direct prose—if one word conveys the "
+                 "meaning, never use two.",
         "references": "Prior work may appear ONLY as attribution of a base technique we adopt: one "
-                      "citation plus at most one clause, e.g. 'We use X \\cite{x} as the image "
-                      "encoder.'",
-        "forbidden": "Comparative wording about cited work (unlike, in contrast to, compared with, "
-                     "different from, outperforms, prior/previous/existing methods); describing "
-                     "another paper's innovations or motivation; positioning against prior work "
-                     "(it belongs to the related-work chapter); result numbers; standalone "
-                     "'Design Rationale' recap subsections that restate earlier explanations.",
+                      "citation plus at most one clause, e.g. 'We use X \\cite{x} as the encoder.'",
+        "forbidden": "Mathematical proofs, theorems/lemmas, step-by-step algebraic derivations, or "
+                     "gradient derivations; comparative wording about cited work (unlike, in "
+                     "contrast to, compared with, different from, outperforms, prior/previous/"
+                     "existing methods); describing another paper's innovations; positioning "
+                     "against prior work; result numbers.",
     },
     "experiments": {
         "focus": "Concise, high-level experimental design from the experiment settings file: "
@@ -91,7 +103,7 @@ CONTRACTS: dict[str, dict[str, str]] = {
     "results": {
         "focus": "Objective, takeaway-driven analysis of OUR comparison and ablation results; "
                  "every number is a placeholder or a rendered table. Select ONLY primary metrics "
-                 "for main-text tables using `cols:` in [TABLE: ...] (at most 6 metric columns). "
+                 "for main-text tables using `cols:` in [TABLE: ...] (at most 6 metric columns per panel; use layout: panels for wide comparisons). "
                  "Report mean performance only without standard deviations. Explain all ablation "
                  "variants, evaluation conventions, and data comparisons directly in the main prose; "
                  "Discuss the key magnitude, variation across conditions and exceptions for each major table. Use controlled evidence for attribution and identify competing explanations when causes are uncertain. Keep table notes strictly to <= 2 short lines (<= 30 words) of symbol/formatting "
@@ -222,12 +234,12 @@ def check_contract(text: str, types: list[str]) -> list[str]:
     多类型直接跳过(各段适用的契约不同,整章粗检会误报)。方法/理论章只报
     "对比措辞紧挨引用"的句子;摘要/结论章只报含 \\cite 的句子。其余类型不报。
     """
+    hits = methodology_findings(text, types)
     if len(types) != 1:
-        return ["skipped: this run covers several section types"]
+        return hits + ["skipped: this run covers several section types"]
     chapter_type = types[0]
     if chapter_type not in _METHOD_TYPES and chapter_type not in _NO_CITE_TYPES:
-        return []
-    hits = []
+        return hits
     for sentence in _SENTENCE_RE.split(_visible_text(text).strip()):
         sentence = sentence.strip()
         if not sentence:

@@ -24,15 +24,20 @@ three areas is caught later and costs a whole revision round, so mark the gap in
 </inputs_and_outputs>
 
 <quality_bar>
-A section is ready to hand off when it answers the questions the brief assigns to it,
-connects to its neighbouring chapters, repeats nothing, uses one spelling per term, and
-states each claim no more strongly than its evidence allows. Keep real hedging where the
-evidence is thin and drop empty hedging.
+Clarity and simplicity are the highest priorities: state the core idea and method plainly so
+the reader never has to guess. If one word conveys the meaning, do not use two. Keep the text
+completely free of mathematical proofs and step-by-step derivations—present only final working
+equations with plain intuition. A section is ready to hand off when it answers its brief
+directly, repeats nothing, uses one spelling per term, and matches every claim to its evidence.
 </quality_bar>
 
 <editorial_contract>
 Write a research argument for a reader deciding what is new, how it works, and what the
 evidence establishes. Source documents are a pool of evidence, not a coverage checklist.
+- Keep the text completely free of mathematical proofs, lemmas, and step-by-step derivations
+  (including algebraic or gradient expansion steps): present only the final working formula
+  and a plain-language explanation of what it computes and why. Simply omit any proofs or
+  detailed derivations.
 - Select content by its role in that argument. Preserve the author's contributions and
   approved outline; fidelity concerns scientific meaning, not reproducing every source detail.
 - Main text contains the core mechanism, necessary non-standard definitions, decisive
@@ -45,7 +50,7 @@ evidence establishes. Source documents are a pool of evidence, not a coverage ch
   enumerations in main text. Do NOT report or mention standard deviations (std / standard
   error / ±) in tables, captions, notes, or body prose—report primary values only. Authors may show measured dispersion inside result plots. Preserve mathematical definitions used by the method.
 - Do NOT dump every column of a wide CSV into a main-text table: use `cols:` in
-  `[TABLE: ...]` to retain only primary metrics (typically 3-6 metric columns). Keep table
+  `[TABLE: ...]` to retain only primary metrics (typically 3-6 metric columns). When required comparisons span more columns, use one [TABLE: name | layout: panels | caption: ...] per CSV. Python splits it into panels of at most six columns, preserving rows and the table number. Use cols: to select metrics if needed. Never substitute an UNKNOWN layout request. Keep table
   notes strictly to <= 2 short lines (<= 30 words) for formatting/symbol conventions only;
   place all variant definitions, comparison conventions, and data explanations directly in
   the body prose.
@@ -270,7 +275,7 @@ unless it blocks understanding.
       grids / fallback rules / per-family statistical enumerations into main text;
   (3) table notes exceeding ~30 words or containing variant definitions, protocol explanations,
       or result commentary that belong in body prose;
-  (4) main-text tables rendering > 6 metric columns or redundant columns without using `cols:`;
+  (4) main-text tables rendering > 6 metric columns per panel or redundant columns without using `cols:`;
   (5) Introduction split beyond the approved outline into 1.1/1.2 subheadings or padded with redundant contribution
       restatements, or Related Work written as paper-by-paper summaries exceeding 2 sentences
       per paper with repeated method pitches at the end of every subsection.
@@ -406,10 +411,18 @@ You are the only agent that sees the whole paper at planning time, so you own cr
 decisions: which chapter states which fact (once, in its owner chapter), how many words each
 part of the paper gets, and where broader limitations go in the approved outline. Drafters follow your
 bullets and plan literally; anything you leave ambiguous gets repeated or dropped.
-Plan the paper the way a top machine-learning venue expects: a problem opened with a concrete
-example, a short contribution list whose items each point to the section that proves them,
-method explained intuition-first, one claim per results subsection, related work grouped by
-approach, and a closing chapter that returns to the contributions.
+Plan the paper for maximum clarity and directness:
+- Title formula: "[Method] for [Problem] in [Scenario]" (what method solves what problem in
+  what scenario). If the full title is too long (e.g., > 15 words), drop the [Scenario] part
+  and keep "[Method] for [Problem]".
+- Abstract: single paragraph of at most 7 sentences (S1 background, S2 problem, S3-4 core
+  method/contributions, final sentence key results).
+- Introduction (no 1.1/1.2 subheadings): P1-2 expand the abstract; P3-4 concisely review prior
+  works (one sentence per method/line stating what it proposed, its strength, and its key
+  weakness—the exact problem we solve, leaving detailed discussion to Related Work); closing
+  part briefly introduces our method intuitively (details in Method) and lists contributions.
+- Method: direct and crystal-clear with final equations and plain intuition only; plan NO
+  proof or step-by-step derivation subsections.
 </role>
 
 <stage_1a_chapter_plan>

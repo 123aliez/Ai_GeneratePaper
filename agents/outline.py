@@ -807,7 +807,7 @@ _FULL_CLAUSE = (
     "by a guessed number.\n"
     "- {opening} {closing}\n"
     "- Anything that belongs to a neighbouring chapter must be left out, even if "
-    "you have the material for it — duplication across chapters is a defect here.\n\n"
+    "you have the material for it. Related Work may expand on the same approaches introduced briefly in the Introduction.\n\n"
 )
 
 

@@ -34,7 +34,10 @@ Check exactly these dimensions:
    not make.
 2. Number and claim consistency — the same result is not described differently in two
    chapters (e.g. "improves" vs "matches", different magnitudes for the same comparison).
-3. Duplication — passages that repeat material another chapter already covers.
+3. Duplication — flag passages that repeat the same explanation at the same level of detail
+   without adding an argument. The Introduction may summarize a prior approach and its gap.
+   Related Work may revisit the same papers, mechanisms and limitations to develop a comparison.
+   If you flag duplication between these chapters, quote both passages and identify the redundant detail.
 4. Terminology — one concept named two ways, an abbreviation expanded twice or never,
    a symbol defined differently in two chapters.
 5. Dangling references — "as shown in Section X / Table Y / the ablation" pointing at
@@ -42,6 +45,7 @@ Check exactly these dimensions:
 6. Flow — a chapter whose opening or closing transition does not match its neighbour.
 
 Rules:
+- Treat idea.md as the author-approved source. Direct corrections to the manuscript. Check whether summaries preserve dataset exceptions, the evaluated conditions, and the distinction between a training penalty and a hard constraint.
 - Report only problems you can point to in the text; quote a short phrase as evidence.
 - Never judge whether the contribution is novel. Never ask for new experiments or numbers.
 - Do not report problems local to one chapter — the per-chapter review already did that.
@@ -63,7 +67,7 @@ def _complete_text(model, messages) -> str:
 
 
 def finals_fingerprint(chapters: list[dict], workspace) -> str:
-    digest = hashlib.sha256()
+    digest = hashlib.sha256(PAPER_REVIEW_INSTRUCTIONS.encode("utf-8"))
     for meta in chapters:
         path = Path(workspace) / meta["folder"] / "final.md"
         digest.update(meta["folder"].encode("utf-8"))
@@ -98,7 +102,9 @@ def duplicate_sentences(texts: dict[str, str], min_words: int = 12) -> list[str]
 
 
 def build_paper_review_prompt(chapters: list[dict], workspace) -> str:
-    from config import IDEA_PATH
+    from config import IDEA_PATH, DATA_ROOT
+    from .results_tables import collect_tables, recover_table_layouts
+    tables = {t.name: t for t in collect_tables(DATA_ROOT)}
     parts = []
     idea = Path(IDEA_PATH)
     if idea.is_file():
@@ -108,6 +114,7 @@ def build_paper_review_prompt(chapters: list[dict], workspace) -> str:
         path = Path(workspace) / meta["folder"] / "final.md"
         body = (path.read_text(encoding="utf-8", errors="replace").rstrip()
                 if path.is_file() else "(this chapter has no final draft yet)")
+        body = recover_table_layouts(body, tables)
         parts.append(f"=== CHAPTER {meta.get('number', '?')}: {meta['title']} "
                      f"[{meta.get('type', '')}] (folder: {meta['folder']}) ===\n{body}")
     return ("Review the whole paper below for cross-chapter problems, following your "
