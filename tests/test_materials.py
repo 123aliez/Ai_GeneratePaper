@@ -147,7 +147,7 @@ def test_results_tables_and_render():
     check("选列按指定顺序且兼容无箭头列名", selected == ["Method", "Params(M) ↓", "Top-1 ↑"], str(selected))
     check("正常指标与孤立误差列区分", rt.pair_std_columns(["RMSE", "Dose", "std", "F1_SE"])[0] == ["RMSE", "Dose"])
     check("错误列与长表注报告给审稿", len(rt.table_style_warnings(
-        "[TABLE: 主结果 | cols: Typo | note: " + "word " * 31 + "]", {t.name: t})) == 2)
+        "[TABLE: 主结果 | cols: Typo | note: " + "word " * 31 + "]", {t.name: t})) == 4)
     check("图注检查与公式区分", bool(rt.table_style_warnings("Note. Mean ± standard deviation.", {}))
           and not rt.table_style_warnings("Roots are $±x$.", {}))
     ph = rt.parse_table_placeholder("主结果 | caption: Main results | note: † from paper")
@@ -382,9 +382,27 @@ def test_table_panels():
     check("可恢复的排版请求生成一个表", len(rt.find_table_placeholders(normalized)) == 1)
     check("缺少 CSV 时保留缺口", rt.recover_table_layouts(marker, {}) == marker)
     tex = rt.render_table_latex(table, "Scores", label="tab:scores", panels=True)
-    check("两个面板共享同一表号", tex.count(r"\begin{tabular}") == 2
+    check("宽表横向跨双栏、只出现一次表头", r"\begin{table*}" in tex and tex.count(r"\begin{tabular}") == 1
           and tex.count(r"\label{tab:scores}") == 1 and tex.count(r"\caption{Scores}") == 1)
-    check("全部指标在两个正文版本中保留", all(c in tex and c in rt.render_table_markdown(
+    from agents.draft_checks import manuscript_findings
+    good = "[TABLE: scores | cols: " + ", ".join(columns) + " | caption: Performance across datasets]"
+    prose = "\n\nThe measured change is larger on the second dataset."
+    bib = {"study2025"}
+    def issues(text):
+        return manuscript_findings(text, {"scores": table}, bib)
+    check("八个明确选取的核心指标允许横排", not issues(good + prose))
+    check("缺表题触发修订", any("caption" in msg for msg in issues("[TABLE: scores]" + prose)))
+    check("文件名表题触发修订", any("caption" in msg for msg in issues(
+        "[TABLE: stress_fungi_beetle | caption: Stress fungi beetle]" + prose)))
+    check("宽表遗漏选列触发修订", any("cols:" in msg for msg in issues(
+        "[TABLE: scores | caption: Performance across datasets]" + prose)))
+    check("紧邻的两张表缺少解读段", any("paragraph" in msg for msg in issues(good + "\n\n" + good + prose)))
+    fig = "[FIGURE f: Overview of HAF.]\nNote. Overview of HAF (Harm-Aware Fusion). From [study2025]."
+    check("图注裸文献键触发修订", any("study2025" in msg for msg in issues(fig)))
+    figure_tex = A.md_to_tex(fig.replace("[study2025]", r"\cite{study2025}"), A.Numbering(), {})
+    check("图题只出现一次，引用进入 LaTeX", figure_tex.count("Overview of HAF") == 1
+          and r"\cite{study2025}" in figure_tex and "HAF.." not in figure_tex)
+    check("全部指标在两个正文版本中保留", all(c.split(" ", 1)[1] in tex and c in rt.render_table_markdown(
           table, panels=True) for c in columns))
 
 

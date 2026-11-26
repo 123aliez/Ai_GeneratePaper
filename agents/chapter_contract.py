@@ -103,7 +103,7 @@ CONTRACTS: dict[str, dict[str, str]] = {
     "results": {
         "focus": "Objective, takeaway-driven analysis of OUR comparison and ablation results; "
                  "every number is a placeholder or a rendered table. Select ONLY primary metrics "
-                 "for main-text tables using `cols:` in [TABLE: ...] (at most 6 metric columns per panel; use layout: panels for wide comparisons). "
+                 "for main-text tables using `cols:` in [TABLE: ...] (select primary metrics; 8-9 essential cross-dataset columns may share a double-column table). "
                  "Report mean performance only without standard deviations. Explain all ablation "
                  "variants, evaluation conventions, and data comparisons directly in the main prose; "
                  "Discuss the key magnitude, variation across conditions and exceptions for each major table. Use controlled evidence for attribution and identify competing explanations when causes are uncertain. Keep table notes strictly to <= 2 short lines (<= 30 words) of symbol/formatting "

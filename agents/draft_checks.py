@@ -227,3 +227,19 @@ def read_polish_findings(folder_path: str) -> list[str]:
     return [ln[len("- [POLISH] "):].strip()
             for ln in path.read_text(encoding="utf-8", errors="replace").splitlines()
             if ln.startswith("- [POLISH] ")]
+
+
+def manuscript_findings(text, tables, bib_keys, *, result_prose=True, english=True):
+    """合并结构化图表的硬检查，供起草、修订与终稿核验共用。"""
+    from .assemble import parse_figure_blocks
+    from .results_tables import table_style_warnings, recover_table_layouts
+
+    body = recover_table_layouts(body_text(text), tables)
+    findings = table_style_warnings(body, tables, result_prose=result_prose, english=english)
+    for fig in parse_figure_blocks(body):
+        note = fig["fields"].get("Note", "")
+        for group in re.findall(r"(?<!\[)\[([A-Za-z][\w:./,+ -]*)\](?!\])", note):
+            keys = [k.strip() for k in group.split(",")]
+            if any(k in bib_keys or re.search(r"[a-zA-Z]\w*(?:19|20)\d{2}\w*", k) for k in keys):
+                findings.append(f"Figure {fig['id']}: replace bare [{group}] in Note with a verified BibTeX citation.")
+    return findings

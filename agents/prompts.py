@@ -50,7 +50,11 @@ evidence establishes. Source documents are a pool of evidence, not a coverage ch
   enumerations in main text. Do NOT report or mention standard deviations (std / standard
   error / ±) in tables, captions, notes, or body prose—report primary values only. Authors may show measured dispersion inside result plots. Preserve mathematical definitions used by the method.
 - Do NOT dump every column of a wide CSV into a main-text table: use `cols:` in
-  `[TABLE: ...]` to retain only primary metrics (typically 3-6 metric columns). When required comparisons span more columns, use one [TABLE: name | layout: panels | caption: ...] per CSV. Python splits it into panels of at most six columns, preserving rows and the table number. Use cols: to select metrics if needed. Never substitute an UNKNOWN layout request. Keep table
+  `[TABLE: ...]` to retain only primary metrics (typically 3-6 metric columns). For a wide CSV select core columns explicitly with cols:. Cross-dataset comparisons may
+  keep 8-9 essential metrics in one double-column table. Supply an academic caption of at least
+  three English words. Follow EACH experimental table with its own prose paragraph explaining the
+  finding before inserting another table. Review the paragraph for a specific supported interpretation.
+  Use LaTeX citations for bibliography references in figure notes. Keep table
   notes strictly to <= 2 short lines (<= 30 words) for formatting/symbol conventions only;
   place all variant definitions, comparison conventions, and data explanations directly in
   the body prose.
@@ -275,7 +279,7 @@ unless it blocks understanding.
       grids / fallback rules / per-family statistical enumerations into main text;
   (3) table notes exceeding ~30 words or containing variant definitions, protocol explanations,
       or result commentary that belong in body prose;
-  (4) main-text tables rendering > 6 metric columns per panel or redundant columns without using `cols:`;
+  (4) wide tables without explicit selection of core columns or a preceding table with no interpretation;
   (5) Introduction split beyond the approved outline into 1.1/1.2 subheadings or padded with redundant contribution
       restatements, or Related Work written as paper-by-paper summaries exceeding 2 sentences
       per paper with repeated method pitches at the end of every subsection.

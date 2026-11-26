@@ -191,7 +191,15 @@ def parse_figure_blocks(text: str) -> list[dict]:
                 fields[key] = fm.group(2).strip()
             elif key:
                 fields[key] += " " + ln
-        blocks.append({"id": m.group(1), "title": m.group(2).strip(), "start": i, "end": j,
+        title = m.group(2).strip().rstrip(".。")
+        note = fields.get("Note", "")
+        if title and re.match(re.escape(title) + r"(?=$|[\s.(。])", note, re.I):
+            rest = note[len(title):].lstrip()
+            if rest.startswith("(") and ")" in rest:
+                expansion, rest = rest.split(")", 1)
+                title += " " + expansion + ")"
+            fields["Note"] = rest.lstrip(".。 ")
+        blocks.append({"id": m.group(1), "title": title, "start": i, "end": j,
                        "fields": fields})
         i = j
     return blocks
@@ -526,21 +534,23 @@ def _md_table_to_tex(rows: list[list[str]], num: Numbering) -> str:
     if wrapped:
         out.append(r"\end{tabularx}")
     else:
-        out.extend([r"\end{tabular}}", r"\ifdim\wd0>\linewidth\resizebox{\linewidth}{!}{\box0}\else\box0\fi"])
+        out.extend([r"\end{tabular}}", r"\noindent\makebox[\linewidth][c]{\ifdim\wd0>\linewidth\resizebox{\linewidth}{!}{\box0}\else\box0\fi}\par"])
     out.append(rf"\end{{{env}}}")
     return "\n".join(out)
 
 
-def _figure_tex(block: dict, number: int) -> str:
+def _figure_tex(block: dict, number: int, num: Numbering) -> str:
     f = block["fields"]
-    caption = block["title"] + (". " + f["Note"] if f.get("Note") else "")
+    caption = block["title"]
+    if f.get("Note"):
+        caption += (" " if caption.endswith(("!", "?", "！", "？")) else ". ") + f["Note"]
     stem = f"figures/fig{number}-{_slug(block['id'])}"
     box = (rf"\IfFileExists{{{stem}.pdf}}{{\includegraphics[width=0.8\linewidth]{{{stem}.pdf}}}}"
            rf"{{\IfFileExists{{{stem}.png}}{{\includegraphics[width=0.8\linewidth]{{{stem}.png}}}}"
            r"{\fbox{\parbox[c][3cm][c]{0.8\linewidth}{\centering Figure " + str(number) +
            r" --- to be supplied\\ (see the figure list)}}}}")
     return "\n".join([r"\begin{figure}[t]", r"\centering", box,
-                      rf"\caption{{{_style(_escape_plain(caption))}}}", rf"\label{{fig:{_slug(block['id'])}}}",
+                      rf"\caption{{{_inline_to_tex(caption, num)}}}", rf"\label{{fig:{_slug(block['id'])}}}",
                       r"\end{figure}"])
 
 
@@ -595,7 +605,7 @@ def md_to_tex(md: str, num: Numbering, tables: dict, *, level_offset: int = 0) -
         if i in blocks:
             flush_para(); close_lists()
             b = blocks[i]
-            out.append(_figure_tex(b, num.figures.get(b["id"], 0)))
+            out.append(_figure_tex(b, num.figures.get(b["id"], 0), num))
             out.append("")
             i = b["end"]
             continue
@@ -729,6 +739,21 @@ _BUILTIN_TEMPLATE = r"""\documentclass[11pt]{article}
 """
 
 
+def _inline_result_floats(tex: str) -> str:
+    """在双栏正文中就地排表：宽表前收齐两栏，表后重新分栏。"""
+    def replace(match):
+        kind, content = match.groups()
+        caption_type = kind.rstrip("*")
+        content = content.replace(r"\caption{", rf"\captionof{{{caption_type}}}{{", 1)
+        if kind.endswith("*"):
+            return (r"\end{multicols}" + "\n" + r"\noindent\begin{minipage}{\textwidth}"
+                    + content + r"\end{minipage}\par" + "\n" + r"\begin{multicols}{2}")
+        return (r"\par\noindent\begin{minipage}{\columnwidth}" + content
+                + r"\end{minipage}\par\smallskip")
+    return re.sub(r"\\begin\{(table\*?|figure\*?)\}\[[^\]]*\](.*?)\\end\{\1\}",
+                  replace, tex, flags=re.S)
+
+
 def build_latex(chapters: list[Chapter], num: Numbering, tables: dict, out_dir: Path,
                 template_dir: Path | None, title: str, authors: list[str],
                 bib_path: Path) -> dict:
@@ -738,7 +763,13 @@ def build_latex(chapters: list[Chapter], num: Numbering, tables: dict, out_dir: 
     sec_dir.mkdir(exist_ok=True)
     for old in sec_dir.glob("*.tex"):
         old.unlink()
+    template_main = (template_dir / "main.tex") if template_dir and (template_dir / "main.tex").is_file() else None
+    template_source = template_main.read_text(encoding="utf-8") if template_main else _BUILTIN_TEMPLATE
+    # elsarticle 的 5p 标题会主动切回原生双栏。标题就地输出后由正文统一管理双栏。
+    inline_from_title = bool(re.search(r"(?m)^[ \t]*\\documentclass\s*(?:\[[^]]*\]\s*)?\{elsarticle\}", template_source)
+                             and any(rt.find_table_placeholders(ch.en) for ch in chapters))
     inputs, abstract_tex, files = [], "", []
+    inline_columns = inline_from_title
     for idx, ch in enumerate(chapters, start=1):
         body_md, _ = normalize_headings(ch.en, ch.title, ch.sections)
         if not ch.en.strip():
@@ -749,12 +780,17 @@ def build_latex(chapters: list[Chapter], num: Numbering, tables: dict, out_dir: 
             abstract_tex = "\\begin{abstract}\n" + tex + "\\end{abstract}\n"
             continue
         name = f"{_slug(ch.folder)}.tex"
-        (sec_dir / name).write_text(rf"\section{{{_inline_to_tex(ch.title, num)}}}" + "\n\n" + tex,
-                                    encoding="utf-8")
-        inputs.append(rf"\input{{sections/{name[:-4]}}}")
+        section = rf"\section{{{_inline_to_tex(ch.title, num)}}}" + "\n\n" + tex
+        if (not inline_columns and ch.ctype in {"experiments", "results", "ablation", "analysis"}
+                and r"\begin{table*}" in tex and rt.find_table_placeholders(ch.en)):
+            inputs.append("\\onecolumn\n\\begin{multicols}{2}")
+            inline_columns = True
+        if inline_columns:
+            section = _inline_result_floats(section)
+        (sec_dir / name).write_text(section, encoding="utf-8")
+        inputs.append(rf"\input{{sections/{name[:-4]}}}" + ("" if inline_columns else "\n" + r"\FloatBarrier"))
         files.append(f"sections/{name}")
 
-    template_main = (template_dir / "main.tex") if template_dir and (template_dir / "main.tex").is_file() else None
     if template_main:
         for p in template_dir.rglob("*"):
             if p.is_file() and p.name != "main.tex":
@@ -785,13 +821,25 @@ def build_latex(chapters: list[Chapter], num: Numbering, tables: dict, out_dir: 
     tpl = (tpl.replace("%TITLE%", _escape_plain(title))
               .replace("%AUTHORS%", _escape_plain(", ".join(authors) or "Anonymous"))
               .replace("%ABSTRACT%", ""))
-    tpl = tpl.replace(r"\begin{document}", r"\usepackage{tabularx,booktabs,graphicx,placeins}" + "\n" + r"\begin{document}", 1)
-    body = body_columns + "\n" + "\n".join(line + "\n" + r"\FloatBarrier" for line in inputs)
+    tpl = tpl.replace(r"\begin{document}", r"\usepackage{tabularx,booktabs,graphicx,placeins,multicol,capt-of}" + "\n" + r"\begin{document}", 1)
+    if inline_from_title:
+        title_setup = r"""\begin{document}
+\onecolumn
+\let\paperOriginalTitle\maketitle
+\def\maketitle{\let\paperOriginalColumns\twocolumn
+  \def\twocolumn[##1]{##1}\paperOriginalTitle
+  \let\twocolumn\paperOriginalColumns}
+\raggedcolumns"""
+        tpl = tpl.replace(r"\begin{document}", title_setup, 1)
+        body_columns = r"\begin{multicols}{2}"
+    body = body_columns + "\n" + "\n".join(inputs)
     block = (abstract_tex + "\n" if abstract_tex else "") + body
     if "% PAPER_BODY" in tpl:
         tpl = tpl.replace("% PAPER_BODY", block, 1)
     else:
         tpl = tpl.replace(r"\end{document}", block + "\n\\end{document}", 1)
+    if inline_columns:
+        tpl = tpl.replace(r"\end{document}", "\\end{multicols}\n" + r"\end{document}", 1)
     (out_dir / "main.tex").write_text(tpl, encoding="utf-8")
     files.append("main.tex")
 

@@ -299,20 +299,6 @@ def table_matrix(
     return header, rows
 
 
-def column_panels(table: Table, cols: list[str] | None) -> list[list[str]]:
-    """按列名前缀保留数据集分组，每个面板至多六个指标。"""
-    shown = _filter_shown_cols(pair_std_columns(table.cols)[0], cols)
-    groups = []
-    for col in shown:
-        prefix = col.split()[0]
-        if not groups or groups[-1][0].split()[0] != prefix or len(groups[-1]) == 6:
-            groups.append([])
-        groups[-1].append(col)
-    if all(len(group) == 1 for group in groups):
-        return [shown[i:i + 6] for i in range(0, len(shown), 6)]
-    return groups
-
-
 def render_table_markdown(
     table: Table,
     caption: str = "",
@@ -327,13 +313,6 @@ def render_table_markdown(
     if caption:
         out.append(f"**Table {number or ''}. {caption}**".replace("Table . ", "Table. "))
         out.append("")
-    if panels:
-        for group in column_panels(table, cols):
-            out.append(render_table_markdown(table, cols=group, include_std=include_std))
-            out.append("")
-        if note:
-            out.append(f"*{note}*")
-        return "\n".join(out).rstrip()
     out.append("| " + " | ".join(header) + " |")
     out.append("|" + "|".join(["---"] + ["---:"] * (len(header) - 1)) + "|")
     for row in rows:
@@ -384,25 +363,34 @@ def render_table_latex(
     long_labels = any(len(row[0][1]) > 28 for row in rows)
     if long_labels:
         label_spec = r">{\raggedright\arraybackslash}p{0.28\linewidth}"
-    env = "table*" if len(header) >= 4 or long_labels else "table"
-    out = [rf"\begin{{{env}}}[t]", r"\centering"]
-    if caption:
+    env = "table*" if len(header) >= 5 or long_labels else "table"
+    out = [rf"\begin{{{env}}}[!t]", r"\centering"]
+    if caption or label:
         out.append(rf"\caption{{{tex_escape_keep_cite(caption)}}}")
     if label:
         out.append(rf"\label{{{label}}}")
-    groups = column_panels(table, cols) if panels else [cols]
-    for index, group in enumerate(groups):
-        header, rows = table_matrix(table, cols=group, include_std=include_std)
-        if index:
-            out.append(r"\par\medskip")
-        colspec = label_spec + "r" * (len(header) - 1)
-        out += [r"\setbox0=\hbox{", rf"\begin{{tabular}}{{{colspec}}}", r"\toprule",
-                " & ".join(tex_escape(h) for h in header) + r" \\", r"\midrule"]
-        for row in rows:
-            cells = [rf"\textbf{{{tex_escape(t)}}}" if bold else tex_escape(t) for bold, t in row]
-            out.append(" & ".join(cells) + r" \\")
-        out += [r"\bottomrule", r"\end{tabular}}",
-                r"\ifdim\wd0>\linewidth\resizebox{\linewidth}{!}{\box0}\else\box0\fi"]
+    colspec = label_spec + "r" * (len(header) - 1)
+    # 同一数据集下的指标共享上层表头，降低宽表为了容纳重复文字而缩小的比例。
+    labels = [h.partition(" ") for h in header[1:]]
+    groups = []
+    for dataset, _, metric in labels:
+        if groups and groups[-1][0] == dataset:
+            groups[-1][1] += 1
+        else:
+            groups.append([dataset, 1])
+    header_lines = []
+    if len(groups) >= 2 and all(n >= 2 for _, n in groups) and all(m.strip(" ↑↓") for _, _, m in labels):
+        header_lines.append(" & " + " & ".join(
+            rf"\multicolumn{{{n}}}{{c}}{{{tex_escape(dataset)}}}" for dataset, n in groups) + r" \\")
+        header = [header[0], *(metric for _, _, metric in labels)]
+    header_lines.append(" & ".join(tex_escape(h) for h in header) + r" \\")
+    out += [r"\setbox0=\hbox{", rf"\begin{{tabular}}{{{colspec}}}", r"\toprule",
+            *header_lines, r"\midrule"]
+    for row in rows:
+        cells = [rf"\textbf{{{tex_escape(t)}}}" if bold else tex_escape(t) for bold, t in row]
+        out.append(" & ".join(cells) + r" \\")
+    out += [r"\bottomrule", r"\end{tabular}}",
+            r"\noindent\makebox[\linewidth][c]{\ifdim\wd0>\linewidth\resizebox{\linewidth}{!}{\box0}\else\box0\fi}\par"]
     if note:
         out.append(rf"\par\vspace{{2pt}}{{\footnotesize {tex_escape_keep_cite(note)}}}")
     out.append(rf"\end{{{env}}}")
@@ -454,8 +442,8 @@ def recover_table_layouts(text: str, tables: dict) -> str:
                                            for c in selected) for m in metrics):
                 return match[0]
             cols = selected
-        return (f"\n[TABLE: {name} | cols: {', '.join(cols)} | layout: panels | "
-                f"caption: {name.replace('_', ' ').capitalize()}]\n")
+        selection = f" | cols: {', '.join(cols)}" if metric_list else ""
+        return f"\n[TABLE: {name}{selection}]\n"
     return _LAYOUT_GAP.sub(replace, text)
 
 
@@ -470,10 +458,21 @@ _RESULT_SPREAD_RE = re.compile(
 )
 
 
-def table_style_warnings(text: str, tables_by_name: dict, *, result_prose: bool = True) -> list[str]:
+def table_style_warnings(text: str, tables_by_name: dict, *, result_prose: bool = True, english: bool = True) -> list[str]:
     """检查正文表的实际选列、表注及结果表述。数学符号本身不是统计量。"""
     warnings = []
-    for p in find_table_placeholders(text):
+    for match in TABLE_PLACEHOLDER_RE.finditer(text):
+        p = parse_table_placeholder(match["body"])
+        caption = p["caption"]
+        words = re.findall(r"[A-Za-z]+(?:[-'][A-Za-z]+)*", caption)
+        stem = re.sub(r"[\W_]+", "", p["name"].removesuffix(".csv")).casefold()
+        if (not caption or (english and len(words) < 3)
+                or re.sub(r"[\W_]+", "", caption.removesuffix(".csv")).casefold() == stem):
+            warnings.append(f"Table {p['name']}: supply a descriptive caption (English: at least three words).")
+        after = text[match.end():].lstrip()
+        paragraph = re.split(r"\n\s*\n", after, maxsplit=1)[0]
+        if result_prose and (not paragraph or re.match(r"(?:[#|>]|[-*]\s|\[(?!\[TAB:)|\$\$)", paragraph)):
+            warnings.append(f"Table {p['name']}: follow the table immediately with a prose paragraph interpreting its result.")
         if len(p["note"].split()) > 30:
             warnings.append(f"Table {p['name']}: note exceeds 30 words.")
         table = tables_by_name.get(p["name"])
@@ -483,8 +482,8 @@ def table_style_warnings(text: str, tables_by_name: dict, *, result_prose: bool 
             except ValueError as exc:
                 warnings.append(f"Table {p['name']}: {exc}")
             else:
-                if len(shown) > 6 and p.get("layout") != "panels":
-                    warnings.append(f"Table {p['name']}: {len(shown)} columns. Select up to six with cols:.")
+                if len(shown) > 6 and (not p.get("cols") or len(shown) == len(pair_std_columns(table.cols)[0]) and len(shown) > 9):
+                    warnings.append(f"Table {p['name']}: {len(shown)} columns. Select core metrics with cols:.")
     for line in text.splitlines():
         # 标识符与来源只用于程序定位，检查的是读者看到的文字。
         if line.startswith(("Data:", "Source:", "Supports:", "Type:")):

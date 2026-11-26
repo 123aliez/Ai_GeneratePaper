@@ -709,7 +709,7 @@ def run_convergence_loop(draft_agent, review_agent, folder_path, folder_rel,
                          run_agent_stage, verify, mode_clause: str = "",
                          family: str = MIXED, res_ids_path=None,
                          record_stage=None, skills_clause: str = "",
-                         docs_base=None, extra_docs=None):
+                         docs_base=None, extra_docs=None, check_manuscript=None):
     """Freeze the first review's MUST FIX list as an acceptance checklist, then
     iterate revise -> verify up to MAX_REVISION_ROUNDS. Each verify round re-checks
     ONLY the frozen checklist (no new issues). Stop when every frozen item is
@@ -838,6 +838,15 @@ def run_convergence_loop(draft_agent, review_agent, folder_path, folder_rel,
                 record_stage([verdict_round], "verify")
 
         verdict = read_json_artifact(folder_path, verdict_round)
+        if check_manuscript and isinstance(verdict, dict) and any(it["id"] == "MF-FORMAT" for it in frozen):
+            remaining = check_manuscript(Path(folder_path, draft_round).read_text(encoding="utf-8"))
+            for item in verdict.get("items") or []:
+                if isinstance(item, dict) and item.get("id") == "MF-FORMAT":
+                    item.update(resolved=not remaining, note="\n".join(remaining) or "OK")
+            Path(folder_path, verdict_round).write_text(json.dumps(verdict, ensure_ascii=False, indent=2),
+                                                       encoding="utf-8")
+            if record_stage:
+                record_stage([verdict_round], "verify")
         all_resolved, missing, unknown, dupes = _checklist_verdict(frozen, verdict)
 
         if all_resolved:
@@ -1254,7 +1263,7 @@ def final_integrity_reasons(folder_path: str, route: dict | None = None) -> list
         from .result_ids import residual_res_problems
         from .citation_supplement import citable_keys, unknown_cite_keys
         from .chapter_contract import scope_types
-        from .draft_checks import body_text
+        from .draft_checks import body_text, manuscript_findings
         from .results_tables import unknown_tables, collect_tables, table_style_warnings, recover_table_layouts
         allowed = citable_keys()
         style_tables = {t.name: t for t in collect_tables(DATA_ROOT) if t.is_grid}
@@ -1268,8 +1277,8 @@ def final_integrity_reasons(folder_path: str, route: dict | None = None) -> list
             txt = recover_table_layouts(txt, style_tables)
             if re.search(r"\[UNKNOWN(?:\]|:)", body_text(txt), re.I):
                 reasons.append(f"{fname}: 正文残留 UNKNOWN 占位")
-            reasons.extend(f"{fname}: {msg}" for msg in table_style_warnings(
-                body_text(txt), style_tables, result_prose=result_prose))
+            reasons.extend(f"{fname}: {msg}" for msg in manuscript_findings(
+                txt, style_tables, allowed, result_prose=result_prose, english=fname == "final.md"))
             for msg in residual_res_problems(txt):
                 reasons.append(f"{fname} {msg}")
             bad_tables = unknown_tables(txt, known_tables)
@@ -1524,7 +1533,7 @@ def idea_clause(family: str = MIXED, res_ids_path=None) -> str:
                 f"outside) — the program computes it; do not compute it yourself. To show a whole "
                 f"result table write ONE line `[TABLE: <table name> | cols: <primary columns> | caption: <caption> | note: "
                 f"<optional note>]` using a table name from the index — the program renders the "
-                f"table from the CSV. Use layout: panels when required columns exceed six; keep all required rows. Never write table cells by hand. For a result absent "
+                f"table from the CSV. Select core metrics with cols: when more than six are available; keep all required rows. Never write table cells by hand. For a result absent "
                 f"from the index write [MISSING DATA]; do not guess. An unknown or mistyped ID "
                 f"surfaces as a visible gap, never as a fabricated number. ")
             if settings.is_file():
@@ -2126,8 +2135,15 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
     from .draft_checks import write_polish_check, body_text
     from .results_tables import collect_tables, table_style_warnings
     style_tables = {t.name: t for t in collect_tables(DATA_ROOT)}
-    findings = table_style_warnings(body_text(Path(folder_path, "draft-v1.md").read_text(encoding="utf-8")),
-                                    style_tables, result_prose=checks_result_prose(scope_types(route)))
+    from .draft_checks import manuscript_findings
+    from .citation_supplement import citable_keys
+    bib_keys = citable_keys()
+
+    def check_manuscript(text):
+        return manuscript_findings(text, style_tables, bib_keys,
+                                   result_prose=checks_result_prose(scope_types(route)))
+
+    findings = check_manuscript(Path(folder_path, "draft-v1.md").read_text(encoding="utf-8"))
     style_report = Path(folder_path, "table-style-check.md")
     style_report.write_text("\n".join(findings) or "OK", encoding="utf-8")
 
@@ -2284,6 +2300,14 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
             os.remove(os.path.join(folder_path, "review-v1.md"))
         return _finish_with_table(folder_path, results)  # caller will re-enter; stage2 will run because artifacts removed
 
+    if findings and not any(item["id"] == "MF-FORMAT" for item in _review_must_fix):
+        _review_must_fix.append({"id": "MF-FORMAT", "location": "tables and figure notes",
+                                 "issue": "Manuscript formatting checks failed.",
+                                 "suggestion": "\n".join(findings)})
+        Path(folder_path, "review-v1.json").write_text(
+            json.dumps(_review_data, ensure_ascii=False, indent=2), encoding="utf-8")
+        record_stage(["review-v1.json"], "review")
+
     # ── C11: apply citation insertions from the review ──────────────
     # The reviewer flagged needs_citation (sentence + suggested key). A Python
     # pass mechanically inserts \cite{key} at each flagged sentence's end, only
@@ -2330,7 +2354,7 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
             reference_excerpt, "brief.md",
             run_agent_stage, verify, mode_clause, family, res_ids_path,
             record_stage=record_stage, skills_clause=draft_skills,
-            docs_base=chapter_base(), extra_docs=xchap_docs + abstract_docs,
+            docs_base=chapter_base(), extra_docs=xchap_docs + abstract_docs, check_manuscript=check_manuscript,
         )
     if not verify(["draft-v2.md"]):
         return _finish_with_table(folder_path, results)
