@@ -406,6 +406,19 @@ def test_table_panels():
           table, panels=True) for c in columns))
 
 
+def test_opening_figure_layout():
+    title = "\\section{Method}\n\n"
+    fig = "\\begin{figure}[t]\n\\caption{Overview}\n\\end{figure}\n\n"
+    intro = "\\subsection{Overview}\n\nFirst paragraph.\n\nSecond paragraph.\n\n"
+    rest = "\\subsection{Training}\n\nOther text."
+    out = A._inline_result_floats(title + fig + intro + rest)
+    check("章首大图置于引入段落之后", out.index("Second paragraph") < out.index(r"\captionof{figure}"))
+    check("章首图留在下一小节之前", out.index(r"\captionof{figure}") < out.index("Training"))
+    out = A._inline_result_floats(title + "Intro.\n\n" + fig + "Following paragraph.")
+    check("正文中已有位置的图按原顺序排版", out.index("Intro.") < out.index(r"\captionof{figure}")
+          < out.index("Following paragraph."))
+
+
 def _o(body):
     p = Path(tempfile.mkdtemp()) / "o.md"
     p.write_text(body, encoding="utf-8")

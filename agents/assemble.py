@@ -741,6 +741,14 @@ _BUILTIN_TEMPLATE = r"""\documentclass[11pt]{article}
 
 def _inline_result_floats(tex: str) -> str:
     """在双栏正文中就地排表：宽表前收齐两栏，表后重新分栏。"""
+    # 章首图若位于首段之前，先排小节标题和至多两段引入文字。
+    # 仅移动紧接章标题的图；遇到公式、列表或下一标题即止。
+    opening = re.match(
+        r"(\\section\{[^\n]*\}\n\n)(\\begin\{figure\}\[[^\]]*\](?:(?!\\end\{figure\}).)*\\end\{figure\})\n\n"
+        r"((?:\\subsection\{[^\n]*\}\n\n)?(?:[^\s\\][^\n]*\n\n){1,2})",
+        tex, re.S)
+    if opening:
+        tex = (opening[1] + opening[3] + opening[2] + "\n\n" + tex[opening.end():])
     def replace(match):
         kind, content = match.groups()
         caption_type = kind.rstrip("*")
@@ -832,6 +840,9 @@ def build_latex(chapters: list[Chapter], num: Numbering, tables: dict, out_dir: 
 \raggedcolumns"""
         tpl = tpl.replace(r"\begin{document}", title_setup, 1)
         body_columns = r"\begin{multicols}{2}"
+    if inline_columns:
+        # 每次跨栏表前后会各切换一次 multicols，统一收紧两侧的环境间距。
+        body_columns = r"\setlength{\multicolsep}{5pt plus 1pt minus 1pt}" + "\n" + body_columns
     body = body_columns + "\n" + "\n".join(inputs)
     block = (abstract_tex + "\n" if abstract_tex else "") + body
     if "% PAPER_BODY" in tpl:
