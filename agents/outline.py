@@ -569,6 +569,10 @@ def chapter_fingerprint(chapter: dict) -> str:
                      f":{section['target_words']}"
                      f":{section.get('type') or '-'}"
                      f":{len(bullets)}:{digest}")
+    from .citation_plan import required_block
+    block = required_block(chapter)
+    if "| key |" in block:
+        parts.append("citations=" + hashlib.sha256(block.encode("utf-8")).hexdigest()[:16])
     return " ".join(parts)
 
 
@@ -621,6 +625,8 @@ def render_brief(chapter: dict, total_chapters: int = 0) -> str:
         for bullet in section["bullets"]:
             lines.append(f"- {bullet}")
         lines.append("")
+    from .citation_plan import required_block
+    lines += [required_block(chapter)]
     return "\n".join(lines).rstrip() + "\n"
 
 

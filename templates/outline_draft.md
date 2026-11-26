@@ -3,7 +3,7 @@
 <!-- 标题公式: 在什么场景下 + 使用什么方法 + 解决什么问题（英文: [Method] for [Problem] in [Scenario]）。
      若标题过长，直接删除场景部分，保留 [Method] for [Problem]。 -->
 
-<!-- 放在 inbox/outline_draft.md。填下面这张表:分几章、每章叫什么、什么 type、什么顺序。
+<!-- 文献位置由 citation-plan.md 管理。\n     放在 inbox/outline_draft.md。填下面这张表:分几章、每章叫什么、什么 type、什么顺序。
      加减行即可;章标题中英文都行;type 必须取自本文件末尾的词表。
      小节和起草要点不用你写:`python run.py --project <项目> --go` 会让规划者读 idea.md 展开,
      生成 outline.zh.md,你审完/改完再跑一次 --go。

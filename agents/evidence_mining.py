@@ -203,7 +203,7 @@ def build_evidence_mining_prompt(section_title: str, reference_excerpt: str,
 
 def build_input_material_prompt(chapter: str, brief_path: str, folder_path: str,
                                 family: str, reference_index: str,
-                                reference_rule: str = "") -> str:
+                                reference_rule: str = "", required: list | None = None) -> str:
     """让 Manager 读取文献索引 + 本章规格 + idea,生成本章 input.md。
 
     input.md 装的是"本章特有、不属于全局 idea、也不属于 data 的补充素材"——主要来自
@@ -218,7 +218,10 @@ def build_input_material_prompt(chapter: str, brief_path: str, folder_path: str,
         f"The document brief.md (attached) is this chapter's spec (its declared `type:` and the "
         f"numbered sections it must cover).\n\n"
         f"{reference_rule}"
-        f"From the attached ref-index.md and note:<key> documents (one row per paper; the `key` column is "
+        + ("REQUIRED CITATIONS FOR THIS CHAPTER (author-provided; every key must appear in your table):\n"
+           + "\n".join(f"{r['key']} | section {r['section']} | {r['role']}" for r in required)
+           + "\n" if required else "")
+        + f"From the attached ref-index.md and note:<key> documents (one row per paper; the `key` column is "
         f"the ONLY citable key), assemble the source material this chapter needs and return it as "
         f"input.md:\n"
         f"- The references this chapter needs, as a table with the header "
@@ -259,6 +262,9 @@ def run_input_material(manager_agent, folder_path, chapter, family,
             f"文献索引不存在: {REF_INDEX_PATH}(先建索引再跑章节)")
     from .chapter_contract import build_contract_reference_rule
     reference_rule = build_contract_reference_rule(route) if route else ""
+    from .citation_plan import required_from_brief, ensure_input_required
+    required = required_from_brief(folder_path)
+    required_keys = {r["key"] for r in required}
     set_agent_context("Manager")
     brief = Doc("brief.md", os.path.join(folder_path, "brief.md"))
     head = [Doc("idea.md", IDEA_PATH), brief, Doc("ref-index.md", REF_INDEX_PATH)]
@@ -279,15 +285,19 @@ def run_input_material(manager_agent, folder_path, chapter, family,
             f"Choose the papers chapter \"{chapter}\" should cite. Read the chapter spec "
             f"(brief.md) and the reference index (ref-index.md; the `key` column is the only "
             f"citable key). Return input-keys.md: one bullet per chosen paper, `- <key>: why it "
-            f"matters here`, at most 14 papers, most relevant first.\n{reference_rule}"),
+            f"matters here`, at most 14 additional papers, most relevant first. "
+            f"Required keys ({', '.join(sorted(required_keys)) or 'none'}) are already included; "
+            f"do not spend these additional slots on them.\n{reference_rule}"),
             head, ["input-keys.md"])
         picked = Path(folder_path, "input-keys.md")
         keys = keys_in_text(picked.read_text(encoding="utf-8") if picked.is_file() else "")
-        notes = note_docs(keys)
+        all_keys = sorted(required_keys | set(keys))
+        notes = note_docs(all_keys, max_notes=len(all_keys))
     result = run_agent_stage(manager_agent, "Manager", build_input_material_prompt(
-        chapter, "brief.md", folder_path, family, "", reference_rule=reference_rule), head + notes, ["input.md"])
+        chapter, "brief.md", folder_path, family, "", reference_rule=reference_rule, required=required), head + notes, ["input.md"])
     set_agent_context("Manager")
     verify(["input.md"])
+    ensure_input_required(input_path, required)
     return result
 
 

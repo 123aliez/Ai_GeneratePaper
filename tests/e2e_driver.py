@@ -57,6 +57,17 @@ class FakePlanner:
     def run_stage(self, task, docs, deliverables, out_dir, **kwargs):
         from agents.content_stage import StageOutcome
         out = StageOutcome(rounds=1, written=list(deliverables))
+        if list(deliverables) == ["citation-plan.md"]:
+            from agents.citation_plan import render_plan, prefill_from_outline
+            from agents.references import citable_keys
+            chapters = parse_outline(config.WORK_ROOT / "outline.md")
+            rows = prefill_from_outline(chapters, citable_keys(config.REFS_BIB_PATH))
+            method = next(c for c in chapters if c["type"] == "method")
+            for key in sorted(citable_keys(config.REFS_BIB_PATH) - {r["key"] for r in rows}):
+                rows.append(dict(key=key, chapter=method["number"], section=1,
+                                 role="Attribute the encoder", status="cite", reason="", source="planner"))
+            Path(out_dir, "citation-plan.md").write_text(render_plan(rows), encoding="utf-8")
+            return out
         if "expand" in CAPTURED and not Path(CAPTURED["expand"][0]).exists():
             en = str(Path(out_dir) / Path(CAPTURED["expand"][0]).name)
             zh = str(Path(out_dir) / Path(CAPTURED["expand"][1]).name)

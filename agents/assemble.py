@@ -1087,3 +1087,38 @@ def build_trace_report(chapters: list[Chapter], res_map: dict, sources: dict,
     if not any_row:
         out.append("(正文里没有来自结果表的数字)")
     return "\n".join(out) + "\n"
+
+
+def build_citation_coverage(bib_keys, cited, plan_rows, *, levels=None, occurrences=None) -> str:
+    """全文引用去重计数，并逐篇列出必引缺失、omit 理由和实际出现位置。"""
+    keys, used = set(bib_keys), set(cited) & set(bib_keys)
+    levels, occurrences = levels or {}, occurrences or {}
+    missing = keys - used
+    allocated = {r["key"] for r in plan_rows if r["status"] == "cite"}
+    omitted = {r["key"] for r in plan_rows if r["status"] == "omit"} - allocated
+    omitted &= missing
+    lines = ["# 引用覆盖", "",
+             f"refs.bib 共 {len(keys)} 篇；正文引用 {len(used)} 篇；未引用 {len(missing)} 篇"
+             f"（其中分配表标 omit 的 {len(omitted)} 篇）。", "",
+             "## 未引用（分配为 cite 却没引用）", "",
+             "| key | 级别 | 分配位置 | 作用 |", "|---|---|---|---|"]
+    for key in sorted(missing - omitted):
+        rows = [r for r in plan_rows if r["key"] == key and r["status"] == "cite"]
+        locations = "；".join(f"{r['chapter']}.{r['section']}" for r in rows) or "未分配"
+        roles = "；".join(r["role"].replace("|", "/") for r in rows)
+        lines.append(f"| {key} | {levels.get(key, 'B')} | {locations} | {roles} |")
+    if not missing - omitted:
+        lines.append("| (none) | | | |")
+    lines += ["", "## 未引用（分配表标 omit）", "", "| key | 理由 |", "|---|---|"]
+    for key in sorted(omitted):
+        reasons = "；".join(r["reason"].replace("|", "/") for r in plan_rows
+                           if r["key"] == key and r["status"] == "omit")
+        lines.append(f"| {key} | {reasons} |")
+    if not omitted:
+        lines.append("| (none) | |")
+    lines += ["", "## 已引用", "", "| key | 出现的章节 |", "|---|---|"]
+    for key in sorted(used):
+        lines.append(f"| {key} | {'；'.join(occurrences.get(key, []))} |")
+    if not used:
+        lines.append("| (none) | |")
+    return "\n".join(lines) + "\n"

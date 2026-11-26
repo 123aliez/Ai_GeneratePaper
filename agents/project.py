@@ -274,6 +274,11 @@ def check_materials(need_models: bool = False) -> Check:
     counts = lib.level_counts()
     chk.info.append(f"文献: refs.bib {len(lib.entries)} 条,配到笔记 {len(lib.records)} 篇"
                     f"(A {counts['A']} / B {counts['B']} / C {counts['C']})")
+    from .materials import keys_in_text
+    mentioned = keys_in_text(idea_path.read_text(encoding="utf-8") if idea_path.is_file() else "",
+                             valid=set(lib.entries))
+    chk.info.append(f"文献：{len(lib.entries)} 篇中 {len(mentioned)} 篇在 idea.md 里点名；"
+                    f"其余 {len(lib.entries) - len(mentioned)} 篇由 --plan-citations 分配位置")
 
     # 代码 / 模板 / paper.toml
     code = Path(config.CODE_ROOT)
@@ -337,6 +342,12 @@ def build_all_indexes() -> dict:
 
 
 # ── 组装 ─────────────────────────────────────────────────────────────────
+def prepare_citations(chapters):
+    """--init 先校验分配，再刷新各章必引块。"""
+    from .citation_plan import sync_plan
+    return sync_plan(chapters)
+
+
 def assemble_output(extra_notes: list[str] | None = None) -> dict:
     """把各章终稿组装成 output/ 里的交付物(不调模型)。返回概况。"""
     import config
@@ -409,6 +420,30 @@ def assemble_output(extra_notes: list[str] | None = None) -> dict:
                           Path(config.REFS_BIB_PATH))
 
     notes = list(extra_notes or [])
+    from .citation_plan import paths, parse_citation_plan, validate_citation_plan, load_levels
+    from .references import citable_keys
+    from .draft_checks import _cite_keys, body_text, _FENCE_RE
+    plan_path, _ = paths()
+    plan_rows = parse_citation_plan(plan_path) if plan_path.is_file() else []
+    bib_keys = citable_keys(config.REFS_BIB_PATH)
+    if plan_path.is_file():
+        plan_errors = validate_citation_plan(plan_rows, bib_keys, outline)
+        if plan_errors:
+            raise ValueError("引用分配无效：" + "; ".join(plan_errors))
+    occurrences = {}
+    for chapter in chapters:
+        for key in _cite_keys(_FENCE_RE.sub("", body_text(chapter.en))):
+            occurrences.setdefault(key, []).append(f"{chapter.number}. {chapter.title}")
+    coverage = A.build_citation_coverage(bib_keys, latex["cited"], plan_rows,
+                                         levels=load_levels(), occurrences=occurrences)
+    (out / "引用覆盖.md").write_text(coverage, encoding="utf-8")
+    required_keys = {r["key"] for r in plan_rows if r["status"] == "cite"}
+    omitted_keys = {r["key"] for r in plan_rows if r["status"] == "omit"} - required_keys
+    missing_citations = bib_keys - set(latex["cited"]) - omitted_keys
+    if missing_citations:
+        note = f"引用覆盖：{len(bib_keys)} 篇中 {len(missing_citations)} 篇按分配应引用却未引用，见 引用覆盖.md"
+        notes.append(note)
+        print(note)
     notes.extend(macro_f1_warnings(settings, tables.values()))
     from .outline import page_budget
     budget = page_budget()

@@ -133,15 +133,20 @@ def test_flow():
     # 作者审大纲:改中文大纲 → --go 触发翻译,然后逐章生成并组装
     zh.write_text(zh.read_text(encoding="utf-8") + "\n", encoding="utf-8")
     rc, out = run("--go", project=root)
-    check("第二次 --go 跑完", rc == 0, out[-1500:])
+    check("大纲翻译后旧引用计划硬停", rc == 1 and "--plan-citations" in out, out[-1500:])
     check("检测到中文大纲改动并翻译", "翻译完成" in out, out[-800:])
+    (root / "citation-plan.md").rename(root / "citation-plan.previous.md")
+    rc, out = run("--plan-citations", project=root)
+    check("显式重新规划引用位置", rc == 0, out[-800:])
+    rc, out = run("--go", project=root)
+    check("引用计划同步后 --go 跑完", rc == 0, out[-1500:])
     order = [m for m in re.findall(r"\[(\d+)/4\] (0\d-[\w-]+)\n", out)]
     check("摘要章最后写(论文里仍是第 1 章)",
           order and order[-1][1].endswith("abstract") and order[-1][0] == "1"
           and "运行顺序:摘要最后写" in out, str(order))
 
     o = root / "output"
-    for name in ("paper.md", "paper.zh.md", "待补清单.md", "图表清单.md", "数字溯源表.md"):
+    for name in ("paper.md", "paper.zh.md", "待补清单.md", "图表清单.md", "数字溯源表.md", "引用覆盖.md"):
         check(f"交付物 {name}", (o / name).is_file())
     for name in ("main.tex", "refs.bib"):
         check(f"LaTeX 工程 {name}", (o / "latex" / name).is_file())

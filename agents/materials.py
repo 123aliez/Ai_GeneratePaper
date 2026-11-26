@@ -79,7 +79,10 @@ def chapter_note_docs(folder_path) -> list[Doc]:
     if not input_md.is_file():
         return []
     keys = keys_in_text(input_md.read_text(encoding="utf-8", errors="replace"))
-    return note_docs(keys)
+    from .citation_plan import required_from_brief
+    required = list(dict.fromkeys(r["key"] for r in required_from_brief(folder_path)))
+    selected = required + [key for key in keys if key not in required][:MAX_NOTES]
+    return note_docs(selected, max_notes=len(selected))
 
 
 def lookup_fulltext(folder_path, key: str, query: str) -> str:

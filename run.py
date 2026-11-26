@@ -185,6 +185,70 @@ def _translate_zh_to_en() -> int:
     return 0
 
 
+def plan_citations() -> int:
+    """大纲展开后生成作者审阅版，已有分配表绝不覆盖。"""
+    import config
+    import tempfile
+    from agents import citation_plan as cp, create_planner_agent
+    from agents.content_stage import Doc
+    from agents.outline import parse_outline, OUTLINE_PATH
+    from agents.orchestrator import run_agent_stage_standalone
+    from agents.references import citable_keys
+
+    md, cache = cp.paths()
+    if md.exists():
+        print(f"Error: {md} 已存在，保留作者修改。重新分配请先备份并移走它。")
+        return 1
+    if _translate_zh_to_en() != 0:
+        return 1
+    if not Path(OUTLINE_PATH).is_file():
+        print("Error: 缺少英文展开大纲，请先运行 --expand")
+        return 1
+    if _indexes_or_report() is None:
+        return 1
+    created = False
+    try:
+        bib_sha, outline_sha = cp.file_sha(config.REFS_BIB_PATH), cp.file_sha(OUTLINE_PATH)
+        chapters = parse_outline(OUTLINE_PATH)
+        keys = citable_keys(config.REFS_BIB_PATH)
+        rows = cp.prefill_from_outline(chapters, keys)
+        if keys - {r["key"] for r in rows}:
+            Path(config.WORK_ROOT).mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(prefix="citation-plan-", dir=config.WORK_ROOT) as tmp:
+                manager = create_planner_agent(get_manager_model())
+                run_agent_stage_standalone(manager, "Manager", cp.build_plan_prompt(chapters, keys, rows),
+                                           [Doc("idea.md", config.IDEA_PATH),
+                                            Doc("outline.md", OUTLINE_PATH),
+                                            Doc("ref-index.md", config.REF_INDEX_PATH)],
+                                           ["citation-plan.md"], tmp)
+                candidate = Path(tmp) / "citation-plan.md"
+                if not candidate.is_file():
+                    raise ValueError("规划者没有返回 citation-plan.md")
+                planned = cp.parse_citation_plan(candidate)
+                if any(row not in planned for row in rows):
+                    raise ValueError("规划者改动或删除了程序预填的引用位置")
+                rows = planned
+        errors = cp.validate_citation_plan(rows, keys, chapters)
+        if errors:
+            raise ValueError("\n".join(errors))
+        if bib_sha != cp.file_sha(config.REFS_BIB_PATH) or outline_sha != cp.file_sha(OUTLINE_PATH):
+            raise ValueError("规划期间文献库或大纲发生变化，请重新运行 --plan-citations")
+        # 排他创建，避免规划期间作者新建的文件被覆盖。
+        md.parent.mkdir(parents=True, exist_ok=True)
+        with md.open("x", encoding="utf-8") as handle:
+            handle.write(cp.render_plan(rows))
+        created = True
+        cp.write_plan_json(rows, bib_sha, outline_sha, cache)
+    except (OSError, ValueError) as exc:
+        if created:
+            md.unlink(missing_ok=True)
+        print(f"Error: 引用分配未完成：{exc}")
+        return 1
+    print(f"引用分配完成：{len(keys)} 篇，{sum(r['status'] == 'omit' for r in rows)} 条 omit → {md}")
+    print("请与 outline.zh.md 一同审阅；改完分配表运行 --init --force。")
+    return 0
+
+
 def init_workspaces(force: bool) -> int:
     """读 outline.md 生成各章工作区 + 跨章状态。返回退出码。
 
@@ -232,8 +296,10 @@ def init_workspaces(force: bool) -> int:
         return 1
 
     try:
+        from agents.project import prepare_citations
+        prepare_citations(skeleton)
         result = init_chapter_workspaces(force=force, chapters=skeleton)
-    except (OutlineRouteError, CrossChapterStateError, OSError) as exc:
+    except (OutlineRouteError, CrossChapterStateError, OSError, ValueError) as exc:
         print(f"Error: --init 未修改工作区: {exc}")
         return 1
     if not result["chapters"]:
@@ -256,6 +322,9 @@ def init_workspaces(force: bool) -> int:
     if result["stale"]:
         counts += f",{len(result['stale'])} 章已过期"
     print(counts)
+    if force:
+        print("引用分配已同步。如本章必引块发生变化，旧产物会判陈旧；备份后删除该章 input.md "
+              "及提示的后续产物，再运行同一命令续写。")
 
     if result["stale"]:
         print("\n以下章节的 brief.md 与当前 outline.md 不一致,或不是 --init 生成的:")
@@ -451,6 +520,8 @@ def expand_outline() -> int:
             short_list = ", ".join(sorted(SHORT_CHAPTER_TYPES))
             print(f"  · 短章({short_list})在**章标题**后加字数,"
                   f"例如 `## 1. Abstract (~200 words)`;不要新增 `###` 小节。")
+    if plan_citations() != 0:
+        return 1
     print(f"\n下一步:")
     print(f"  1. 读 {zh_path}(中文版),改掉不认同的小节与要点,补上字数")
     print(f"  2. python run.py --project <项目> --go   # 审完再跑:自动翻译成英文大纲 → 逐章生成")
@@ -845,6 +916,13 @@ def cmd_go(keep_outline: bool) -> int:
         print(f"已确认继续沿用现有大纲({'、'.join(changed)} 的改动不再提醒)。")
     if _translate_zh_to_en() != 0:
         return 1
+    from agents.citation_plan import check_plan_current
+    from agents.outline import parse_outline
+    plan_errors = check_plan_current(parse_outline())
+    if plan_errors:
+        for error in plan_errors:
+            print(f"Error: {error}")
+        return 1
     rc = init_workspaces(force=False)
     if rc != 0:
         return rc
@@ -867,7 +945,7 @@ def cmd_go(keep_outline: bool) -> int:
 USAGE = """用法:
   python run.py --new 项目名                          建项目 + 模板
   python run.py --project <项目> --go                 一条命令出初稿(首次展开大纲后停下等你审)
-  python run.py --project <项目> --check | --index | --expand | --init | --all | --assemble | --list
+  python run.py --project <项目> --check | --index | --expand | --plan-citations | --init | --all | --assemble | --list
   python run.py --project <项目> --paper-review       整篇一致性检查(只读,结果进待补清单)
   python run.py --project <项目> <章节名>             只跑一章
 详见 README.md。"""
@@ -900,7 +978,7 @@ def main():
         rest = [a for j, a in enumerate(argv) if j not in (i, i + 1) and a != "--progress"]
 
     actions = ("--check", "--index", "--assemble", "--go", "--list", "--init", "--expand", "--all",
-               "--paper-review")
+               "--paper-review", "--plan-citations")
     known = set(actions) | {"--keep-outline", "--force"}
     unknown = [a for a in rest if a.startswith("--") and a not in known]
     if unknown:
@@ -934,6 +1012,8 @@ def main():
         return
     if "--init" in rest:
         sys.exit(init_workspaces(force="--force" in rest))
+    if "--plan-citations" in rest:
+        sys.exit(plan_citations())
     if "--expand" in rest:
         sys.exit(expand_outline())
 

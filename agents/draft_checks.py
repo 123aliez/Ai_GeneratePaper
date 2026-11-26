@@ -243,3 +243,29 @@ def manuscript_findings(text, tables, bib_keys, *, result_prose=True, english=Tr
             if any(k in bib_keys or re.search(r"[a-zA-Z]\w*(?:19|20)\d{2}\w*", k) for k in keys):
                 findings.append(f"Figure {fig['id']}: replace bare [{group}] in Note with a verified BibTeX citation.")
     return findings
+
+
+def required_citation_findings(text: str, required) -> list[str]:
+    """核对实际引用命令和分配小节，围栏代码与正文尾注不算引用。"""
+    clean = _FENCE_RE.sub("", body_text(text))
+    lines = clean.splitlines()
+    headings = []
+    for index, line in enumerate(lines):
+        match = _HEADING_RE.match(line.strip())
+        if match:
+            headings.append((index, len(match[1]), _norm_title(match[2])))
+    findings = []
+    for row in required:
+        section_text = clean
+        if row.get("section_count", 1) > 1:
+            wanted = _norm_title(row.get("section_title", ""))
+            matches = [(i, depth) for i, depth, title in headings if _title_matches(wanted, title)]
+            if matches:
+                start, level = matches[0]
+                end = next((i for i, depth, _ in headings if i > start and depth <= level), len(lines))
+                section_text = "\n".join(lines[start + 1:end])
+            else:
+                section_text = ""
+        if row["key"] not in _cite_keys(section_text):
+            findings.append(f"[MISSING-CITATION] {row['key']} (section {row['section']}): {row['role']}")
+    return findings

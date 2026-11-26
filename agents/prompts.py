@@ -33,7 +33,7 @@ directly, repeats nothing, uses one spelling per term, and matches every claim t
 
 <editorial_contract>
 Write a research argument for a reader deciding what is new, how it works, and what the
-evidence establishes. Source documents are a pool of evidence, not a coverage checklist.
+evidence establishes. Source documents are a pool of evidence, not a coverage checklist — except the Required Citations in brief.md: cite every one of them in its assigned section (a grouped \\cite{a,b} counts).
 - Keep the text completely free of mathematical proofs, lemmas, and step-by-step derivations
   (including algebraic or gradient expansion steps): present only the final working formula
   and a plain-language explanation of what it computes and why. Simply omit any proofs or

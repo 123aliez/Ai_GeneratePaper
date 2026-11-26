@@ -46,3 +46,10 @@
 | 8 | 贡献点的力度取决于 idea.md:材料里没有新方法时,引言只能写成“讲清机制 + 配对对比” | 在 idea.md 里把新意写具体 |
 | 9 | `orchestrator.py` 里 `ProgressFilteringStdout` / `print_stream_progress` / `PROGRESS_PATTERNS` 是旧架构遗留,已不被调用 | 后续清理 |
 | 10 | 项目根 `CLAUDE.md` 仍描述旧架构(CodeAgent、工具、Stage 4 合并两版等) | 由作者决定是否手动同步 |
+
+
+引用覆盖流程已接入。展开大纲后生成 `citation-plan.md`，与中文大纲一同审阅。
+已有大纲时可运行 `--plan-citations`。作者修改分配表后用 `--init --force`
+同步必引块，备料保留全部必引笔记，起草和终稿逐节核对引用。
+组装输出 `引用覆盖.md`；漏掉必引时章节为未核验。程序实现位于
+`agents/citation_plan.py`，离线回归位于 `tests/test_citation_coverage.py`。

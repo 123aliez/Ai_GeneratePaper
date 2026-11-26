@@ -1020,6 +1020,7 @@ ROUTE_DEPENDENT_ARTIFACTS = [
     "draft-v1.part-1.md", "draft-v1.part-2.md", "draft-v1.part-3.md",
     "draft-v1.md",
     "number-check.md",
+    "citation-check.md",
     "review-v1.md", "review-v1.json",
     "citation-insertions.md",
     "draft-v2.md",
@@ -1269,6 +1270,22 @@ def final_integrity_reasons(folder_path: str, route: dict | None = None) -> list
         style_tables = {t.name: t for t in collect_tables(DATA_ROOT) if t.is_grid}
         known_tables = set(style_tables)
         result_prose = checks_result_prose(scope_types(route or {}))
+        from .citation_plan import required_from_brief
+        from .draft_checks import required_citation_findings
+        english = Path(folder_path, "final.md")
+        citation_gaps = (required_citation_findings(english.read_text(encoding="utf-8"),
+                                                   required_from_brief(folder_path))
+                         if english.is_file() else [])
+        if citation_gaps:
+            reasons.append("final.md 缺少必引文献: " + "; ".join(citation_gaps))
+        todo = Path(folder_path, "todo.md")
+        old_todo = todo.read_text(encoding="utf-8") if todo.is_file() else ""
+        cleaned = re.sub(r"(?ms)^## Missing required citations\n.*?(?=^## |\Z)", "", old_todo)
+        if citation_gaps:
+            cleaned = cleaned.rstrip() + "\n\n## Missing required citations\n\n" + "\n".join(
+                "- " + gap for gap in citation_gaps) + "\n"
+        if cleaned != old_todo:
+            todo.write_text(cleaned, encoding="utf-8")
         for fname in ("final.md", "final.zh.md"):
             fp = Path(folder_path, fname)
             if not fp.is_file():
@@ -2146,6 +2163,13 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
     findings = check_manuscript(Path(folder_path, "draft-v1.md").read_text(encoding="utf-8"))
     style_report = Path(folder_path, "table-style-check.md")
     style_report.write_text("\n".join(findings) or "OK", encoding="utf-8")
+    from .citation_plan import required_from_brief
+    from .draft_checks import required_citation_findings
+    required_citations = required_from_brief(folder_path)
+    citation_findings = required_citation_findings(
+        Path(folder_path, "draft-v1.md").read_text(encoding="utf-8"), required_citations)
+    Path(folder_path, "citation-check.md").write_text("\n".join(citation_findings) or "OK", encoding="utf-8")
+    record_stage(["citation-check.md"], "citation-check.md")
 
     # ── Deterministic number gate (experiment mode) ─────────────────
     # Cross-check every number in draft-v1 against the results store BEFORE the
@@ -2205,6 +2229,12 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
                 f"line as a MUST FIX item (the prose contradicts the recorded results). "
             )
         _contract_check = os.path.join(folder_path, "contract-check.md")
+        if citation_findings:
+            number_check_clause += (
+                "The attached citation-check.md identifies missing author-required citations. "
+                "Treat each [MISSING-CITATION] line as a MUST FIX item. Cite each key in its assigned "
+                "section using the assigned role and the provided notes. "
+            )
         if os.path.isfile(_contract_check):
             _contract_text = Path(_contract_check).read_text(encoding="utf-8", errors="replace")
             if "Status: OK" not in _contract_text:
@@ -2237,7 +2267,7 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
                f"(MF1, MF2, ...), a precise location, the issue, and a concrete suggestion.\n\n")
             + f"{reference_excerpt}"
             + f"{review_skills}"
-        ), chapter_base() + local_docs(folder_path, "draft-v1.md", "brief.md", "input.md", "number-check.md", "contract-check.md", "table-style-check.md")
+        ), chapter_base() + local_docs(folder_path, "draft-v1.md", "brief.md", "input.md", "number-check.md", "contract-check.md", "table-style-check.md", "citation-check.md")
            + xchap_docs + abstract_docs,
            ["review-v1.md", "todo.md"] + (["review-v1.json"] if _skip_structured else []))
         set_agent_context("Manager")
@@ -2299,6 +2329,18 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
         if os.path.exists(os.path.join(folder_path, "review-v1.md")):
             os.remove(os.path.join(folder_path, "review-v1.md"))
         return _finish_with_table(folder_path, results)  # caller will re-enter; stage2 will run because artifacts removed
+
+    added_citations = False
+    for index, gap in enumerate(citation_findings, 1):
+        ident = f"MF-CITATION-{index}"
+        if not any(item["id"] == ident for item in _review_must_fix):
+            _review_must_fix.append(dict(id=ident, location="assigned section in brief.md",
+                                         issue=gap, suggestion="Cite this paper in its assigned section using its note and role."))
+            added_citations = True
+    if added_citations:
+        Path(folder_path, "review-v1.json").write_text(
+            json.dumps(_review_data, ensure_ascii=False, indent=2), encoding="utf-8")
+        record_stage(["review-v1.json"], "review")
 
     if findings and not any(item["id"] == "MF-FORMAT" for item in _review_must_fix):
         _review_must_fix.append({"id": "MF-FORMAT", "location": "tables and figure notes",
