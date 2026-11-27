@@ -198,6 +198,9 @@ def test_required_checks():
         check("错放小节仍报缺引", "beta" in str(required_citation_findings(text, required)))
         check("按节引用通过", not required_citation_findings(
             text + " See \\cite{beta}.", required))
+        opening_figure = ("[FIGURE overview: Overview]\nNote. Adapted examples \\cite{alpha}.\n\n"
+                          "## Fusion\n\nOur method.\n\n## Training\n\nSee \\cite{beta}.")
+        check("章首图注引用计入首节", not required_citation_findings(opening_figure, required))
         (folder / "final.md").write_text("## Fusion\n\nSee \\cite{alpha}.", encoding="utf-8")
         reasons = final_integrity_reasons(str(folder), {"type": "related"})
         check("T15 终稿缺必引判未核验", "缺少必引文献" in str(reasons) and "beta" in str(reasons))

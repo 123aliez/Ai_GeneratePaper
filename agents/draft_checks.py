@@ -263,7 +263,9 @@ def required_citation_findings(text: str, required) -> list[str]:
             if matches:
                 start, level = matches[0]
                 end = next((i for i, depth, _ in headings if i > start and depth <= level), len(lines))
-                section_text = "\n".join(lines[start + 1:end])
+                # 章首图及其图注属于首节的引入材料，不因位于小节标题之前而漏算。
+                first_line = 0 if row["section"] == 1 else start + 1
+                section_text = "\n".join(lines[first_line:end])
             else:
                 section_text = ""
         if row["key"] not in _cite_keys(section_text):
