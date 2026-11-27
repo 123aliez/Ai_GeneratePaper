@@ -21,7 +21,7 @@ CONTRACTS: dict[str, dict[str, str]] = {
         "focus": "A single, clear, plain paragraph of AT MOST 7 sentences: "
                  "Sentence 1 states the background; "
                  "Sentence 2 states the exact problem we solve; "
-                 "Sentences 3-4 (or up to 2-3 middle sentences, keeping total <= 7) directly state "
+                 "Use 3-4 middle sentences (sentences 3-5 or 3-6) to directly state "
                  "OUR core method and contributions from idea.md section 6 so the reader never "
                  "guesses the idea; "
                  "the final sentence states OUR key experimental results (as {{RES-xxx}} placeholders).",
@@ -102,7 +102,8 @@ CONTRACTS: dict[str, dict[str, str]] = {
     },
     "results": {
         "focus": "Objective, takeaway-driven analysis of OUR comparison and ablation results; "
-                 "every number is a placeholder or a rendered table. Select ONLY primary metrics "
+                 "every OUR result number is a placeholder or a rendered table. Clearly attribute "
+                 "any published comparison numbers to their cited source and supplied reading note. Select ONLY primary metrics "
                  "for main-text tables using `cols:` in [TABLE: ...] (select primary metrics; 8-9 essential cross-dataset columns may share a double-column table). "
                  "Report mean performance only without standard deviations. Explain all ablation "
                  "variants, evaluation conventions, and data comparisons directly in the main prose; "
@@ -130,6 +131,14 @@ CONTRACTS: dict[str, dict[str, str]] = {
         "forbidden": "Stating a contribution from idea.md section 6 as demonstrated when no result "
                      "in the data index supports it (hedge it or leave it out, and list it in "
                      "todo.md); any new claim.",
+    },
+    "appendix": {
+        "focus": "Author-supplied supplementary material assigned by the approved outline. "
+                 "Proofs and derivations may appear here when supplied by the author. "
+                 "Use the same notation and result sources as the main text.",
+        "references": "Cite the supplied bibliography and notes for attributed supplementary material.",
+        "forbidden": "Inventing proofs, experiments or contributions, or silently moving required "
+                     "main-text explanations into an unrequested appendix.",
     },
 }
 # 共享契约的类型:同一个 dict 对象,不复制文本。

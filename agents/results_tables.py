@@ -44,6 +44,7 @@ class Table:
     text_cells: dict = field(default_factory=dict)   # (行名, 列名) → 非数值单元格原文(76.1† / N/A / OOM)
     dispersion_keys: set = field(default_factory=set)  # 含行号的扁平键不能按末段猜列名
     col_order: list = field(default_factory=list)    # 表头里的列序
+    reference_only: bool = False                   # ref_ CSV 只供正文取数
 
     @property
     def is_grid(self) -> bool:
@@ -124,7 +125,7 @@ def collect_tables(results_root) -> list[Table]:
             name = results_prefix(path)
             table = tables.get(name)
             if table is None:
-                table = Table(name=name, file=os.path.relpath(path, root))
+                table = Table(name=name, file=os.path.relpath(path, root), reference_only=fn.lower().startswith("ref_"))
                 tables[name] = table
                 order.append(name)
             try:
@@ -198,7 +199,7 @@ def _collect_text_cells(path: str, table: Table) -> None:
 
 
 def table_names(results_root) -> list[str]:
-    return [t.name for t in collect_tables(results_root) if t.is_grid]
+    return [t.name for t in collect_tables(results_root) if t.is_grid and not t.reference_only]
 
 
 # ── 数据索引 ─────────────────────────────────────────────────────────────
@@ -220,6 +221,8 @@ def render_data_index(tables: list, res_map: dict, settings_path: str = "") -> s
         lines.append("(inbox/results/ 里没有结果表)")
         return "\n".join(lines) + "\n"
     for t in tables:
+        if t.reference_only:
+            lines.append(f"> {t.name}: 仅供引用数字，禁止使用 [TABLE: {t.name}] 插表。")
         if t.is_grid:
             shown_cols, _pairs = pair_std_columns(t.cols)
             lines.append(f"## {t.name}  (`{t.file}` · {len(t.labels)} 行 × {len(shown_cols)} 列)")
@@ -273,6 +276,8 @@ def table_matrix(
 ) -> tuple[list, list]:
     """渲染用的中间表示:(表头显示名, 行)。行是 [(是否加粗, 文本)] 列表。
     默认 include_std=False: 不拼接标准差(± std), 仅渲染均值/主指标; 每列按 ↑/↓ 加粗最优值。"""
+    if table.reference_only:
+        raise ValueError(f"{table.name} 是仅供引用数字的数据，禁止使用 [TABLE] 插表")
     shown, pairs = pair_std_columns(table.cols)
     shown = _filter_shown_cols(shown, cols)
     header = [table.label_header or "Method"]
@@ -430,7 +435,7 @@ def recover_table_layouts(text: str, tables: dict) -> str:
     def replace(match):
         name = match[1]
         table = tables.get(name)
-        if not table or not table.is_grid:
+        if not table or not table.is_grid or table.reference_only:
             return match[0]
         cols = pair_std_columns(table.cols)[0]
         metric_list = re.search(r"retaining (.+?) for each dataset", match[0], re.I)
@@ -476,6 +481,8 @@ def table_style_warnings(text: str, tables_by_name: dict, *, result_prose: bool 
         if len(p["note"].split()) > 30:
             warnings.append(f"Table {p['name']}: note exceeds 30 words.")
         table = tables_by_name.get(p["name"])
+        if table and table.reference_only:
+            warnings.append(f"Table {p['name']}: reference-only data cannot be inserted as a manuscript table.")
         if table and table.is_grid:
             try:
                 shown = _filter_shown_cols(pair_std_columns(table.cols)[0], p.get("cols"))

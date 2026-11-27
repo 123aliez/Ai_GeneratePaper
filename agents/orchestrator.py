@@ -885,9 +885,11 @@ ROUTING_CLAUSES = {
     ),
     DATA: (
         "CHAPTER TYPE: {type} — a DATA chapter. Its subject is what the experiments "
-        "showed. Every number must come from the data index (RES catalog) (the RES-ID catalog of "
+        "showed. Every number from OUR experiments must come from the data index (RES catalog) (the RES-ID catalog of "
         "data/): cite it as a `{{RES-xxx}}` placeholder copied VERBATIM from the ID "
-        "column; write [MISSING DATA] for anything absent. Read idea.md "
+        "column; write [MISSING DATA] for anything absent. Published comparison numbers may be "
+        "reported with the named prior method/author and an adjacent citation, only when its supplied note "
+        "supports the number. Keep these distinct from OUR measurements. Read idea.md "
         "only to decide which comparisons matter and how to narrate them — do not "
         "re-explain the method design here, it belongs to the method chapter."
     ),
@@ -1100,7 +1102,7 @@ def summary_clause(folder_path: str) -> str:
         "as the same `{{RES-xxx}}` placeholders). Add no claim, number or citation they do not "
         "contain, and keep their terminology. Do not outline or promise content that is not there.\n"
         "FORM: ONE single paragraph of at most 7 sentences, without headings, lists or citations. "
-        "Sentence 1 states the background, sentence 2 the problem, and sentences 3-4 the method "
+        "Sentence 1 states the background, sentence 2 the problem, then use 3-4 sentences for the method "
         "and contributions. End with the key supported quantitative comparison, naming the "
         "benchmark and comparator and using {{RES-xxx}} or {{DIFF:..}} placeholders.\n")
 
@@ -1335,6 +1337,7 @@ def reverify_chapter(folder_path: str) -> dict:
         return {"status": "missing", "reasons": ["没有 final.md"]}
     sections = parse_brief_sections(folder_path)
     route = resolve_run_route(folder_path, sections)
+    from .chapter_contract import scope_types
     reasons = final_integrity_reasons(folder_path, route)
     # MUST FIX 验收是针对评审当时那份终稿做的。终稿被手改后,旧的“已解决”结论不再可信:
     # 只要有过 MUST FIX 清单,就要求重新评审(或确认),不能靠确定性检查通过就恢复“已核验”。
@@ -1351,7 +1354,8 @@ def reverify_chapter(folder_path: str) -> dict:
         try:
             from .number_gate import run_number_gate
             passed, msgs = run_number_gate(os.path.join(folder_path, "final.md"), str(DATA_ROOT),
-                                           exempt_values=derived_values(folder_path))
+                                           exempt_values=derived_values(folder_path),
+                                           allow_prior_work=bool(set(scope_types(route)) & {"experiments", "results", "analysis", "ablation"}))
             no_store = not passed and any(
                 "no results found" in m or "every number in the draft is unverifiable" in m for m in msgs)
             if no_store and gate == ADVISORY:
@@ -1541,7 +1545,7 @@ def idea_clause(family: str = MIXED, res_ids_path=None) -> str:
             head += (
                 f"The document data-index.md (attached) is the program-generated data index: one grid per result "
                 f"table, every cell shown as `{{{{RES-xxx}}}}=value`. NUMBER RULE (hard): cite any "
-                f"result number ONLY as a `{{{{RES-xxx}}}}` placeholder copied VERBATIM from the "
+                f"OUR result number ONLY as a `{{{{RES-xxx}}}}` placeholder copied VERBATIM from the "
                 f"index (exact token, double braces included). Why: the program substitutes the "
                 f"CSV value and checks the text against it, so a typed, rounded or restyled number "
                 f"is treated as an error and costs a revision round. Put a unit (%, x, ...) outside the braces, e.g. "
@@ -2183,7 +2187,8 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
         try:
             from .number_gate import run_number_gate
             passed, messages = run_number_gate(
-                os.path.join(folder_path, "draft-v1.md"), str(DATA_ROOT))
+                os.path.join(folder_path, "draft-v1.md"), str(DATA_ROOT),
+                allow_prior_work=bool(set(scope_types(route)) & {"experiments", "results", "analysis", "ablation"}))
             no_store = not passed and any(
                 "[NUMBER-GATE] no results found" in m or "cannot verify numbers" in m
                 or "every number in the draft is unverifiable" in m for m in messages)
@@ -2520,7 +2525,8 @@ def _run_4stage_with_progress(draft_agent, review_agent, folder_path: str, manag
             from .number_gate import run_number_gate
             final_gate_passed, final_gate_msgs = run_number_gate(
                 os.path.join(folder_path, "final.md"), str(DATA_ROOT),
-                exempt_values=derived_values(folder_path))
+                exempt_values=derived_values(folder_path),
+                                           allow_prior_work=bool(set(scope_types(route)) & {"experiments", "results", "analysis", "ablation"}))
             report = "# Number consistency check (final vs results store)\n\n"
             report += f"Gate level: {gate} (chapter type: {route['type']})\n"
             report += f"Status: {'PASS' if final_gate_passed else 'MISMATCH — see todo.md'}\n\n"

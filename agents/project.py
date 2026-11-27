@@ -25,7 +25,8 @@ INBOX_README = """# inbox/ —— 你的全部材料放这里(系统只读)
 |---|---|
 | `idea.md` | 创新点文档(按模板填;最重要) |
 | `outline_draft.md` | 章节骨架表(几章、每章叫什么、什么 type) |
-| `results/` | 每个 CSV 是论文里的一张结果表 + `实验设置.md`。第一列是方法名,`X_std` 列是 X 的标准差,列名带 ↑/↓ 表示越大/越小越好;**表头会原样出现在论文里,建议用英文** |
+| `results/` | 正文结果表 CSV + `实验设置.md`；`ref_*.csv` 仅供引用数字，禁止插表。第一列为方法名，`X_std` 为标准差 |
+| `figures/` | 已画好的图，按图标识命名，如 `overview.pdf`、`tradeoff-scatter.png`；组装时自动按图号复制 |
 | `references/` | `refs.bib`(总 bib)+ A/ B/ C/ 三个级别文件夹:每篇一份笔记(按 `笔记模板.md` 写),可直接放 md,也可一篇一个子文件夹(笔记 md + 可选原文 md) |
 | `code/` | 实验代码(整个文件夹拖进来;只做静态解析,不执行) |
 | `latex-template/` | 可选。会议模板(含 `main.tex`,正文位置写一行 `% PAPER_BODY`);不放则用内置模板 |
@@ -52,7 +53,7 @@ def new_project(name: str, parent: Path | None = None) -> Path:
     if root.exists() and any(root.iterdir()):
         raise FileExistsError(f"{root} 已存在且非空")
     inbox = root / "inbox"
-    for sub in ("results", "references", "code", "latex-template"):
+    for sub in ("results", "references", "code", "latex-template", "figures"):
         (inbox / sub).mkdir(parents=True, exist_ok=True)
     shutil.copy2(TEMPLATES / "idea.md", inbox / "idea.md")
     shutil.copy2(TEMPLATES / "outline_draft.md", inbox / "outline_draft.md")
@@ -241,8 +242,11 @@ def check_materials(need_models: bool = False) -> Check:
         chk.errors.append("结果表有问题:\n    " + format_store_issues(issues).replace("\n", "\n    "))
     tables = collect_tables(results)
     numeric = {k: v for k, v in store.items() if isinstance(v, (int, float))}
-    chk.info.append(f"结果表: {len(tables)} 张,{len(numeric)} 个数值")
+    chk.info.append(f"结果表: {sum(not t.reference_only for t in tables)} 张；"
+                    f"仅供引用数字的数据: {sum(t.reference_only for t in tables)} 份；共 {len(numeric)} 个数值")
     for t in tables:
+        if t.reference_only:
+            continue
         if t.collided:
             chk.warnings.append(f"结果表 `{t.name}` 里同一个 (行名, 列名) 有多个值(多 seed 未聚合?),"
                                 f"不能用 [TABLE] 整表渲染,只能逐个引用数字;要整表渲染请先聚合成主指标，绘图用标准差另存为 X_std 列")
@@ -399,6 +403,7 @@ def assemble_output(extra_notes: list[str] | None = None) -> dict:
                 ch.status = "unverified"
                 ch.reasons.extend(errors)
     num = A.number_items(chapters)
+    A.bind_input_figures(num, Path(config.INBOX_ROOT) / "figures")
 
     paper_toml = {}
     pt = Path(config.PROJECT_ROOT) / "paper.toml"
@@ -449,7 +454,7 @@ def assemble_output(extra_notes: list[str] | None = None) -> dict:
     budget = page_budget()
     if budget:
         pages, per_page = budget
-        words = sum(len(c.en.split()) for c in chapters)
+        words = sum(len(c.en.split()) for c in chapters if c.ctype != "appendix")
         est = words / per_page
         notes.append(f"篇幅:正文约 {words} 词,按每页 {per_page} 词约 {est:.1f} 页(目标 {pages} 页,不含参考文献)"
                      + ("" if est <= pages * 1.1 else ";超出预算,投稿前需压缩"))
@@ -479,5 +484,5 @@ def assemble_output(extra_notes: list[str] | None = None) -> dict:
     return {"chapters": len(chapters), "with_final": sum(1 for c in chapters if c.en.strip()),
             "missing": [c.folder for c in chapters if not c.en.strip()],
             "unverified": sum(1 for c in chapters if c.status == "unverified"),
-            "tables": len(num.tables), "figures": len(num.figures),
+            "tables": len(num.tables), "figures": len(set(num.figures) - set(num.figure_assets)),
             "latex_checks": latex["checks"], "out": str(out)}

@@ -231,7 +231,7 @@ def build_expand_prompt(chapters: list[dict], out_en_path: str,
         f"`###` subsection.\n"
         f"- Subsection type: the FIRST line under every `###` subsection you create is "
         f"`- type: X`, with X one of: abstract, intro, related, background, method, theory, "
-        f"experiments, results, analysis, ablation, discussion, limitations, conclusion. It "
+        f"experiments, results, analysis, ablation, discussion, limitations, conclusion, appendix. It "
         f"decides which writing and review rules that subsection gets. Use the chapter's own "
         f"type unless the subsection's content clearly belongs to another one — typically an "
         f"`experiments` chapter that also holds the main comparison (results), an ablation "
@@ -257,7 +257,9 @@ def build_expand_prompt(chapters: list[dict], out_en_path: str,
         f"but a Limitations subsection inside the right chapter is fine.\n"
         f"- Appendices hold hyperparameters and extra experiments; keep the main "
         f"text self-contained with essential assumptions, metric definitions and protocol conditions. "
-        f"You are planning the MAIN text only; do not create or promise unavailable appendices.\n"
+        f"Plan the main text and any appendix chapters explicitly present in the author's outline. "
+        f"Do not create or promise additional appendices. Author-approved appendices may hold supplied "
+        f"proofs or derivations and are outside the main-text page budget.\n"
         f"- Without a Page budget section, you do not write word counts: the framework fills "
         f"a per-type default and the author overrides the important ones.\n\n"
         f"## What a good bullet looks like\n"
@@ -306,7 +308,7 @@ def build_expand_prompt(chapters: list[dict], out_en_path: str,
         f"P3-4 give one sentence per prior approach: proposal, strength and the limitation we address. "
         f"Close with our intuitive method and the author's contributions with section pointers.\n"
         f"- Abstract: one paragraph, at most 7 sentences. Background, problem, our method and "
-        f"contributions, then the headline result in the final sentence.\n"
+        f"contributions in 3-4 middle sentences, then the headline result in the final sentence.\n"
         f"- Method: final working equations with intuition only. Never plan proof, theoretical "
         f"analysis or derivation subsections.\n"
         f"- Related Work: group 2-3 themes (~800-1000 words). Setup: ~500-700 words; keep standard metrics inline. Avoid a recap-only Design Rationale. Author budgets take precedence.\n"
@@ -562,11 +564,11 @@ def normalize_budget(expanded_en: list[dict], expanded_zh: list[dict],
         notes.append(f"第 {chapter['number']} 章有 {len(missing)} 个小节没标字数,已按计划补上")
     # 2) 压到预算内(短章与作者钉死的小节不动)
     def total_words():
-        return sum(s["target_words"] for c in expanded_en for s in c["sections"])
+        return sum(s["target_words"] for c in expanded_en if c["type"] != "appendix" for s in c["sections"])
     now = total_words()
     if now > total:
         movable = [(c, s) for c in expanded_en for s in c["sections"]
-                   if not pinned(c, s) and c["type"] not in ("abstract", "conclusion", "discussion")]
+                   if not pinned(c, s) and c["type"] not in ("abstract", "conclusion", "discussion", "appendix")]
         fixed_sum = now - sum(s["target_words"] for _, s in movable)
         base = sum(s["target_words"] for _, s in movable)
         if movable and base > 0 and total > fixed_sum:

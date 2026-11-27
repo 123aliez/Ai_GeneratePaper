@@ -332,17 +332,26 @@ class Numbering:
     sections: dict = field(default_factory=dict)  # 规范化标题 → "4" / "4.2"
     chapter_labels: dict = field(default_factory=dict)  # 章 folder → "4"
     section_labels: dict = field(default_factory=dict)  # (folder, 小节序号) → "4.2"
+    figure_assets: dict = field(default_factory=dict)  # 图标识 → 作者提供的原图路径
 
 
 def number_items(chapters: list[Chapter]) -> Numbering:
     """按出现顺序给表/图编号(跨章连续)。"""
     num = Numbering()
-    n_chapter = 0
+    n_chapter, n_appendix = 0, 0
     for ch in chapters:
         if ch.en.strip() and ch.ctype != "abstract":
-            n_chapter += 1
-            num.chapter_labels[ch.folder] = str(n_chapter)
-            num.sections.setdefault(_norm_title(ch.title), str(n_chapter))
+            if ch.ctype == "appendix":
+                n_appendix += 1
+                number, label = n_appendix, ""
+                while number:
+                    number, digit = divmod(number - 1, 26)
+                    label = chr(65 + digit) + label
+            else:
+                n_chapter += 1
+                label = str(n_chapter)
+            num.chapter_labels[ch.folder] = label
+            num.sections.setdefault(_norm_title(ch.title), label)
             if ch.ctype in {"intro", "conclusion"}:
                 for title in ch.sections:
                     num.sections.setdefault(_norm_title(title), str(n_chapter))
@@ -351,10 +360,12 @@ def number_items(chapters: list[Chapter]) -> Numbering:
             for rel, title in heads:
                 if rel == 1:
                     n_sub += 1
-                    label = f"{n_chapter}.{n_sub}"
+                    label = f"{num.chapter_labels[ch.folder]}.{n_sub}"
                     num.section_labels[(ch.folder, n_sub)] = label
                     num.sections.setdefault(_norm_title(title), label)
         for p in rt.find_table_placeholders(ch.en):
+            if p["name"].lower().startswith("ref_"):
+                continue
             if p["name"] not in num.tables:
                 num.tables[p["name"]] = len(num.tables) + 1
         for b in parse_figure_blocks(ch.en):
@@ -395,9 +406,12 @@ def _expand_tables_md(text: str, tables: dict, num: Numbering) -> str:
     return rt.TABLE_PLACEHOLDER_RE.sub(sub, text)
 
 
-def _figure_block_md(block: dict, number: int) -> str:
+def _figure_block_md(block: dict, number: int, asset: str = "") -> str:
     f = block["fields"]
-    lines = [f"> **Figure {number}. {block['title']}** *(待补图,见《图表清单.md》)*"]
+    if asset:
+        asset = f"latex/figures/fig{number}-{_slug(block['id'])}{Path(asset).suffix.lower()}"
+    lines = ([f"![{block['title']}]({asset})"] if asset else [])
+    lines.append(f"> **Figure {number}. {block['title']}**" + ("" if asset else " *(待补图,见《图表清单.md》)*"))
     if f.get("Note"):
         lines.append(f"> {f['Note']}")
     return "\n".join(lines)
@@ -418,7 +432,7 @@ def build_paper_md(chapters: list[Chapter], num: Numbering, tables: dict, lang: 
         while i < len(lines):
             if i in blocks:
                 b = blocks[i]
-                out.append(_figure_block_md(b, num.figures.get(b["id"], 0)))
+                out.append(_figure_block_md(b, num.figures.get(b["id"], 0), num.figure_assets.get(b["id"], "")))
                 i = b["end"]
                 continue
             out.append(lines[i])
@@ -455,7 +469,7 @@ _DANGEROUS_RE = re.compile(
     r"let|csname|usepackage|RequirePackage|documentclass|newcommand|renewcommand|providecommand|loop|"
     r"special|pdfshellescape|directlua|lstinputlisting|verbatiminput|InputIfFileExists)(?![A-Za-z])"
     r"|\^\^")                                                           # ^^ 字符转换可绕过命令黑名单
-_SAFE_ENVS = {"equation", "equation*", "align", "align*", "gather", "gather*", "multline", "multline*",
+_SAFE_ENVS = {"proof", "equation", "equation*", "align", "align*", "gather", "gather*", "multline", "multline*",
               "split", "cases", "aligned", "array", "matrix", "pmatrix", "bmatrix"}
 _TEX_SPECIALS = {"&": r"\&", "%": r"\%", "_": r"\_", "#": r"\#", "{": r"\{", "}": r"\}",
                  "~": r"\textasciitilde{}", "^": r"\textasciicircum{}", "$": r"\$"}
@@ -545,10 +559,11 @@ def _figure_tex(block: dict, number: int, num: Numbering) -> str:
     if f.get("Note"):
         caption += (" " if caption.endswith(("!", "?", "！", "？")) else ". ") + f["Note"]
     stem = f"figures/fig{number}-{_slug(block['id'])}"
-    box = (rf"\IfFileExists{{{stem}.pdf}}{{\includegraphics[width=0.8\linewidth]{{{stem}.pdf}}}}"
-           rf"{{\IfFileExists{{{stem}.png}}{{\includegraphics[width=0.8\linewidth]{{{stem}.png}}}}"
-           r"{\fbox{\parbox[c][3cm][c]{0.8\linewidth}{\centering Figure " + str(number) +
-           r" --- to be supplied\\ (see the figure list)}}}}")
+    box = (r"\fbox{\parbox[c][3cm][c]{0.8\linewidth}{\centering Figure " + str(number)
+           + r" --- to be supplied\\ (see the figure list)}}")
+    for ext in reversed((".pdf", ".png", ".jpg", ".jpeg")):
+        box = (rf"\IfFileExists{{{stem}{ext}}}{{\includegraphics[width=0.8\linewidth]{{{stem}{ext}}}}}"
+               + "{" + box + "}")
     return "\n".join([r"\begin{figure}[t]", r"\centering", box,
                       rf"\caption{{{_inline_to_tex(caption, num)}}}", rf"\label{{fig:{_slug(block['id'])}}}",
                       r"\end{figure}"])
@@ -762,6 +777,38 @@ def _inline_result_floats(tex: str) -> str:
                   replace, tex, flags=re.S)
 
 
+_FIGURE_SUFFIXES = (".pdf", ".png", ".jpg", ".jpeg")
+_LATEX_RESOURCE_SUFFIXES = {
+    ".cls", ".bst", ".sty", ".tex", ".bib", ".clo", ".def", ".cfg", ".fd",
+    ".bbx", ".cbx", ".lbx", ".ist", ".enc", ".map", ".ttf", ".otf",
+    ".pdf", ".png", ".jpg", ".jpeg", ".eps", ".svg",
+}
+
+
+def bind_input_figures(num: Numbering, figures_dir: Path) -> None:
+    """图标识与作者原图绑定，编号变化时仍按相同标识寻找输入。"""
+    candidates = list(figures_dir.iterdir()) if figures_dir.is_dir() else []
+    for fid in num.figures:
+        if Path(fid).name != fid:
+            continue
+        source = next((p for ext in _FIGURE_SUFFIXES for p in candidates
+                       if p.stem == fid and p.suffix.lower() == ext and p.is_file()), None)
+        if source:
+            num.figure_assets[fid] = str(source.resolve())
+
+
+def _copy_figure_assets(num: Numbering, out_dir: Path) -> None:
+    for fid, asset in num.figure_assets.items():
+        source = Path(asset)
+        stem = out_dir / "figures" / f"fig{num.figures[fid]}-{_slug(fid)}"
+        stem.parent.mkdir(parents=True, exist_ok=True)
+        for ext in _FIGURE_SUFFIXES:
+            dest = stem.with_suffix(ext)
+            if ext != source.suffix.lower():
+                dest.unlink(missing_ok=True)
+        stem.with_suffix(source.suffix.lower()).write_bytes(source.read_bytes())
+
+
 def build_latex(chapters: list[Chapter], num: Numbering, tables: dict, out_dir: Path,
                 template_dir: Path | None, title: str, authors: list[str],
                 bib_path: Path) -> dict:
@@ -778,6 +825,7 @@ def build_latex(chapters: list[Chapter], num: Numbering, tables: dict, out_dir: 
                              and any(rt.find_table_placeholders(ch.en) for ch in chapters))
     inputs, abstract_tex, files = [], "", []
     inline_columns = inline_from_title
+    appendix_started = False
     for idx, ch in enumerate(chapters, start=1):
         body_md, _ = normalize_headings(ch.en, ch.title, ch.sections)
         if not ch.en.strip():
@@ -787,6 +835,11 @@ def build_latex(chapters: list[Chapter], num: Numbering, tables: dict, out_dir: 
         if ch.ctype == "abstract":
             abstract_tex = "\\begin{abstract}\n" + tex + "\\end{abstract}\n"
             continue
+        if ch.ctype == "appendix" and not appendix_started:
+            inputs.append(r"\appendix")
+            appendix_started = True
+        elif appendix_started and ch.ctype != "appendix":
+            raise ValueError("附录必须安排在所有正文章节之后")
         name = f"{_slug(ch.folder)}.tex"
         section = rf"\section{{{_inline_to_tex(ch.title, num)}}}" + "\n\n" + tex
         if (not inline_columns and ch.ctype in {"experiments", "results", "ablation", "analysis"}
@@ -803,8 +856,12 @@ def build_latex(chapters: list[Chapter], num: Numbering, tables: dict, out_dir: 
         for p in template_dir.rglob("*"):
             if p.is_file() and p.name != "main.tex":
                 dest = out_dir / p.relative_to(template_dir)
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                dest.write_bytes(p.read_bytes())
+                if p.suffix.lower() in _LATEX_RESOURCE_SUFFIXES and not p.stem.casefold().startswith("readme"):
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    dest.write_bytes(p.read_bytes())
+                elif dest.is_file():
+                    # 清理旧版复制过、仍能按同一路径识别出的模板说明文件。
+                    dest.unlink()
         tpl = template_main.read_text(encoding="utf-8", errors="replace")
     else:
         tpl = _BUILTIN_TEMPLATE
@@ -830,6 +887,8 @@ def build_latex(chapters: list[Chapter], num: Numbering, tables: dict, out_dir: 
               .replace("%AUTHORS%", _escape_plain(", ".join(authors) or "Anonymous"))
               .replace("%ABSTRACT%", ""))
     tpl = tpl.replace(r"\begin{document}", r"\usepackage{tabularx,booktabs,graphicx,placeins,multicol,capt-of}" + "\n" + r"\begin{document}", 1)
+    if appendix_started:
+        tpl = tpl.replace(r"\begin{document}", "\\usepackage{amsthm}\n" + r"\begin{document}", 1)
     if inline_from_title:
         title_setup = r"""\begin{document}
 \onecolumn
@@ -854,6 +913,7 @@ def build_latex(chapters: list[Chapter], num: Numbering, tables: dict, out_dir: 
     (out_dir / "main.tex").write_text(tpl, encoding="utf-8")
     files.append("main.tex")
 
+    _copy_figure_assets(num, out_dir)
     all_tex = list(sec_dir.glob("*.tex")) + [out_dir / "main.tex"]
     cited = sorted(set(k for f in all_tex for k in _cite_keys(f.read_text(encoding="utf-8"))))
     bib_text = bib_entry_text(bib_path, cited)
@@ -1021,7 +1081,7 @@ def _prompt_for_figure(fig: Figure, tables: dict) -> str:
     if f.get("Data"):
         lines.append(f"数据来源:{f['Data']}")
         for t in tables.values():
-            if t.is_grid and (t.name in f["Data"]):
+            if t.is_grid and not t.reference_only and (t.name in f["Data"]):
                 lines.append(f"数据(取自 {t.file},原样):")
                 lines.append(rt.render_table_markdown(t))
                 for col in t.cols:
@@ -1041,7 +1101,7 @@ def _prompt_for_figure(fig: Figure, tables: dict) -> str:
 
 def build_figure_report(num: Numbering, tables: dict, chapters: dict) -> str:
     out = ["# 图表清单(程序汇总)", "",
-           "图由你按下面的提示词补。画好后按“建议文件名”放进 `latex/figures/`(.pdf 或 .png),",
+           "已画好的图放到 inbox/figures/<图标识>.pdf（也支持 png/jpg/jpeg），系统自动按图号复制。",
            "重跑 `--go` / `--assemble` 后占位框会自动换成图;`paper.md` 里的图注块已带编号。", ""]
     if not num.figure_list:
         out.append("(没有图占位符)")
@@ -1049,6 +1109,7 @@ def build_figure_report(num: Numbering, tables: dict, chapters: dict) -> str:
         out += [f"## Figure {fig.number} — {fig.title}", "",
                 f"- 所在章节:{chapters.get(fig.chapter, fig.chapter)}",
                 f"- id:`{fig.fid}`;建议文件名:`fig{fig.number}-{_slug(fig.fid)}.pdf`",
+                f"- 输入状态:{num.figure_assets.get(fig.fid, '待补图')}",
                 f"- 类型:{fig.fields.get('Type', '?')}", "", "**绘图提示词**:", "", "```",
                 _prompt_for_figure(fig, tables), "```", ""]
     return "\n".join(out)

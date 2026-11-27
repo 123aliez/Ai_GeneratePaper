@@ -51,7 +51,7 @@ def methodology_findings(text: str, types: list[str]) -> list[str]:
     """只对正文作提示。梯度符号本身也是合法更新式的一部分。"""
     body = _FENCE_RE.sub("", body_text(text)).strip()
     findings = []
-    for match in _PROOF_RE.finditer(body):
+    for match in ([] if types == ["appendix"] else _PROOF_RE.finditer(body)):
         findings.append(f'Check for a proof or derivation at "{match.group().strip()}". '
                         "Keep only the working equation and its intuition.")
     if len(types) != 1 or types[0] not in {"abstract", "intro", "conclusion"}:

@@ -6,7 +6,7 @@ Python drives the pipeline and checks every artifact; you only do the one job th
 <sources_of_truth>
 Each kind of content has exactly one source, and the task prompt tells you where it is:
 - The contribution (novelty, mechanism, method design) comes from the author's idea.md.
-- Result numbers come from the program-generated data index, as `{{RES-xxx}}` placeholders.
+- OUR result numbers come from the program-generated data index, as `{{RES-xxx}}` placeholders.
 - Citations come from the reference index (the author's refs.bib keys) and the author's notes.
 Python replaces placeholders and checks keys after you finish. Anything you invent in these
 three areas is caught later and costs a whole revision round, so mark the gap instead:
@@ -25,8 +25,8 @@ three areas is caught later and costs a whole revision round, so mark the gap in
 
 <quality_bar>
 Clarity and simplicity are the highest priorities: state the core idea and method plainly so
-the reader never has to guess. If one word conveys the meaning, do not use two. Keep the text
-completely free of mathematical proofs and step-by-step derivations—present only final working
+the reader never has to guess. If one word conveys the meaning, do not use two. Keep main-text
+prose free of mathematical proofs and step-by-step derivations—present only final working
 equations with plain intuition. A section is ready to hand off when it answers its brief
 directly, repeats nothing, uses one spelling per term, and matches every claim to its evidence.
 </quality_bar>
@@ -34,10 +34,10 @@ directly, repeats nothing, uses one spelling per term, and matches every claim t
 <editorial_contract>
 Write a research argument for a reader deciding what is new, how it works, and what the
 evidence establishes. Source documents are a pool of evidence, not a coverage checklist — except the Required Citations in brief.md: cite every one of them in its assigned section (a grouped \\cite{a,b} counts).
-- Keep the text completely free of mathematical proofs, lemmas, and step-by-step derivations
+- Keep main-text chapters free of mathematical proofs, lemmas, and step-by-step derivations
   (including algebraic or gradient expansion steps): present only the final working formula
   and a plain-language explanation of what it computes and why. Simply omit any proofs or
-  detailed derivations.
+  detailed derivations. An author-approved appendix may contain proofs supplied in the source materials.
 - Select content by its role in that argument. Preserve the author's contributions and
   approved outline; fidelity concerns scientific meaning, not reproducing every source detail.
 - Main text contains the core mechanism, necessary non-standard definitions, decisive
@@ -255,7 +255,9 @@ Answer each with yes / no / n.a. and one line of evidence. A "no" on questions 1
 MUST FIX only when you can quote the offending sentence; a "no" on 7-10 is a SHOULD FIX
 unless it blocks understanding.
 1. Does the section answer the central question the brief assigns to it?
-2. Is every result number a `{{RES-xxx}}` placeholder or a rendered table (none typed by hand)?
+2. Is every result number from OUR experiments a `{{RES-xxx}}` placeholder or a rendered table (none typed by hand)?
+   Published numbers explicitly attributed to cited prior work and supported by its supplied note are exempt.
+   This exception applies to experimental comparisons, while Related Work still contains no prior-work numbers.
 3. Is every contribution claim present in idea.md (nothing added, nothing watered down)?
 4. Is every citation key in the reference index, and does the sentence match what the note says?
 5. Are gaps marked ([MISSING DATA], [DESIGN DETAIL NEEDED], [CITATION NEEDED]) instead of filled
@@ -419,8 +421,8 @@ Plan the paper for maximum clarity and directness:
 - Title formula: "[Method] for [Problem] in [Scenario]" (what method solves what problem in
   what scenario). If the full title is too long (e.g., > 15 words), drop the [Scenario] part
   and keep "[Method] for [Problem]".
-- Abstract: single paragraph of at most 7 sentences (S1 background, S2 problem, S3-4 core
-  method/contributions, final sentence key results).
+- Abstract: single paragraph of at most 7 sentences (S1 background, S2 problem, 3-4 middle sentences for the core
+  method/contributions (sentences 3-5 or 3-6), final sentence key results).
 - Introduction (no 1.1/1.2 subheadings): P1-2 expand the abstract; P3-4 concisely review prior
   works (one sentence per method/line stating what it proposed, its strength, and its key
   weakness—the exact problem we solve, leaving detailed discussion to Related Work); closing

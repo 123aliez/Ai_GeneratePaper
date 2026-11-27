@@ -482,7 +482,32 @@ def _metric_phrase(key: str):
     return label, re.compile(pattern, re.IGNORECASE)
 
 
-def check_numbers_against_results(text: str, results: dict, tol: float = 0.01) -> dict:
+def _mask_attributed_prior_results(text: str, allowed_keys: set[str]) -> str:
+    """只豁免明确归属于已知文献的报告子句，不能用一个引用放行本文数字。"""
+    from .citation_supplement import _CITE_KEYS_RE
+    spans = []
+    for citation in _CITE_KEYS_RE.finditer(text):
+        keys = {key.strip() for key in citation[1].split(",")}
+        if not keys or not keys <= allowed_keys:
+            continue
+        boundaries = list(re.finditer(r"[.!?]\s+(?=[A-Z])|[;\n]|\b(?:whereas|while|but)\b",
+                                      text[:citation.start()]))
+        start = boundaries[-1].end() if boundaries else 0
+        clause = text[start:citation.start()]
+        attributed = re.search(r"\b(?:reports?|reported|obtained|achieved|scored|according to)\b",
+                               clause, re.I)
+        ours = re.search(r"\b(?:we|our|ours|this (?:work|paper)|proposed method)\b", clause, re.I)
+        key_words = {token.lower() for key in keys for token in re.findall(r"[A-Za-z]{3,}", key)}
+        subject_words = set(re.findall(r"[A-Za-z]{3,}", clause[:attributed.start()].lower())) if attributed else set()
+        if attributed and not ours and key_words & subject_words:
+            spans.append((start, citation.end()))
+    for start, end in reversed(spans):
+        text = text[:start] + " " * (end - start) + text[end:]
+    return text
+
+
+def check_numbers_against_results(text: str, results: dict, tol: float = 0.01,
+                                  prior_citation_keys: set[str] | None = None) -> dict:
     """Cross-check numbers in `text` against `results`.
 
     A number is only judged when it sits adjacent (<= MAX_GAP chars) to a metric
@@ -493,6 +518,8 @@ def check_numbers_against_results(text: str, results: dict, tol: float = 0.01) -
     Returns {"mismatches": [{"claimed", "expected", "metric", "context"}],
              "checked": int, "ok": bool}.
     """
+    if prior_citation_keys:
+        text = _mask_attributed_prior_results(text, prior_citation_keys)
     nums = _extract(text)
     mismatches: list = []
     checked = 0
@@ -565,7 +592,8 @@ def check_numbers_against_results(text: str, results: dict, tol: float = 0.01) -
 
 
 # ── (4) Gate entry point ───────────────────────────────────────────────────
-def run_number_gate(draft_path: str, data_root: str, tol: float = 0.01, exempt_values=None):
+def run_number_gate(draft_path: str, data_root: str, tol: float = 0.01, exempt_values=None, *,
+                    allow_prior_work: bool = False):
     """Read a draft, load results, cross-check. Returns (passed, messages).
 
     Missing files are handled gracefully (no exception). Each mismatch message
@@ -598,7 +626,9 @@ def run_number_gate(draft_path: str, data_root: str, tol: float = 0.01, exempt_v
         # blocking condition, not a "skip the check" condition.
         return False, [f"[NUMBER-GATE] no results found under {data_root}; every number in the draft is unverifiable. Provide result tables under inbox/results/ before drafting."]
 
-    report = check_numbers_against_results(text, results, tol=tol)
+    from .citation_supplement import citable_keys
+    report = check_numbers_against_results(text, results, tol=tol,
+                                          prior_citation_keys=citable_keys() if allow_prior_work else None)
     if exempt_values:
         # 程序算出来的派生数字({{DIFF}}/{{REL}} 替换后的值)不是原始指标,不拿它去和原始结果比。
         exempt = {round(float(v), 9) for v in exempt_values}
