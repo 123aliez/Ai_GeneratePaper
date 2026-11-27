@@ -338,20 +338,12 @@ class Numbering:
 def number_items(chapters: list[Chapter]) -> Numbering:
     """按出现顺序给表/图编号(跨章连续)。"""
     num = Numbering()
-    n_chapter, n_appendix = 0, 0
+    n_chapter = 0
     for ch in chapters:
         if ch.en.strip() and ch.ctype != "abstract":
-            if ch.ctype == "appendix":
-                n_appendix += 1
-                number, label = n_appendix, ""
-                while number:
-                    number, digit = divmod(number - 1, 26)
-                    label = chr(65 + digit) + label
-            else:
-                n_chapter += 1
-                label = str(n_chapter)
-            num.chapter_labels[ch.folder] = label
-            num.sections.setdefault(_norm_title(ch.title), label)
+            n_chapter += 1
+            num.chapter_labels[ch.folder] = str(n_chapter)
+            num.sections.setdefault(_norm_title(ch.title), str(n_chapter))
             if ch.ctype in {"intro", "conclusion"}:
                 for title in ch.sections:
                     num.sections.setdefault(_norm_title(title), str(n_chapter))
@@ -360,7 +352,7 @@ def number_items(chapters: list[Chapter]) -> Numbering:
             for rel, title in heads:
                 if rel == 1:
                     n_sub += 1
-                    label = f"{num.chapter_labels[ch.folder]}.{n_sub}"
+                    label = f"{n_chapter}.{n_sub}"
                     num.section_labels[(ch.folder, n_sub)] = label
                     num.sections.setdefault(_norm_title(title), label)
         for p in rt.find_table_placeholders(ch.en):
@@ -469,7 +461,7 @@ _DANGEROUS_RE = re.compile(
     r"let|csname|usepackage|RequirePackage|documentclass|newcommand|renewcommand|providecommand|loop|"
     r"special|pdfshellescape|directlua|lstinputlisting|verbatiminput|InputIfFileExists)(?![A-Za-z])"
     r"|\^\^")                                                           # ^^ 字符转换可绕过命令黑名单
-_SAFE_ENVS = {"proof", "equation", "equation*", "align", "align*", "gather", "gather*", "multline", "multline*",
+_SAFE_ENVS = { "equation", "equation*", "align", "align*", "gather", "gather*", "multline", "multline*",
               "split", "cases", "aligned", "array", "matrix", "pmatrix", "bmatrix"}
 _TEX_SPECIALS = {"&": r"\&", "%": r"\%", "_": r"\_", "#": r"\#", "{": r"\{", "}": r"\}",
                  "~": r"\textasciitilde{}", "^": r"\textasciicircum{}", "$": r"\$"}
@@ -825,7 +817,6 @@ def build_latex(chapters: list[Chapter], num: Numbering, tables: dict, out_dir: 
                              and any(rt.find_table_placeholders(ch.en) for ch in chapters))
     inputs, abstract_tex, files = [], "", []
     inline_columns = inline_from_title
-    appendix_started = False
     for idx, ch in enumerate(chapters, start=1):
         body_md, _ = normalize_headings(ch.en, ch.title, ch.sections)
         if not ch.en.strip():
@@ -835,11 +826,6 @@ def build_latex(chapters: list[Chapter], num: Numbering, tables: dict, out_dir: 
         if ch.ctype == "abstract":
             abstract_tex = "\\begin{abstract}\n" + tex + "\\end{abstract}\n"
             continue
-        if ch.ctype == "appendix" and not appendix_started:
-            inputs.append(r"\appendix")
-            appendix_started = True
-        elif appendix_started and ch.ctype != "appendix":
-            raise ValueError("附录必须安排在所有正文章节之后")
         name = f"{_slug(ch.folder)}.tex"
         section = rf"\section{{{_inline_to_tex(ch.title, num)}}}" + "\n\n" + tex
         if (not inline_columns and ch.ctype in {"experiments", "results", "ablation", "analysis"}
@@ -887,8 +873,6 @@ def build_latex(chapters: list[Chapter], num: Numbering, tables: dict, out_dir: 
               .replace("%AUTHORS%", _escape_plain(", ".join(authors) or "Anonymous"))
               .replace("%ABSTRACT%", ""))
     tpl = tpl.replace(r"\begin{document}", r"\usepackage{tabularx,booktabs,graphicx,placeins,multicol,capt-of}" + "\n" + r"\begin{document}", 1)
-    if appendix_started:
-        tpl = tpl.replace(r"\begin{document}", "\\usepackage{amsthm}\n" + r"\begin{document}", 1)
     if inline_from_title:
         title_setup = r"""\begin{document}
 \onecolumn

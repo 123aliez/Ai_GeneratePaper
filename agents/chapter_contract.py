@@ -132,14 +132,6 @@ CONTRACTS: dict[str, dict[str, str]] = {
                      "in the data index supports it (hedge it or leave it out, and list it in "
                      "todo.md); any new claim.",
     },
-    "appendix": {
-        "focus": "Author-supplied supplementary material assigned by the approved outline. "
-                 "Proofs and derivations may appear here when supplied by the author. "
-                 "Use the same notation and result sources as the main text.",
-        "references": "Cite the supplied bibliography and notes for attributed supplementary material.",
-        "forbidden": "Inventing proofs, experiments or contributions, or silently moving required "
-                     "main-text explanations into an unrequested appendix.",
-    },
 }
 # 共享契约的类型:同一个 dict 对象,不复制文本。
 CONTRACTS["theory"] = CONTRACTS["method"]

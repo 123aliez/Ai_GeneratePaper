@@ -49,7 +49,6 @@ CHAPTER_TYPES = {
     "discussion":   (MIXED, ADVISORY),
     "limitations":  (MIXED, ADVISORY),
     "conclusion":   (MIXED, ADVISORY),
-    "appendix":     (MIXED, ADVISORY),
 }
 
 DEFAULT_TYPE = "unknown"
@@ -74,7 +73,6 @@ DEFAULT_WORDS_BY_TYPE = {
     "discussion": 600,
     "limitations": 200,
     "conclusion": 300,
-    "appendix": 700,
 }
 
 # Spellings a user might reasonably write in brief.md, mapped to canonical types.
@@ -106,7 +104,6 @@ ALIASES = {
     "threats": "limitations", "局限": "limitations", "不足": "limitations",
     "conclusion": "conclusion", "conclusions": "conclusion",
     "future work": "conclusion", "结论": "conclusion", "总结": "conclusion",
-    "appendix": "appendix", "appendices": "appendix", "附录": "appendix",
 }
 
 

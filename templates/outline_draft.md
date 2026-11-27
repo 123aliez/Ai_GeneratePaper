@@ -43,7 +43,6 @@
 | `discussion` | 两者 | advisory | 讨论 |
 | `limitations` | 两者 | advisory | 局限 |
 | `conclusion` | 两者 | advisory | 结论 / 总结 |
-| `appendix` | 作者提供的补充材料 | advisory | 附录（置于正文之后，A/B 编号） |
 
 - **数字门禁** — `blocking`:结果目录里没有结果表就拒绝起草(这类章节的内容就是数字);
   `advisory`:照写,数字标 UNVERIFIED;`off`:不查。

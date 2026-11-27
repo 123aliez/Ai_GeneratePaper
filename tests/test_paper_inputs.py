@@ -6,11 +6,9 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from agents import assemble as A, results_tables as rt
-from agents.chapter_type import normalize_type, route_for_type, MIXED, ADVISORY
 from agents.chapter_contract import CONTRACTS
 from agents.draft_checks import methodology_findings
 from agents.number_gate import check_numbers_against_results
-from agents.outline import plan_chapter_words
 from agents.result_ids import ensure_res_ids
 
 PASSED = []
@@ -62,7 +60,7 @@ def test_attributed_numbers():
     check("相关工作不开放数字豁免", "numbers reported by other papers" in CONTRACTS["related"]["forbidden"])
 
 
-def test_figures_template_appendix():
+def test_figures_template():
     root = Path(tempfile.mkdtemp())
     source, template, out = root / "figures", root / "template", root / "out"
     source.mkdir()
@@ -74,10 +72,7 @@ def test_figures_template_appendix():
     (template / "main.tex").write_text(
         "\\documentclass{article}\n\\begin{document}\n% PAPER_BODY\n\\end{document}", encoding="utf-8")
     chapters = [A.Chapter("01-method", "Method", "method", number=1,
-                          en="[FIGURE overview: Framework overview]\nNote. Our framework.\n\nText."),
-                A.Chapter("02-appendix", "Additional evidence", "appendix", number=2,
-                          en="## Supplied proof\n\n\\begin{proof}\nThe supplied argument.\n\\end{proof}",
-                          sections=["Supplied proof"])]
+                          en="[FIGURE overview: Framework overview]\nNote. Our framework.\n\nText.")]
     num = A.number_items(chapters)
     A.bind_input_figures(num, source)
     bib = root / "refs.bib"
@@ -89,11 +84,6 @@ def test_figures_template_appendix():
     check("模板依赖保留目录", (out / "nested" / "helper.sty").exists())
     md = A.build_paper_md(chapters, num, {}, "en")
     check("已提供图无待补标记", "待补图" not in md and "latex/figures/fig1-overview.pdf" in md)
-    check("附录字母编号", num.sections["additional evidence"] == "A"
-          and num.sections["supplied proof"] == "A.1")
-    main = (out / "main.tex").read_text()
-    check("附录通过标准 LaTeX 入口", r"\appendix" in main and r"\usepackage{amsthm}" in main)
-    check("附录允许已有证明", not methodology_findings(r"\begin{proof}A.\end{proof}", ["appendix"]))
     check("正文继续禁止证明", bool(methodology_findings(r"\begin{proof}A.\end{proof}", ["method"])))
     (source / "overview.pdf").unlink()
     (source / "overview.png").write_bytes(b"png-fixture")
@@ -108,14 +98,7 @@ def test_figures_template_appendix():
     check("改变图号仍找到原始图标识", (out / "figures" / "fig2-overview.png").exists())
 
 
-def test_appendix_budget_and_abstract():
-    check("附录类型与别名", normalize_type("附录") == "appendix"
-          and route_for_type("appendix") == (MIXED, ADVISORY))
-    section = dict(number=1, title="Study", target_words=500, words_explicit=False, bullets=[])
-    main = dict(number=1, type="method", sections=[section])
-    extra = dict(number=2, type="appendix", sections=[section.copy()])
-    check("附录不挤占正文字数预算", plan_chapter_words([main], 10, 650)[1]
-          == plan_chapter_words([main, extra], 10, 650)[1])
+def test_abstract_sentence_contract():
     check("摘要中段明确用三至四句", "3-4 middle sentences" in CONTRACTS["abstract"]["focus"])
 
 
