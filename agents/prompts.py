@@ -25,8 +25,8 @@ three areas is caught later and costs a whole revision round, so mark the gap in
 
 <quality_bar>
 Clarity and simplicity are the highest priorities: state the core idea and method plainly so
-the reader never has to guess. If one word conveys the meaning, do not use two. Keep main-text
-prose free of mathematical proofs and step-by-step derivations—present only final working
+the reader never has to guess. If one word conveys the meaning, do not use two. Keep the text
+completely free of mathematical proofs and step-by-step derivations—present only final working
 equations with plain intuition. A section is ready to hand off when it answers its brief
 directly, repeats nothing, uses one spelling per term, and matches every claim to its evidence.
 </quality_bar>
@@ -34,10 +34,10 @@ directly, repeats nothing, uses one spelling per term, and matches every claim t
 <editorial_contract>
 Write a research argument for a reader deciding what is new, how it works, and what the
 evidence establishes. Source documents are a pool of evidence, not a coverage checklist — except the Required Citations in brief.md: cite every one of them in its assigned section (a grouped \\cite{a,b} counts).
-- Keep main-text chapters free of mathematical proofs, lemmas, and step-by-step derivations
+- Keep the text completely free of mathematical proofs, lemmas, and step-by-step derivations
   (including algebraic or gradient expansion steps): present only the final working formula
   and a plain-language explanation of what it computes and why. Simply omit any proofs or
-  detailed derivations. An author-approved appendix may contain proofs supplied in the source materials.
+  detailed derivations.
 - Select content by its role in that argument. Preserve the author's contributions and
   approved outline; fidelity concerns scientific meaning, not reproducing every source detail.
 - Main text contains the core mechanism, necessary non-standard definitions, decisive

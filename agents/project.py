@@ -454,7 +454,7 @@ def assemble_output(extra_notes: list[str] | None = None) -> dict:
     budget = page_budget()
     if budget:
         pages, per_page = budget
-        words = sum(len(c.en.split()) for c in chapters if c.ctype != "appendix")
+        words = sum(len(c.en.split()) for c in chapters)
         est = words / per_page
         notes.append(f"篇幅:正文约 {words} 词,按每页 {per_page} 词约 {est:.1f} 页(目标 {pages} 页,不含参考文献)"
                      + ("" if est <= pages * 1.1 else ";超出预算,投稿前需压缩"))

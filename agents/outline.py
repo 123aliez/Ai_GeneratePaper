@@ -294,9 +294,6 @@ def plan_chapter_words(chapters: list[dict], pages: int, per_page: int) -> dict[
     规划者(Manager)拿到这张表作起点,可按内容多寡调整;脚本最后再归一到预算内。
     """
     total = pages * per_page
-    appendix = {c["number"]: sum(s["target_words"] for s in c["sections"])
-                or DEFAULT_WORDS_BY_TYPE["appendix"] for c in chapters if c["type"] == "appendix"}
-    chapters = [c for c in chapters if c["type"] != "appendix"]
 
     def sections_of(chapter):
         # 还没展开出小节的章(展开前给规划者看计划时):用一个按 type 默认字数的占位小节
@@ -327,15 +324,13 @@ def plan_chapter_words(chapters: list[dict], pages: int, per_page: int) -> dict[
                          if _section_is_fixed(chapter, s))
         share = room * flexible[chapter["number"]] / weight_sum if chapter["number"] in flexible and weight_sum else 0
         plan[chapter["number"]] = int(round((fixed_here + share) / 25.0)) * 25
-    return plan | appendix
+    return plan
 
 
 def apply_page_budget(chapters: list[dict], pages: int, per_page: int) -> None:
     """未显式标字数的小节:按章计划把字数分给该章的弹性小节(章内按原默认值比例)。"""
     plan = plan_chapter_words(chapters, pages, per_page)
     for chapter in chapters:
-        if chapter["type"] == "appendix":
-            continue
         flex = [s for s in chapter["sections"] if not _section_is_fixed(chapter, s)]
         if not flex:
             continue
