@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from agents.outline import chapters_without_sections, parse_outline
 from agents.outline_expand import (
-    EXPANDED_MARKER, build_expand_prompt, missing_word_counts,
+    EXPANDED_MARKER, build_expand_prompt, configured_title, missing_word_counts,
     outline_skeleton_digest, render_outline, skeleton_report,
     validate_expansion,
 )
@@ -465,7 +465,40 @@ def test_bare_chapters_are_detected():
     check("半展开时只报没小节的那一章", names == ["Appendix"], str(names))
 
 
+def test_configured_paper_title():
+    """题目逐字取自配置，非法输入不能交给模型自行补齐。"""
+    print("\n[作者论文题目]")
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        path = root / "paper.toml"
+        title = "When metadata misleads: Harm-aware regularization for image–metadata classification"
+        path.write_text(f'title = "{title}"\n', encoding="utf-8")
+        check("保留作者题目原文", configured_title(root) == title)
+        prompt = build_expand_prompt([], "en.md", "zh.md", "idea.md", 0,
+                                     paper_title=configured_title(root))
+        check("扩写提示携带固定题目", f"# Paper title: {title}" in prompt)
+        check("取消自行拟题模板", "<proposed English title>" not in prompt
+              and "[Method] for [Problem]" not in prompt)
+        for text in ('authors = []', 'title = ""', 'title = 42',
+                     'title = "first\\nsecond"', 'title = ['):
+            path.write_text(text, encoding="utf-8")
+            try:
+                configured_title(root)
+            except ValueError:
+                check(f"拒绝非法题目 {text}", True)
+            else:
+                check(f"拒绝非法题目 {text}", False)
+        path.unlink()
+        try:
+            configured_title(root)
+        except ValueError:
+            check("缺少配置时要求作者补填", True)
+        else:
+            check("缺少配置时要求作者补填", False)
+
+
 if __name__ == "__main__":
+    test_configured_paper_title()
     test_skeleton_parses_without_sections()
     test_prompt_states_the_hard_constraints()
     test_prompt_preserves_authors_existing_sections()

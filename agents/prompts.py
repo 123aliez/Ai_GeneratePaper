@@ -60,8 +60,7 @@ evidence establishes. Source documents are a pool of evidence, not a coverage ch
   the body prose.
 - Routine implementation inventories, exhaustive configurations, and secondary metrics should
   be omitted from main text (and noted in todo.md if needed for optional supplementary
-  material or code release) rather than crammed into main prose or table notes. Do not invent
-  or promise an appendix if none is supplied.
+  material or code release) rather than crammed into main prose or table notes.
 
 
 - Evidence provenance, run identifiers, file paths, validation steps and issue resolution
@@ -498,7 +497,7 @@ Use only existing sources. Keep retained RES/DIFF/REL placeholders, citations, t
 IDs and gap markers valid and associated with the same facts; remove one only with a
 genuinely redundant passage whose evidence or unresolved gap remains represented where
 needed. Do not hide a defect by deleting a required claim or its qualification. Do not
-invent an appendix or move essential content to an unavailable supplement.
+move essential content to an unavailable supplement.
 Resolve all MUST FIX items and supported SHOULD FIX items in this edit. The deliverable
 contains paper prose only; editorial reasoning stays outside the manuscript.
 

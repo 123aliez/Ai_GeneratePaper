@@ -11,6 +11,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -113,6 +114,11 @@ def test_flow():
     check("首次 --go 展开大纲后停下(退出码 0)", rc == 0 and "outline.zh.md" in out, out[-600:])
     zh = root / "outline.zh.md"
     check("生成了中文大纲和英文大纲", zh.is_file() and (root / "_work" / "outline.md").is_file())
+    title = tomllib.loads((root / "paper.toml").read_text(encoding="utf-8"))["title"]
+    for outline in (zh, root / "_work" / "outline.md"):
+        check(f"{outline.name} 采用作者题目而非模型拟题",
+              next(line for line in outline.read_text(encoding="utf-8").splitlines()
+                   if line.startswith("# ")) == f"# Paper title: {title}")
     check("三份索引已建",
           all((root / "_work" / "index" / n).is_file() for n in ("ref-index.md", "data-index.md", "res-ids.md", "code-index.md")))
     check("文献索引含 key 与一句话总结",

@@ -383,14 +383,24 @@ def parse_brief_sections(folder_path: str) -> list[dict]:
     return sections
 
 
-_DRAFT_BATCH_LIMITS = {"related": 2, "experiments": 2, "discussion": 1, "limitations": 1}
+_DRAFT_BATCH_LIMITS = {
+    "intro": 2, "related": 2, "experiments": 2,
+    "discussion": 1, "limitations": 1, "conclusion": 1,
+}
 
 
 def build_stage1_parts(sections: list[dict], chapter_type: str = "") -> list[dict]:
     """按章类型与小节数分批，保留小节顺序。无小节时用单段兜底。"""
     count = len(sections)
     batch_limit = _DRAFT_BATCH_LIMITS.get(chapter_type)
-    if count and batch_limit == 1:
+    continuous_intro = chapter_type == "intro" and count == 1
+    if continuous_intro:
+        # 引言不增加小节；将同一节的总篇幅分给两批连续正文。
+        total_words = sections[0]["target_words"]
+        first_words = (total_words + 1) // 2
+        groups = [[{**sections[0], "target_words": words}]
+                  for words in (first_words, total_words - first_words)]
+    elif count and batch_limit == 1:
         groups = [sections]
     elif count >= 2 and batch_limit == 2:
         cut = (count + 1) // 2
@@ -427,6 +437,8 @@ def build_stage1_parts(sections: list[dict], chapter_type: str = "") -> list[dic
             "numbers": numbers,
             "target_words": words,
         })
+        if continuous_intro:
+            parts[-1]["continuous_section"] = True
     return parts
 
 
@@ -463,6 +475,12 @@ def format_stage1_parts(parts: list[dict]) -> str:
             f"Develop distinct evidence-supported claims. Put selection principles in setup and spend the analytical budget on findings, exceptions and trade-offs.\n"
             f"Covers: " + "; ".join(part["titles"])
         )
+        if part.get("continuous_section"):
+            blocks[-1] += (
+                f"\nContinuous Introduction prose, batch {part['index']}/2 of the same section. "
+                "Allocate distinct paragraphs and reference keys across the two batches; "
+                "together they cover the section once, without subsection headings."
+            )
     return "\n\n".join(blocks)
 
 

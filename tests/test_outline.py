@@ -412,18 +412,53 @@ def test_part_count_adapts_to_section_count():
 
     # 单小节章的目标字数就是那一节的字数,不是 700
     for chapter_type, count, expected in (
+        ("intro", 2, [[1], [2]]),
+        ("intro", 3, [[1, 2], [3]]),
         ("related", 3, [[1, 2], [3]]),
         ("related", 1, [[1]]),
         ("experiments", 4, [[1, 2], [3, 4]]),
         ("experiments", 5, [[1, 2, 3], [4, 5]]),
         ("discussion", 2, [[1, 2]]),
         ("limitations", 2, [[1, 2]]),
+        ("conclusion", 1, [[1]]),
+        ("conclusion", 2, [[1, 2]]),
+        ("conclusion", 3, [[1, 2, 3]]),
     ):
         parts = orch.build_stage1_parts(sections(count), chapter_type)
         check(f"{chapter_type} 的小节分组",
               [part["numbers"] for part in parts] == expected
               and [part["target_words"] for part in parts] == [150 * len(batch) for batch in expected],
               str(parts))
+
+    # 结论包含局限性小节时仍整章一次起草，保留两个小节的标题与总篇幅。
+    conclusion_sections = [
+        {"number": 1, "title": "Conclusion", "target_words": 125},
+        {"number": 2, "title": "Limitations and Future Work", "target_words": 350},
+    ]
+    conclusion_parts = orch.build_stage1_parts(conclusion_sections, "conclusion")
+    check("结论与局限性一次起草且保留两节和总字数",
+          len(conclusion_parts) == 1
+          and conclusion_parts[0]["numbers"] == [1, 2]
+          and conclusion_parts[0]["titles"] == ["Conclusion", "Limitations and Future Work"]
+          and conclusion_parts[0]["target_words"] == 475,
+          str(conclusion_parts))
+
+    # 无二级标题的引言也分两批，不能增加小节或重复计算章级预算。
+    intro_section = [{"number": 1, "title": "Introduction", "target_words": 925}]
+    intro_parts = orch.build_stage1_parts(intro_section, "intro")
+    check("单节引言固定两批且总字数不变",
+          len(intro_parts) == 2
+          and [part["target_words"] for part in intro_parts] == [463, 462]
+          and [part["numbers"] for part in intro_parts] == [[1], [1]]
+          and all(part["titles"] == ["Introduction"] for part in intro_parts),
+          str(intro_parts))
+    check("引言分批不修改原小节预算", intro_section[0]["target_words"] == 925)
+    for part in intro_parts:
+        instructions = orch.format_stage1_parts([part])
+        check(f"引言第 {part['index']} 批明确是连续正文而非新小节",
+              f"batch {part['index']}/2" in instructions
+              and "without subsection headings" in instructions,
+              instructions)
 
     single = orch.build_stage1_parts(sections(1))
     check("单小节章的目标字数取自该小节", single[0]["target_words"] == 150,

@@ -39,9 +39,9 @@ CAPTURED = {}
 def _wrap_prompts():
     orig_expand, orig_translate = oe.build_expand_prompt, oe.build_translate_prompt
 
-    def expand(chapters, out_en, out_zh, idea, n):
+    def expand(chapters, out_en, out_zh, idea, n, **kwargs):
         CAPTURED["expand"] = (out_en, out_zh)
-        return orig_expand(chapters, out_en, out_zh, idea, n)
+        return orig_expand(chapters, out_en, out_zh, idea, n, **kwargs)
 
     def translate(zh, out_en, old_en=""):
         CAPTURED["translate"] = (zh, out_en)
@@ -82,8 +82,9 @@ class FakePlanner:
                                       "words_explicit": True, "type": "",
                                       "bullets": ["first point", "second point"]}]
             Path(en).parent.mkdir(parents=True, exist_ok=True)
-            Path(en).write_text(oe.render_outline(chapters, "T", oe.EN_EXPANDED_MARKER), encoding="utf-8")
-            Path(zh).write_text(oe.render_outline(chapters, "T", oe.ZH_EXPANDED_MARKER), encoding="utf-8")
+            # 故意模拟模型擅自拟题，验证命令最终仍采用作者配置。
+            Path(en).write_text(oe.render_outline(chapters, "Paper title: Wrong model title", oe.EN_EXPANDED_MARKER), encoding="utf-8")
+            Path(zh).write_text(oe.render_outline(chapters, "Paper title: Wrong model title", oe.ZH_EXPANDED_MARKER), encoding="utf-8")
         elif "translate" in CAPTURED:
             zh, cand = CAPTURED.pop("translate")
             zh_text = next(d for d in docs if d.name == "outline.zh.md").load()

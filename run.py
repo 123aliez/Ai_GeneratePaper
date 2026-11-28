@@ -360,10 +360,16 @@ def expand_outline() -> int:
                                 OutlineRouteError, parse_outline)
     from agents.outline_expand import (
         EN_EXPANDED_MARKER, ZH_EXPANDED_MARKER, ZH_EXPANDED_PATH_NAME,
-        build_expand_prompt, missing_word_counts, read_expanded,
+        build_expand_prompt, configured_title, missing_word_counts, read_expanded,
         render_outline, skeleton_report, validate_expansion,
     )
-    from config import IDEA_PATH
+    from config import IDEA_PATH, PROJECT_ROOT
+
+    try:
+        paper_title = configured_title(Path(PROJECT_ROOT))
+    except ValueError as exc:
+        print(f"Error: {exc}")
+        return 1
 
     # 输入是用户填的草稿(outline_draft.md),不是定稿(outline.md)。
     if not Path(OUTLINE_DRAFT_PATH).is_file():
@@ -402,6 +408,7 @@ def expand_outline() -> int:
             return 1
 
     print(f"Idea:    {IDEA_PATH}")
+    print(f"论文题目(paper.toml): {paper_title}")
     print(f"\n你的章节骨架({len(chapters)} 章),Manager 不会改动它:")
     for line in skeleton_report(chapters):
         print(line)
@@ -417,7 +424,7 @@ def expand_outline() -> int:
     manager = create_planner_agent(get_manager_model())
 
     prompt = build_expand_prompt(chapters, str(en_path), str(zh_path),
-                                 str(IDEA_PATH), len(chapters))
+                                 str(IDEA_PATH), len(chapters), paper_title=paper_title)
     from agents.content_stage import Doc
     # 两份产物都由脚本写进 _work/,中文版再挪到项目根(作者在那里审阅)
     docs = [Doc("idea.md", IDEA_PATH)]
@@ -473,21 +480,19 @@ def expand_outline() -> int:
         return _discard([f"\nError: 中英文大纲互相对不上,拒绝采纳:"] + [f"  · {x}" for x in pair_problems])
 
     # 篇幅预算(paper.toml 的 pages):补缺、压到预算内、中英文字数对齐。脚本做,不靠模型自觉
-    from agents.outline_expand import normalize_budget, proposed_title
+    from agents.outline_expand import normalize_budget
     for note in normalize_budget(expanded_en, expanded_zh, chapters):
         print(f"  · {note}")
 
     # 重新序列化一遍再落盘:Manager 的原始输出可能夹带说明文字或代码围栏,
     # 而这份文件下一步要被作者改名成 outline.md,必须是干净的语法。
-    title = f"Paper outline — {Path(os.environ.get('PAPER_PROJECT', 'paper')).name}"
-    proposal = proposed_title(en_path)
-    if proposal:
-        title = f"Paper title: {proposal}"
+    # 题目由作者配置决定，落盘时覆盖模型擅自改写的标题。
+    title = f"Paper title: {paper_title}"
     en_path.write_text(render_outline(expanded_en, title, EN_EXPANDED_MARKER),
                        encoding="utf-8")
-    zh_title = f"论文大纲 — {Path(os.environ.get('PAPER_PROJECT', 'paper')).name}"
-    zh_path.write_text(render_outline(expanded_zh, title if proposal else zh_title, ZH_EXPANDED_MARKER),
+    zh_path.write_text(render_outline(expanded_zh, title, ZH_EXPANDED_MARKER),
                        encoding="utf-8")
+    print(f"题目核对通过：中英文大纲均使用 paper.toml 的 title：{paper_title}")
     from agents import project
     project.record_expansion()
 

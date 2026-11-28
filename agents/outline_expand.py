@@ -16,6 +16,7 @@
 (小节级 type 优先 → 章 type),都查不到才退回 DEFAULT_SECTION_WORDS=400。
 """
 import re
+import tomllib
 from pathlib import Path
 
 from .outline import (
@@ -48,6 +49,19 @@ def proposed_title(path: Path) -> str:
     """读取新大纲的显式拟题，兼容没有拟题的旧大纲。"""
     match = re.search(r"^# Paper title:[ \t]+(\S.*)$", path.read_text(encoding="utf-8"), re.M)
     return match.group(1).strip() if match else ""
+
+
+def configured_title(project_root: Path) -> str:
+    """论文题目只读作者配置；缺失或非法时在调用模型前报错。"""
+    path = Path(project_root) / "paper.toml"
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"无法读取 paper.toml 的 title：{exc}") from exc
+    title = data.get("title")
+    if not isinstance(title, str) or not title.strip() or "\n" in title or "\r" in title:
+        raise ValueError("paper.toml: title 必须是非空的单行字符串，请先填写论文题目")
+    return title
 
 
 def render_outline(chapters: list[dict], title: str = "",
@@ -141,7 +155,8 @@ def budget_clause(chapters: list[dict]) -> str:
 
 
 def build_expand_prompt(chapters: list[dict], out_en_path: str,
-                        out_zh_path: str, idea_path: str, total: int) -> str:
+                        out_zh_path: str, idea_path: str, total: int,
+                        paper_title: str = "") -> str:
     """Manager 的展开任务。
 
     刻意收紧到两件事:拆小节、写要点。不许改章节结构 —— 那是作者的设计,而
@@ -255,9 +270,8 @@ def build_expand_prompt(chapters: list[dict], out_en_path: str,
         f"venues also want Broader Impact / Ethics. If the author's chapter list "
         f"lacks these for such a venue, do NOT add chapters (structure is fixed) — "
         f"but a Limitations subsection inside the right chapter is fine.\n"
-        f"- Appendices hold hyperparameters and extra experiments; keep the main "
-        f"text self-contained with essential assumptions, metric definitions and protocol conditions. "
-        f"You are planning the MAIN text only; do not create or promise unavailable appendices.\n"
+        f"- Keep the main text self-contained with essential assumptions, metric definitions "
+        f"and protocol conditions.\n"
         f"- Without a Page budget section, you do not write word counts: the framework fills "
         f"a per-type default and the author overrides the important ones.\n\n"
         f"## What a good bullet looks like\n"
@@ -299,9 +313,9 @@ def build_expand_prompt(chapters: list[dict], out_en_path: str,
         f"numbers and the setup: point the data chapters at them and never write that the "
         f"values are unavailable.\n\n"
         f"## Chapter shapes that top venues expect\n"
-        f"- Start each outline with a single H1 line: # Paper title: <proposed English title>. "
-        f"Use [Method] for [Problem] in [Scenario]. Drop the "
-        f"scenario if the title runs beyond about 15 words.\n"
+        f"- The paper title is fixed by the author's paper.toml, not yours to propose, "
+        f"rewrite, shorten or translate. Start BOTH outlines with this exact H1 line:\n"
+        f"# Paper title: {paper_title}\n"
         f"- Introduction: plan continuous paragraphs. P1-2 expand the background and problem. "
         f"P3-4 give one sentence per prior approach: proposal, strength and the limitation we address. "
         f"Close with our intuitive method and the author's contributions with section pointers.\n"

@@ -194,7 +194,7 @@ def build_evidence_mining_prompt(section_title: str, reference_excerpt: str,
         f"Before Open Gaps, add '## Content selection': the central takeaway; main-text "
         f"essentials; material counterevidence; optional supplementary details; internal-only "
         f"provenance and checks. This is an internal evidence map, not a required paragraph "
-        f"list. Do not create an appendix or promise unavailable supplementary material.\n\n"
+        f"list. Do not promise unavailable supplementary material.\n\n"
         f"End with '## Open Gaps' listing every unanswered question — these mark what the "
         f"paper must NOT claim; they are not material to write about.\n\n"
         f"{evidence_hint}"
